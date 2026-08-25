@@ -1,0 +1,61 @@
+# Local Python environments
+.venv/
+.venv-*/
+
+# Python and tool caches
+.cache/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.hypothesis/
+*.py[cod]
+
+# Coverage and build output
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+*.pyd
+*.so
+*.dylib
+*.dll
+*.o
+*.obj
+*.lib
+*.exp
+*.ptx
+*.cubin
+*.fatbin
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.local.toml
+*.local.json
+*.local.yaml
+*.local.yml
+
+# Mutable Agent and candidate working state
+agent_state/
+candidates/_drafts/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.bak
+
+# Restricted or third-party local reference copies
+/references/官方赛题/TikTok TechJam 2026 Information Document.pdf
+/references/背景资料/TT-Global-20250307.pdf
