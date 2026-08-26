@@ -16,18 +16,23 @@ from .kernels import (
     TRITON_ATTENTION_PREPROCESS_AVAILABLE,
     TRITON_ATTENTION_PV_AVAILABLE,
     TRITON_ATTENTION_SOFTMAX_AVAILABLE,
+    TRITON_ONLINE_ATTENTION_AVAILABLE,
     TRITON_QKV_LAYOUT_AVAILABLE,
     TRITON_RESIDUAL_AVAILABLE,
     can_use_triton_attention_preprocess,
     can_use_triton_attention_softmax,
     can_use_triton_fp32_probability_value,
+    can_use_triton_online_attention,
     can_use_triton_qkv_layout,
     can_use_triton_residual,
+    can_use_wide_exact_gelu,
     triton_fp32_probability_value,
+    triton_online_attention,
     triton_qkv_to_bhsd,
     triton_residual_add_padding,
     triton_scale_mask_softmax,
     triton_scale_mask_to_fp32,
+    wide_linear_exact_gelu,
 )
 
 
@@ -122,6 +127,22 @@ class _SelfAttention(nn.Module):
         """Preserve the official low-precision operation and accumulation order."""
 
         sequence_length = query.shape[-2]
+        if self.attention_policy == "triton_online" and (
+            can_use_triton_online_attention(
+                query,
+                key,
+                projected_value,
+                valid_token_mask,
+            )
+        ):
+            return triton_online_attention(
+                query,
+                key,
+                projected_value,
+                valid_token_mask,
+                scale=self.scale,
+                causal=causal,
+            )
         scores = torch.matmul(query, key.transpose(-2, -1))
         use_triton_softmax = (
             self.attention_policy == "triton_softmax"
@@ -286,10 +307,9 @@ class _TransformerBlock(nn.Module):
             and self.ffn_in.bias is not None
         )
 
-    def _ffn_hidden(self, value: torch.Tensor) -> torch.Tensor:
+    def _ffn_hidden(self, normalized: torch.Tensor) -> torch.Tensor:
         """Run the first FFN projection through the selected bounded candidate."""
 
-        normalized = self.norm2(value)
         if self.ffn_policy == "cublaslt_tanh_gelu_epilogue" and (
             self._can_use_wide_epilogue(normalized)
         ):
@@ -303,7 +323,23 @@ class _TransformerBlock(nn.Module):
                 use_gelu=True,
             )
             return hidden.view(*normalized.shape[:-1], self.ffn_in.out_features)
+        if self.ffn_policy == "inplace_exact_gelu" and can_use_wide_exact_gelu(
+            normalized,
+            self.ffn_in.weight,
+            self.ffn_in.bias,
+        ):
+            return wide_linear_exact_gelu(
+                normalized,
+                self.ffn_in.weight,
+                self.ffn_in.bias,
+            )
         return F.gelu(self.ffn_in(normalized), approximate="none")
+
+    def _ffn_update(self, value: torch.Tensor) -> torch.Tensor:
+        """Run the exact FFN through the selected bounded implementation."""
+
+        normalized = self.norm2(value)
+        return self.ffn_out(self._ffn_hidden(normalized))
 
     def _packed_token_ffn(
         self,
@@ -354,7 +390,7 @@ class _TransformerBlock(nn.Module):
         if self.use_packed_ffn and valid_token_mask is not None:
             return self._packed_token_ffn(value, valid_token_mask)
 
-        ffn_update = self.ffn_out(self._ffn_hidden(value))
+        ffn_update = self._ffn_update(value)
         if (
             self.use_triton_residual
             and valid_token_mask is not None
@@ -519,12 +555,43 @@ class UserOptimizedTransformer(nn.Module):
                 "cublaslt_tanh_gelu_epilogue",
                 False,
             ),
+            "wide-triton-inplace": (
+                "triton",
+                "auto",
+                False,
+                False,
+                "inplace_exact_gelu",
+                False,
+            ),
             "cuda-graph": ("auto", "auto", False, False, "exact", True),
             "padding": ("view", "auto", False, True, "exact", False),
             "packed": ("view", "auto", True, False, "exact", False),
         }
+        if normalized == "long-tail-online":
+            self._apply_runtime_policy(
+                requested_policy=normalized,
+                qkv_layout="view",
+                attention="auto",
+                use_packed_ffn=False,
+                use_triton_residual=False,
+                ffn_policy="exact",
+                use_cuda_graph=False,
+            )
+            if (
+                self.config.batch_size == 1
+                and self.config.seq_len == 2048
+                and self.config.d_model == 512
+                and self.config.num_heads == 8
+                and self.config.ffn_dim == 2048
+                and self.config.num_layers == 4
+            ):
+                self.layers[-1].attention.configure_runtime_policy(
+                    "view",
+                    "triton_online",
+                )
+            return
         if normalized not in named_policies:
-            choices = ", ".join(sorted(named_policies))
+            choices = ", ".join(sorted({*named_policies, "long-tail-online"}))
             raise ValueError(
                 f"unknown TRANSFORMER_OPT_POLICY={policy!r}; expected one of {choices}"
             )
@@ -564,8 +631,13 @@ class UserOptimizedTransformer(nn.Module):
             "triton_preprocess",
             "triton_pv",
             "triton_softmax",
+            "triton_online",
         }
-        ffn_choices = {"exact", "cublaslt_tanh_gelu_epilogue"}
+        ffn_choices = {
+            "exact",
+            "cublaslt_tanh_gelu_epilogue",
+            "inplace_exact_gelu",
+        }
         if qkv_layout not in qkv_layout_choices:
             choices = ", ".join(sorted(qkv_layout_choices))
             raise ValueError(f"unknown qkv_layout={qkv_layout!r}; expected {choices}")
@@ -628,6 +700,16 @@ class UserOptimizedTransformer(nn.Module):
             and self.config.num_heads == 8
             and head_dim == 64
         )
+        triton_online_eligible = (
+            TRITON_ONLINE_ATTENTION_AVAILABLE
+            and parameter.is_cuda
+            and parameter.dtype == torch.float16
+            and self.config.batch_size == 1
+            and self.config.seq_len == 2048
+            and self.config.num_heads == 8
+            and head_dim == 64
+            and self.config.num_layers == 4
+        )
         wide_epilogue_eligible = (
             parameter.is_cuda
             and parameter.dtype == torch.bfloat16
@@ -669,7 +751,11 @@ class UserOptimizedTransformer(nn.Module):
         else:
             resolved_qkv_layout = "torch_zero_copy_view"
 
-        if self.requested_attention == "triton_softmax" and triton_softmax_eligible:
+        if effective_policy == "long-tail-online" and triton_online_eligible:
+            resolved_attention = "three_explicit_layers_tail_online_attention"
+        elif self.requested_attention == "triton_online" and triton_online_eligible:
+            resolved_attention = "triton_two_pass_online_attention"
+        elif self.requested_attention == "triton_softmax" and triton_softmax_eligible:
             resolved_attention = "explicit_qk_triton_softmax_pv"
         elif use_fp32_sdpa:
             resolved_attention = "fp32_sdpa"
@@ -698,10 +784,18 @@ class UserOptimizedTransformer(nn.Module):
                 fallback_reasons.append("triton_attention_preprocess_not_eligible")
             elif self.requested_attention == "triton_pv":
                 fallback_reasons.append("triton_attention_pv_not_eligible")
+            elif self.requested_attention == "triton_online":
+                fallback_reasons.append("triton_online_attention_not_eligible")
         if self.use_triton_residual and not triton_residual_eligible:
             fallback_reasons.append("triton_residual_fusion_not_eligible")
+        if effective_policy == "long-tail-online" and not triton_online_eligible:
+            fallback_reasons.append("triton_tail_online_attention_not_eligible")
         if (
-            self.requested_ffn == "cublaslt_tanh_gelu_epilogue"
+            self.requested_ffn
+            in {
+                "cublaslt_tanh_gelu_epilogue",
+                "inplace_exact_gelu",
+            }
             and not wide_epilogue_eligible
         ):
             fallback_reasons.append("wide_ffn_epilogue_not_eligible")
@@ -719,7 +813,22 @@ class UserOptimizedTransformer(nn.Module):
         elif (
             (effective_policy == "preprocess" and not triton_preprocess_eligible)
             or (effective_policy == "long-pv" and not triton_pv_eligible)
-            or (effective_policy == "wide-epilogue" and not wide_epilogue_eligible)
+            or (
+                effective_policy == "long-tail-online"
+                and not triton_online_eligible
+            )
+            or (
+                effective_policy
+                in {
+                    "wide-epilogue",
+                    "wide-triton-inplace",
+                }
+                and not wide_epilogue_eligible
+            )
+            or (
+                effective_policy == "wide-triton-inplace"
+                and not triton_layout_eligible
+            )
             or (effective_policy == "cuda-graph" and not launch_cuda_graph_eligible)
         ):
             selected_policy = "torch_fallback"
@@ -727,6 +836,10 @@ class UserOptimizedTransformer(nn.Module):
             selected_policy = effective_policy
         if effective_policy == "cuda-graph" and launch_cuda_graph_eligible:
             shape_route = "launch_fp16_eager_cuda_graph"
+        elif resolved_attention == "three_explicit_layers_tail_online_attention":
+            shape_route = "long_fp16_tail_layer_online_attention"
+        elif resolved_attention == "triton_two_pass_online_attention":
+            shape_route = "long_fp16_all_layers_online_attention_candidate"
         elif (
             resolved_attention
             == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
@@ -746,12 +859,12 @@ class UserOptimizedTransformer(nn.Module):
             shape_route = "wide_bf16_reference_attention"
         else:
             shape_route = "general_reference_attention"
-        resolved_ffn = (
-            "cublaslt_tanh_gelu_epilogue"
-            if self.requested_ffn == "cublaslt_tanh_gelu_epilogue"
-            and wide_epilogue_eligible
-            else "torch_exact_gelu"
-        )
+        resolved_ffn = "torch_exact_gelu"
+        if wide_epilogue_eligible:
+            if self.requested_ffn == "cublaslt_tanh_gelu_epilogue":
+                resolved_ffn = "cublaslt_tanh_gelu_epilogue"
+            elif self.requested_ffn == "inplace_exact_gelu":
+                resolved_ffn = "torch_inplace_exact_gelu"
         return {
             "requested_policy": self.requested_policy,
             "selected_policy": selected_policy,
@@ -772,7 +885,11 @@ class UserOptimizedTransformer(nn.Module):
             "resolved_attention": resolved_attention,
             "attention_policy": resolved_attention,
             "selected_attention_backend": (
-                "triton_preprocess_native_softmax_triton_pv"
+                "triton_tail_layer_online"
+                if resolved_attention == "three_explicit_layers_tail_online_attention"
+                else "triton_two_pass_online"
+                if resolved_attention == "triton_two_pass_online_attention"
+                else "triton_preprocess_native_softmax_triton_pv"
                 if resolved_attention
                 == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
                 else "triton_softmax"
@@ -788,15 +905,25 @@ class UserOptimizedTransformer(nn.Module):
             ),
             "attention_candidate_status": (
                 "experimental_requires_correctness_gate"
-                if self.requested_attention
-                in {"triton_softmax", "triton_preprocess", "triton_pv"}
+                if effective_policy == "long-tail-online"
+                or self.requested_attention
+                in {
+                    "triton_softmax",
+                    "triton_preprocess",
+                    "triton_pv",
+                    "triton_online",
+                }
                 else "validated_route"
             ),
             "requested_ffn": self.requested_ffn,
             "resolved_ffn": resolved_ffn,
             "ffn_candidate_status": (
                 "experimental_requires_correctness_gate"
-                if self.requested_ffn == "cublaslt_tanh_gelu_epilogue"
+                if self.requested_ffn
+                in {
+                    "cublaslt_tanh_gelu_epilogue",
+                    "inplace_exact_gelu",
+                }
                 else "validated_route"
             ),
             "shape_route": shape_route,
@@ -823,6 +950,8 @@ class UserOptimizedTransformer(nn.Module):
                     "explicit_qk_triton_preprocess_native_softmax_pv",
                     "explicit_qk_triton_preprocess_native_softmax_triton_pv",
                     "explicit_qk_triton_softmax_pv",
+                    "triton_two_pass_online_attention",
+                    "three_explicit_layers_tail_online_attention",
                 }
                 else "shared_causal_padding_union"
                 if self.config.causal
@@ -856,9 +985,19 @@ class UserOptimizedTransformer(nn.Module):
         use_explicit_preprocess = self.requested_attention in {
             "triton_preprocess",
             "triton_pv",
-        } and (sequence_length, head_dim) in {(64, 32), (2048, 64)}
+        } and (sequence_length, head_dim) in {
+            (64, 32),
+            (2048, 64),
+        }
         if TRITON_ATTENTION_PREPROCESS_AVAILABLE and (
             use_auto_preprocess or use_explicit_preprocess
+        ):
+            return True
+        if (
+            self.requested_attention == "triton_online"
+            and TRITON_ONLINE_ATTENTION_AVAILABLE
+            and sequence_length == 2048
+            and head_dim == 64
         ):
             return True
         return (

@@ -258,7 +258,14 @@ def test_causal_solution_accepts_a_sequence_shorter_than_config() -> None:
 
 @pytest.mark.parametrize(
     "policy",
-    ["preprocess", "long-pv", "wide-epilogue", "cuda-graph"],
+    [
+        "preprocess",
+        "long-pv",
+        "long-tail-online",
+        "wide-epilogue",
+        "wide-triton-inplace",
+        "cuda-graph",
+    ],
 )
 def test_specialized_gpu_policy_reports_cpu_fallback(
     monkeypatch: pytest.MonkeyPatch,
@@ -299,6 +306,29 @@ def test_reference_policy_is_an_isolated_attention_control(
     assert execution_path["selected_policy"] == "reference"
     assert execution_path["resolved_qkv_layout"] == "torch_zero_copy_view"
     assert execution_path["resolved_attention"] == "explicit_reference_order"
+
+
+def test_long_tail_online_changes_only_the_final_layer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSFORMER_OPT_POLICY", "long-tail-online")
+    solution_module = load_solution_module(PROJECT_ROOT)
+    config = official.TransformerConfig(
+        batch_size=1,
+        seq_len=2048,
+        d_model=512,
+        num_heads=8,
+        ffn_dim=2048,
+        num_layers=4,
+        causal=False,
+    )
+    solution = solution_module.UserOptimizedTransformer(config).eval()
+
+    attention_policies = [
+        layer.attention.attention_policy for layer in solution.layers
+    ]
+
+    assert attention_policies == ["auto", "auto", "auto", "triton_online"]
 
 
 def test_dispatch_is_the_default_and_falls_back_to_auto(

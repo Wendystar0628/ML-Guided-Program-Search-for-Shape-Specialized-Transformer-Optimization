@@ -17,6 +17,54 @@
         "compute_capability": "8.9"
       },
       "policy": "cuda-graph"
+    },
+    {
+      "match": {
+        "dtype": "float16",
+        "B": 1,
+        "S": 2048,
+        "D": 512,
+        "heads": 8,
+        "ffn": 2048,
+        "layers": 4,
+        "causal": false,
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "long-tail-online"
+    },
+    {
+      "match": {
+        "dtype": "float16",
+        "B": 1,
+        "S": 2048,
+        "D": 512,
+        "heads": 8,
+        "ffn": 2048,
+        "layers": 4,
+        "causal": true,
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "long-tail-online"
+    },
+    {
+      "match": {
+        "dtype": "bfloat16",
+        "B": 16,
+        "S": 256,
+        "D": 1024,
+        "heads": 8,
+        "ffn": 4096,
+        "layers": 6,
+        "causal": false,
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "wide-triton-inplace"
     }
   ]
 }

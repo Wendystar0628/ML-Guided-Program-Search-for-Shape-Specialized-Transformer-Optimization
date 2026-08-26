@@ -30,7 +30,9 @@ SOLUTION_POLICIES = (
     "triton",
     "preprocess",
     "long-pv",
+    "long-tail-online",
     "wide-epilogue",
+    "wide-triton-inplace",
     "cuda-graph",
     "padding",
     "packed",
@@ -78,10 +80,13 @@ _ATTENTION_PREPROCESS_CANDIDATE = TuningCandidate(
     "attention-preprocess",
     "preprocess",
 )
-_LONG_PV_CANDIDATE = TuningCandidate("long-pv", "long-pv")
-_WIDE_EPILOGUE_CANDIDATE = TuningCandidate(
-    "wide-gelu-epilogue",
-    "wide-epilogue",
+_LONG_TAIL_ONLINE_CANDIDATE = TuningCandidate(
+    "long-tail-online",
+    "long-tail-online",
+)
+_WIDE_TRITON_INPLACE_CANDIDATE = TuningCandidate(
+    "wide-triton-inplace",
+    "wide-triton-inplace",
 )
 _WIDE_CANDIDATE = TuningCandidate(
     "compile-max-autotune",
@@ -126,7 +131,7 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
         and case.num_heads == 8
         and case.dtype == "float16"
     ):
-        candidates.append(_LONG_PV_CANDIDATE)
+        candidates.append(_LONG_TAIL_ONLINE_CANDIDATE)
     if case.padding_ratio > 0 or case.case_id.startswith("mask_s512_"):
         candidates.extend((_PADDING_FUSION_CANDIDATE, _PADDING_PACKED_CANDIDATE))
     elif (
@@ -158,7 +163,11 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
             and case.dtype == "bfloat16"
             and not case.causal
         ):
-            candidates.append(_WIDE_EPILOGUE_CANDIDATE)
+            candidates.extend(
+                (
+                    _WIDE_TRITON_INPLACE_CANDIDATE,
+                )
+            )
     return tuple(candidates)
 
 
@@ -249,9 +258,20 @@ def _observation(
                 execution_path.get("resolved_attention")
                 == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
             )
+        elif candidate.solution_policy == "long-tail-online":
+            route_matches = (
+                execution_path.get("resolved_attention")
+                == "three_explicit_layers_tail_online_attention"
+            )
         elif candidate.solution_policy == "wide-epilogue":
             route_matches = (
                 execution_path.get("resolved_ffn") == "cublaslt_tanh_gelu_epilogue"
+            )
+        elif candidate.solution_policy == "wide-triton-inplace":
+            route_matches = (
+                execution_path.get("resolved_qkv_layout") == "triton_single_pass"
+                and execution_path.get("resolved_ffn")
+                == "torch_inplace_exact_gelu"
             )
         elif candidate.solution_policy == "cuda-graph":
             route_matches = (

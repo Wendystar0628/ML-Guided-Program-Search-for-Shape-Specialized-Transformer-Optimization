@@ -12,9 +12,11 @@ default path and several real, correctness-gated candidates:
 - The validated short, non-causal CUDA FP32 region uses PyTorch scaled dot-product attention; other regions retain the reference operation and accumulation order as a numerical fallback.
 - Low-precision sequences up to 512 use PyTorch's native FP32-dtype softmax entry, avoiding a separate score-promotion pass while preserving the final low-precision probability boundary.
 - The long FP16 route fuses score scaling, causal/padding masking, and FP16-to-FP32 promotion in Triton, then keeps PyTorch's native FP32 softmax and the original PV matmul.
+- The calibrated long-sequence route keeps that exact path for the first three blocks and uses a two-pass streaming Attention kernel only in the final block. The kernel recomputes tiled QK products, preserves the FP16 score/scale/probability boundaries, and avoids materializing the final block's full score and probability tensors.
+- The calibrated Wide BF16 route combines the existing single-pass Triton QKV layout with in-place exact GELU. The GEMMs remain on PyTorch's tuned CUDA library path, while the fresh FFN hidden buffer is reused instead of allocating a second 32 MiB activation tensor.
 - The calibrated RTX 4080 launch route uses a fixed-shape eager CUDA Graph. Every call copies the current input and mask into static buffers, replays the complete Transformer, and clones the output, so repeated calls do not alias or reuse an old result.
 - Separate bounded Triton candidates provide single-pass QKV re-layout and a fully custom attention softmax for controlled comparisons; numerically incompatible candidates remain outside the default route.
-- Wide BF16 Bias+GELU epilogue and long-sequence fused-PV implementations remain explicit candidates until the official comparator and end-to-end timer accept them.
+- Approximate Bias+GELU, all-layer streaming Attention, fused-PV, and whole-model compile paths remain outside dispatch because the full Transformer comparator rejected them.
 - A padding-aware route packs valid token rows before the FFN and uses a Triton residual-plus-padding fusion when applicable.
 - `torch.compile` modes are screened as candidates through the same official comparator and full-forward timer.
 
@@ -106,6 +108,18 @@ The CLI defaults to `--target solution`, `--solution-policy dispatch`, `--worklo
 | Padding / Mask | `mask_s512_full_fp16`, `mask_s512_padding_fp16`, `mask_s512_causal_padding_fp16` | Full, padded, and combined causal-padding masks |
 | Wide GEMM / FFN | `wide_s256_bf16` | Wide projections, FFN throughput, and BF16 execution |
 
+The latest complete RTX 4080 formal dispatch run passed correctness for all nine cases:
+
+| Performance group | Geometric-mean speedup |
+|---|---:|
+| Launch / Graph | `15.1077x` |
+| Balanced / Precision | `1.6043x` |
+| Long Attention | `1.9486x` |
+| Padding / Mask | `1.2910x` |
+| Wide GEMM / FFN | `1.0362x` |
+
+The equal-weight group-balanced geometric mean is `2.2915x`. These figures are device-specific measurements rather than portable performance guarantees.
+
 The set is deliberately compact rather than a Cartesian product. Its five groups have equal weight so that the three mask cases do not dominate the project-level metric.
 
 ## Measurement behavior
@@ -133,7 +147,9 @@ winner. The main solution policies have distinct roles:
 | `triton` | Experimental custom QKV-layout and attention-softmax route |
 | `preprocess` | Explicit Triton scale/mask/promotion plus native softmax candidate |
 | `long-pv` | Experimental long-sequence fused probability-cast/PV route |
+| `long-tail-online` | Calibrated three-exact-block plus final-block streaming Attention route |
 | `wide-epilogue` | Experimental BF16 Bias+Tanh-GELU epilogue route |
+| `wide-triton-inplace` | Calibrated Wide QKV layout plus in-place exact GELU route |
 | `cuda-graph` | Exact fixed-shape eager CUDA Graph route inside the Solution |
 | `padding` | Residual-plus-padding Triton fusion route |
 | `packed` | Experimental valid-token FFN route |

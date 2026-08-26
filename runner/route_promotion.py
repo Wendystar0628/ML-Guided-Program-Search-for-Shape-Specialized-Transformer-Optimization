@@ -32,7 +32,9 @@ DEPLOYABLE_EAGER_POLICIES = frozenset(
         "triton",
         "preprocess",
         "long-pv",
+        "long-tail-online",
         "wide-epilogue",
+        "wide-triton-inplace",
         "cuda-graph",
     }
 )

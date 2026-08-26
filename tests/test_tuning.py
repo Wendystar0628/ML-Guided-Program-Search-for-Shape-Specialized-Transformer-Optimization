@@ -108,10 +108,12 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
     assert "padding-fused" in launch
     assert "eager-cudagraph" in launch
     assert "launch-cudagraph" in launch
-    assert "long-pv" in long_attention
+    assert "long-pv" not in long_attention
+    assert "long-tail-online" in long_attention
     assert "attention-preprocess" in long_attention
     assert "wide-gelu-epilogue" not in wide
-    assert "wide-gelu-epilogue" in exact_wide
+    assert "wide-gelu-epilogue" not in exact_wide
+    assert "wide-triton-inplace" in exact_wide
 
 
 def test_solution_policy_restores_the_parent_environment(
