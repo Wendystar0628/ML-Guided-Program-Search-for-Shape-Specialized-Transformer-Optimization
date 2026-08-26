@@ -46,6 +46,11 @@ dist/
 agent_state/
 candidates/_drafts/
 
+# Internal planning, competition research, and development notes
+/docs/01_赛题规则/
+/docs/02_开发路线/
+/docs/03_Agent系统/
+
 # Editor and operating-system files
 .idea/
 .vscode/
