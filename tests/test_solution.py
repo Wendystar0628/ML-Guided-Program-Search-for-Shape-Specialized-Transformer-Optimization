@@ -260,11 +260,13 @@ def test_causal_solution_accepts_a_sequence_shorter_than_config() -> None:
     "policy",
     [
         "preprocess",
+        "s512-native-softmax",
         "long-pv",
         "long-tail-online",
         "wide-epilogue",
         "wide-triton-inplace",
         "cuda-graph",
+        "balanced-cuda-graph",
     ],
 )
 def test_specialized_gpu_policy_reports_cpu_fallback(
@@ -292,6 +294,18 @@ def test_module_transform_invalidates_cuda_graph_state() -> None:
 
     assert solution._cuda_graph_replay is None
     assert solution._dispatch_signature is None
+
+
+def test_balanced_cuda_graph_reuses_auto_compute_and_invalidates_capture() -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+    solution._cuda_graph_replay = object()
+
+    solution._configure_named_policy("balanced-cuda-graph")
+
+    assert solution.use_cuda_graph
+    assert solution._cuda_graph_replay is None
+    assert all(layer.attention.attention_policy == "auto" for layer in solution.layers)
 
 
 def test_reference_policy_is_an_isolated_attention_control(
@@ -324,11 +338,10 @@ def test_long_tail_online_changes_only_the_final_layer(
     )
     solution = solution_module.UserOptimizedTransformer(config).eval()
 
-    attention_policies = [
-        layer.attention.attention_policy for layer in solution.layers
-    ]
+    attention_policies = [layer.attention.attention_policy for layer in solution.layers]
 
     assert attention_policies == ["auto", "auto", "auto", "triton_online"]
+    assert not solution.use_cuda_graph
 
 
 def test_dispatch_is_the_default_and_falls_back_to_auto(

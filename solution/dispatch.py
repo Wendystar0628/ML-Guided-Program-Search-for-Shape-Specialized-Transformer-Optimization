@@ -17,11 +17,13 @@ ALLOWED_POLICIES = frozenset(
         "torch",
         "triton",
         "preprocess",
+        "s512-native-softmax",
         "long-pv",
         "long-tail-online",
         "wide-epilogue",
         "wide-triton-inplace",
         "cuda-graph",
+        "balanced-cuda-graph",
         "padding",
         "packed",
     }

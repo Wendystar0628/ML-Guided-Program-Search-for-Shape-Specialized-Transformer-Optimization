@@ -29,11 +29,13 @@ SOLUTION_POLICIES = (
     "torch",
     "triton",
     "preprocess",
+    "s512-native-softmax",
     "long-pv",
     "long-tail-online",
     "wide-epilogue",
     "wide-triton-inplace",
     "cuda-graph",
+    "balanced-cuda-graph",
     "padding",
     "packed",
 )
@@ -74,11 +76,19 @@ _EAGER_CUDAGRAPH = TuningCandidate(
     cuda_graph_solution=True,
 )
 _SOLUTION_CUDAGRAPH = TuningCandidate("launch-cudagraph", "cuda-graph")
+_BALANCED_CUDAGRAPH = TuningCandidate(
+    "balanced-cudagraph",
+    "balanced-cuda-graph",
+)
 _PADDING_FUSION_CANDIDATE = TuningCandidate("padding-fused", "padding")
 _PADDING_PACKED_CANDIDATE = TuningCandidate("padding-packed", "packed")
 _ATTENTION_PREPROCESS_CANDIDATE = TuningCandidate(
     "attention-preprocess",
     "preprocess",
+)
+_S512_NATIVE_SOFTMAX_CANDIDATE = TuningCandidate(
+    "s512-native-softmax",
+    "s512-native-softmax",
 )
 _LONG_TAIL_ONLINE_CANDIDATE = TuningCandidate(
     "long-tail-online",
@@ -119,11 +129,33 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
     candidates = list(_EAGER_CANDIDATES)
     if case.seq_len <= 128:
         candidates.extend((_COMPILE_DEFAULT, _COMPILE_REDUCE_OVERHEAD))
+    if (
+        case.batch_size == 8
+        and case.seq_len == 128
+        and case.d_model == 512
+        and case.num_heads == 8
+        and case.ffn_dim == 2048
+        and case.num_layers == 6
+        and case.dtype == "float16"
+        and not case.causal
+        and case.padding_ratio == 0
+    ):
+        candidates.append(_BALANCED_CUDAGRAPH)
     if case.dtype == "float16" and (case.seq_len, case.d_model // case.num_heads) in {
         (64, 32),
         (2048, 64),
     }:
         candidates.append(_ATTENTION_PREPROCESS_CANDIDATE)
+    if (
+        case.batch_size == 8
+        and case.seq_len == 512
+        and case.d_model == 512
+        and case.num_heads == 8
+        and case.ffn_dim == 2048
+        and case.num_layers == 4
+        and case.dtype == "float16"
+    ):
+        candidates.append(_S512_NATIVE_SOFTMAX_CANDIDATE)
     if (
         case.batch_size == 1
         and case.seq_len == 2048
@@ -163,11 +195,7 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
             and case.dtype == "bfloat16"
             and not case.causal
         ):
-            candidates.extend(
-                (
-                    _WIDE_TRITON_INPLACE_CANDIDATE,
-                )
-            )
+            candidates.extend((_WIDE_TRITON_INPLACE_CANDIDATE,))
     return tuple(candidates)
 
 
@@ -253,6 +281,11 @@ def _observation(
                 execution_path.get("resolved_attention")
                 == "explicit_qk_triton_preprocess_native_softmax_pv"
             )
+        elif candidate.solution_policy == "s512-native-softmax":
+            route_matches = (
+                execution_path.get("resolved_attention")
+                == "explicit_qk_triton_scale_mask_native_half_softmax_pv"
+            )
         elif candidate.solution_policy == "long-pv":
             route_matches = (
                 execution_path.get("resolved_attention")
@@ -270,12 +303,17 @@ def _observation(
         elif candidate.solution_policy == "wide-triton-inplace":
             route_matches = (
                 execution_path.get("resolved_qkv_layout") == "triton_single_pass"
-                and execution_path.get("resolved_ffn")
-                == "torch_inplace_exact_gelu"
+                and execution_path.get("resolved_ffn") == "torch_inplace_exact_gelu"
             )
         elif candidate.solution_policy == "cuda-graph":
             route_matches = (
                 execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph"
+            )
+        elif candidate.solution_policy == "balanced-cuda-graph":
+            route_matches = (
+                execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph"
+                and execution_path.get("shape_route")
+                == "balanced_fp16_eager_cuda_graph"
             )
     policy_applied = (
         requested_policy == candidate.solution_policy
@@ -374,9 +412,7 @@ def run_tuning_case(
     device_profile: dict[str, Any] | None = None
     solution_root = project_root / "solution"
     implementation_hash_before = (
-        solution_implementation_hash(solution_root)
-        if solution_root.is_dir()
-        else None
+        solution_implementation_hash(solution_root) if solution_root.is_dir() else None
     )
     candidates = select_candidates(case, requested_candidates)
     for candidate in candidates:
@@ -434,9 +470,7 @@ def run_tuning_case(
         item.get("solution_sha256") in solution_hashes for item in observations
     )
     implementation_hash_after = (
-        solution_implementation_hash(solution_root)
-        if solution_root.is_dir()
-        else None
+        solution_implementation_hash(solution_root) if solution_root.is_dir() else None
     )
     implementation_consistent = (
         implementation_hash_before is not None

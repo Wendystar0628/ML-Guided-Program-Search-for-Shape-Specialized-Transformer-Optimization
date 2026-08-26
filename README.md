@@ -11,10 +11,11 @@ default path and several real, correctness-gated candidates:
 - Token-mask inversion and broadcast views are prepared once per model forward and reused across all layers; redundant attention-output query masking is deferred to the existing block boundary.
 - The validated short, non-causal CUDA FP32 region uses PyTorch scaled dot-product attention; other regions retain the reference operation and accumulation order as a numerical fallback.
 - Low-precision sequences up to 512 use PyTorch's native FP32-dtype softmax entry, avoiding a separate score-promotion pass while preserving the final low-precision probability boundary.
+- The calibrated S512 FP16 route performs score scaling plus causal/padding masking in one Triton pass, then uses PyTorch's native half-input/half-output softmax. It preserves the official FP16 score boundary while removing the full FP32 probability tensor and its following cast.
 - The long FP16 route fuses score scaling, causal/padding masking, and FP16-to-FP32 promotion in Triton, then keeps PyTorch's native FP32 softmax and the original PV matmul.
 - The calibrated long-sequence route keeps that exact path for the first three blocks and uses a two-pass streaming Attention kernel only in the final block. The kernel recomputes tiled QK products, preserves the FP16 score/scale/probability boundaries, and avoids materializing the final block's full score and probability tensors.
 - The calibrated Wide BF16 route combines the existing single-pass Triton QKV layout with in-place exact GELU. The GEMMs remain on PyTorch's tuned CUDA library path, while the fresh FFN hidden buffer is reused instead of allocating a second 32 MiB activation tensor.
-- The calibrated RTX 4080 launch route uses a fixed-shape eager CUDA Graph. Every call copies the current input and mask into static buffers, replays the complete Transformer, and clones the output, so repeated calls do not alias or reuse an old result.
+- The calibrated RTX 4080 Launch and Balanced FP16 routes use fixed-shape eager CUDA Graph replay. Every call copies the current input and mask into static buffers, replays the complete Transformer, and clones the output, so repeated calls do not alias or reuse an old result.
 - Separate bounded Triton candidates provide single-pass QKV re-layout and a fully custom attention softmax for controlled comparisons; numerically incompatible candidates remain outside the default route.
 - Approximate Bias+GELU, all-layer streaming Attention, fused-PV, and whole-model compile paths remain outside dispatch because the full Transformer comparator rejected them.
 - A padding-aware route packs valid token rows before the FFN and uses a Triton residual-plus-padding fusion when applicable.
@@ -94,7 +95,7 @@ Profile one representative case with the same model loader and workload definiti
 python -m runner profile --case-id attention_s2048_fp16
 ```
 
-The CLI defaults to `--target solution`, `--solution-policy dispatch`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. `tune` runs a deliberately small, shape-relevant candidate set serially on one GPU. It reuses the same fresh worker, correctness check, timing protocol, and result JSON as `benchmark`; all candidates from one case-level screening share a `sweep_id`. The compact tuning summary ranks candidates by the worst paired round speedup, which prevents one favorable hot or throttled round from deciding a route. Promotion fails closed unless the run is complete, uses the full formal counts, retains internally consistent round data and source hashes, still matches the current Solution implementation, and a specialized winner exceeds `auto` by at least 2%. Use `python -m runner <command> --help` for candidate names, policies, compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
+The CLI defaults to `--target solution`, `--solution-policy dispatch`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. `tune` runs a deliberately small, shape-relevant candidate set serially on one GPU. It reuses the same fresh worker, correctness check, timing protocol, and result JSON as `benchmark`; all candidates from one case-level screening share a `sweep_id`. The compact tuning summary ranks candidates by the worst paired round speedup, which prevents one favorable hot or throttled round from deciding a route. Promotion fails closed unless the run is complete, uses the full formal counts, retains internally consistent round data and source hashes, still matches the current Solution implementation, and a specialized winner exceeds `auto` by at least 2%. Replacing the route that currently resolves for a shape also requires the incumbent in the same formal run and at least 2% conservative improvement over it. Use `python -m runner <command> --help` for candidate names, policies, compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
 
 ## Core workload
 
@@ -112,13 +113,13 @@ The latest complete RTX 4080 formal dispatch run passed correctness for all nine
 
 | Performance group | Geometric-mean speedup |
 |---|---:|
-| Launch / Graph | `15.1077x` |
-| Balanced / Precision | `1.6043x` |
-| Long Attention | `1.9486x` |
-| Padding / Mask | `1.2910x` |
-| Wide GEMM / FFN | `1.0362x` |
+| Launch / Graph | `14.3680x` |
+| Balanced / Precision | `2.2389x` |
+| Long Attention | `1.9332x` |
+| Padding / Mask | `1.9041x` |
+| Wide GEMM / FFN | `1.0519x` |
 
-The equal-weight group-balanced geometric mean is `2.2915x`. These figures are device-specific measurements rather than portable performance guarantees.
+The equal-weight group-balanced geometric mean is `2.6247x`. These figures are device-specific measurements rather than portable performance guarantees. The previous complete dispatch sweep scored `2.2915x`, so the latest same-protocol score is about `14.5%` higher. Baseline latency also varies between sweeps; route-attributable gains are therefore established by the same-run paired candidate measurements rather than by this cross-sweep difference alone.
 
 The set is deliberately compact rather than a Cartesian product. Its five groups have equal weight so that the three mask cases do not dominate the project-level metric.
 
@@ -146,11 +147,13 @@ winner. The main solution policies have distinct roles:
 | `torch` | Conservative materialized-layout comparison path |
 | `triton` | Experimental custom QKV-layout and attention-softmax route |
 | `preprocess` | Explicit Triton scale/mask/promotion plus native softmax candidate |
+| `s512-native-softmax` | Calibrated S512 FP16 scale/mask fusion plus native half-output softmax |
 | `long-pv` | Experimental long-sequence fused probability-cast/PV route |
 | `long-tail-online` | Calibrated three-exact-block plus final-block streaming Attention route |
 | `wide-epilogue` | Experimental BF16 Bias+Tanh-GELU epilogue route |
 | `wide-triton-inplace` | Calibrated Wide QKV layout plus in-place exact GELU route |
-| `cuda-graph` | Exact fixed-shape eager CUDA Graph route inside the Solution |
+| `cuda-graph` | Calibrated Launch fixed-shape eager CUDA Graph route |
+| `balanced-cuda-graph` | Calibrated Balanced FP16 auto path wrapped by fixed-shape CUDA Graph replay |
 | `padding` | Residual-plus-padding Triton fusion route |
 | `packed` | Experimental valid-token FFN route |
 

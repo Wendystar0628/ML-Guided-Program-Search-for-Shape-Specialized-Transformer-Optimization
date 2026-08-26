@@ -17,7 +17,9 @@ from .attention_pv import (
 )
 from .attention_softmax import (
     TRITON_ATTENTION_SOFTMAX_AVAILABLE,
+    can_use_s512_native_half_softmax,
     can_use_triton_attention_softmax,
+    s512_scale_mask_native_half_softmax,
     triton_scale_mask_softmax,
 )
 from .qkv_layout import (
@@ -44,6 +46,7 @@ __all__ = [
     "TRITON_QKV_LAYOUT_AVAILABLE",
     "TRITON_RESIDUAL_AVAILABLE",
     "WIDE_FFN_EXACT_GELU_AVAILABLE",
+    "can_use_s512_native_half_softmax",
     "can_use_triton_attention_preprocess",
     "can_use_triton_attention_softmax",
     "can_use_triton_fp32_probability_value",
@@ -51,6 +54,7 @@ __all__ = [
     "can_use_triton_qkv_layout",
     "can_use_triton_residual",
     "can_use_wide_exact_gelu",
+    "s512_scale_mask_native_half_softmax",
     "triton_fp32_probability_value",
     "triton_online_attention",
     "triton_qkv_to_bhsd",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -127,6 +128,46 @@ def _formal_summary() -> dict[str, object]:
                 "solution_sha256": "fixture-solution-hash",
                 "execution_path": {"shape_route": "long-pv"},
             },
+        ],
+    }
+
+
+def _candidate_observation(
+    *,
+    candidate_id: str,
+    policy: str,
+    speedup: float,
+) -> dict[str, object]:
+    observation = copy.deepcopy(_formal_summary()["observations"][2])  # type: ignore[index]
+    observation["candidate_id"] = candidate_id
+    observation["solution_policy"] = policy
+    observation["conservative_speedup"] = speedup
+    observation["baseline_round_medians_ms"] = [speedup, speedup, speedup]
+    observation["execution_path"] = {"shape_route": candidate_id}
+    return observation
+
+
+def _existing_exact_route(policy: str) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "default_policy": "auto",
+        "routes": [
+            {
+                "match": {
+                    "dtype": "float16",
+                    "B": 1,
+                    "S": 2048,
+                    "D": 512,
+                    "heads": 8,
+                    "ffn": 2048,
+                    "layers": 4,
+                    "causal": False,
+                    "device_type": "cuda",
+                    "device_name": "Fixture GPU",
+                    "compute_capability": "8.9",
+                },
+                "policy": policy,
+            }
         ],
     }
 
@@ -291,14 +332,91 @@ def test_specialized_route_requires_a_meaningful_gain_over_auto() -> None:
         build_promoted_route_document(None, summary)
 
 
+def test_replacing_an_exact_route_requires_a_gain_over_the_incumbent() -> None:
+    summary = _formal_summary()
+    observations = summary["observations"]
+    assert isinstance(observations, list)
+    observations.append(
+        _candidate_observation(
+            candidate_id="incumbent-preprocess",
+            policy="preprocess",
+            speedup=1.49,
+        )
+    )
+
+    with pytest.raises(ContractError, match="incumbent.*promotion margin"):
+        build_promoted_route_document(
+            _existing_exact_route("preprocess"),
+            summary,
+        )
+
+
+def test_replacing_an_exact_route_requires_an_incumbent_observation() -> None:
+    with pytest.raises(ContractError, match="missing a correct incumbent observation"):
+        build_promoted_route_document(
+            _existing_exact_route("preprocess"),
+            _formal_summary(),
+        )
+
+
+def test_a_clear_gain_replaces_only_the_matching_incumbent_route() -> None:
+    summary = _formal_summary()
+    observations = summary["observations"]
+    assert isinstance(observations, list)
+    observations.append(
+        _candidate_observation(
+            candidate_id="incumbent-preprocess",
+            policy="preprocess",
+            speedup=1.45,
+        )
+    )
+    existing = _existing_exact_route("preprocess")
+    routes = existing["routes"]
+    assert isinstance(routes, list)
+    unrelated = {"match": {"B": 8}, "policy": "reference"}
+    routes.append(unrelated)
+
+    document, winner = build_promoted_route_document(existing, summary)
+
+    assert winner["solution_policy"] == "long-pv"
+    assert unrelated in document["routes"]
+    assert {
+        "match": _existing_exact_route("long-pv")["routes"][0]["match"],  # type: ignore[index]
+        "policy": "long-pv",
+    } in document["routes"]
+
+
+def test_an_incumbent_winner_keeps_its_route_without_a_new_margin() -> None:
+    summary = _formal_summary()
+    incumbent = summary["observations"][2]  # type: ignore[index]
+    incumbent["conservative_speedup"] = 1.41
+    incumbent["baseline_round_medians_ms"] = [1.41, 1.41, 1.41]
+    existing = _existing_exact_route("long-pv")
+
+    document, winner = build_promoted_route_document(existing, summary)
+
+    assert winner["solution_policy"] == "long-pv"
+    assert document == existing
+
+
 def test_promoted_exact_route_precedes_a_broad_fallback() -> None:
+    summary = _formal_summary()
+    observations = summary["observations"]
+    assert isinstance(observations, list)
+    observations.append(
+        _candidate_observation(
+            candidate_id="incumbent-reference",
+            policy="reference",
+            speedup=1.45,
+        )
+    )
     existing = {
         "schema_version": 1,
         "default_policy": "auto",
         "routes": [{"match": {"B": 1}, "policy": "reference"}],
     }
 
-    document, _ = build_promoted_route_document(existing, _formal_summary())
+    document, _ = build_promoted_route_document(existing, summary)
     table = validate_route_table(document)
     key = make_route_key(
         _config(),
@@ -309,3 +427,120 @@ def test_promoted_exact_route_precedes_a_broad_fallback() -> None:
     )
 
     assert resolve_route(table, key) == "long-pv"
+
+
+def test_a_broad_incumbent_requires_a_formal_observation() -> None:
+    existing = {
+        "schema_version": 1,
+        "default_policy": "auto",
+        "routes": [{"match": {"B": 1}, "policy": "preprocess"}],
+    }
+
+    with pytest.raises(ContractError, match="missing a correct incumbent observation"):
+        build_promoted_route_document(existing, _formal_summary())
+
+
+def test_a_broad_incumbent_is_protected_by_the_promotion_margin() -> None:
+    summary = _formal_summary()
+    observations = summary["observations"]
+    assert isinstance(observations, list)
+    observations.append(
+        _candidate_observation(
+            candidate_id="incumbent-preprocess",
+            policy="preprocess",
+            speedup=1.49,
+        )
+    )
+    existing = {
+        "schema_version": 1,
+        "default_policy": "auto",
+        "routes": [{"match": {"B": 1}, "policy": "preprocess"}],
+    }
+
+    with pytest.raises(ContractError, match="incumbent.*promotion margin"):
+        build_promoted_route_document(existing, summary)
+
+
+def test_exact_auto_can_override_a_broad_specialized_route() -> None:
+    summary = _formal_summary()
+    observations = summary["observations"]
+    assert isinstance(observations, list)
+    auto = observations[1]
+    assert isinstance(auto, dict)
+    auto["conservative_speedup"] = 1.6
+    auto["baseline_round_medians_ms"] = [1.6, 1.6, 1.6]
+    observations.append(
+        _candidate_observation(
+            candidate_id="incumbent-preprocess",
+            policy="preprocess",
+            speedup=1.5,
+        )
+    )
+    existing = {
+        "schema_version": 1,
+        "default_policy": "auto",
+        "routes": [{"match": {"B": 1}, "policy": "preprocess"}],
+    }
+
+    document, winner = build_promoted_route_document(existing, summary)
+    table = validate_route_table(document)
+    key = make_route_key(
+        _config(),
+        dtype=torch.float16,
+        device_type="cuda",
+        device_name="Fixture GPU",
+        compute_capability="8.9",
+    )
+
+    assert winner["solution_policy"] == "auto"
+    assert resolve_route(table, key) == "auto"
+    assert document["routes"][0]["policy"] == "auto"
+
+
+def test_promotion_preserves_unrelated_overlapping_route_order() -> None:
+    summary = _formal_summary()
+    observations = summary["observations"]
+    assert isinstance(observations, list)
+    observations.append(
+        _candidate_observation(
+            candidate_id="incumbent-reference",
+            policy="reference",
+            speedup=1.45,
+        )
+    )
+    existing = {
+        "schema_version": 1,
+        "default_policy": "auto",
+        "routes": [
+            {"match": {"dtype": "float16"}, "policy": "reference"},
+            {
+                "match": {"B": 2, "dtype": "float16"},
+                "policy": "torch",
+            },
+        ],
+    }
+    unrelated_key = {
+        "B": 2,
+        "dtype": "float16",
+    }
+    before = resolve_route(validate_route_table(existing), unrelated_key)
+
+    document, _ = build_promoted_route_document(existing, summary)
+    after = resolve_route(validate_route_table(document), unrelated_key)
+
+    assert before == "reference"
+    assert after == before
+    assert document["routes"][1:] == existing["routes"]
+
+
+def test_a_matching_broad_winner_does_not_add_a_redundant_exact_route() -> None:
+    existing = {
+        "schema_version": 1,
+        "default_policy": "auto",
+        "routes": [{"match": {"B": 1}, "policy": "long-pv"}],
+    }
+
+    document, winner = build_promoted_route_document(existing, _formal_summary())
+
+    assert winner["solution_policy"] == "long-pv"
+    assert document == existing

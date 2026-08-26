@@ -31,11 +31,13 @@ DEPLOYABLE_EAGER_POLICIES = frozenset(
         "torch",
         "triton",
         "preprocess",
+        "s512-native-softmax",
         "long-pv",
         "long-tail-online",
         "wide-epilogue",
         "wide-triton-inplace",
         "cuda-graph",
+        "balanced-cuda-graph",
     }
 )
 
@@ -258,19 +260,6 @@ def build_promoted_route_document(
                     "successful tuning observations must contain every formal round"
                 )
 
-    winner = select_deployable_winner(summary)
-    auto_winner = select_deployable_winner(
-        summary,
-        allowed_policies=frozenset({DEFAULT_ROUTE_POLICY}),
-    )
-    if (
-        winner["solution_policy"] != DEFAULT_ROUTE_POLICY
-        and float(winner["conservative_speedup"])
-        < float(auto_winner["conservative_speedup"]) * MINIMUM_ROUTE_GAIN
-    ):
-        raise ContractError(
-            "specialized winner does not exceed auto by the promotion margin"
-        )
     match = _route_match(summary)
     if existing is None:
         document: dict[str, Any] = {
@@ -281,9 +270,48 @@ def build_promoted_route_document(
     else:
         document = copy.deepcopy(dict(existing))
         try:
-            validate_route_table(document)
+            existing_table = validate_route_table(document)
         except (TypeError, ValueError) as exc:
             raise ContractError(f"invalid dispatch route document: {exc}") from exc
+
+    if existing is None:
+        existing_table = validate_route_table(document)
+
+    winner = select_deployable_winner(summary)
+    incumbent_policy = resolve_route(existing_table, match)
+    policy = winner["solution_policy"]
+    if policy != incumbent_policy:
+        auto_winner = select_deployable_winner(
+            summary,
+            allowed_policies=frozenset({DEFAULT_ROUTE_POLICY}),
+        )
+        if (
+            policy != DEFAULT_ROUTE_POLICY
+            and float(winner["conservative_speedup"])
+            < float(auto_winner["conservative_speedup"]) * MINIMUM_ROUTE_GAIN
+        ):
+            raise ContractError(
+                "specialized winner does not exceed auto by the promotion margin"
+            )
+        if incumbent_policy != DEFAULT_ROUTE_POLICY:
+            try:
+                incumbent = select_deployable_winner(
+                    summary,
+                    allowed_policies=frozenset({incumbent_policy}),
+                )
+            except ContractError as exc:
+                raise ContractError(
+                    "tuning summary is missing a correct incumbent observation; "
+                    "refusing to replace the existing route"
+                ) from exc
+            if float(winner["conservative_speedup"]) < (
+                float(incumbent["conservative_speedup"]) * MINIMUM_ROUTE_GAIN
+            ):
+                raise ContractError(
+                    "new winner does not exceed the incumbent by the promotion margin"
+                )
+    else:
+        return document, winner
 
     identity = _match_identity(match)
     routes = [
@@ -291,15 +319,16 @@ def build_promoted_route_document(
         for route in document["routes"]
         if _match_identity(route["match"]) != identity
     ]
-    policy = winner["solution_policy"]
-    if policy != document["default_policy"]:
-        routes.append({"match": match, "policy": policy})
-    routes.sort(
-        key=lambda route: (
-            -len(route["match"]),
-            _match_identity(route["match"]),
-        )
-    )
+    provisional = copy.deepcopy(document)
+    provisional["routes"] = routes
+    try:
+        provisional_table = validate_route_table(provisional)
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"promoted dispatch route is invalid: {exc}") from exc
+    if resolve_route(provisional_table, match) != policy:
+        # A complete-shape exception must precede broad subset routes, including
+        # when it intentionally restores the table's default policy.
+        routes.insert(0, {"match": match, "policy": policy})
     document["routes"] = routes
     try:
         table = validate_route_table(document)

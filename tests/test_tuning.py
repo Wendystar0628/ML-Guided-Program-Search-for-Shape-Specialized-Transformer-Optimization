@@ -61,6 +61,40 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
             )
         )
     }
+    balanced = {
+        item.candidate_id
+        for item in tuning.candidates_for_case(
+            WorkloadCase(
+                case_id="balanced",
+                batch_size=8,
+                seq_len=128,
+                d_model=512,
+                num_heads=8,
+                ffn_dim=2048,
+                num_layers=6,
+                dtype="float16",
+                causal=False,
+                padding_ratio=0.0,
+            )
+        )
+    }
+    s512_mask = {
+        item.candidate_id
+        for item in tuning.candidates_for_case(
+            WorkloadCase(
+                case_id="mask_s512_full_fp16",
+                batch_size=8,
+                seq_len=512,
+                d_model=512,
+                num_heads=8,
+                ffn_dim=2048,
+                num_layers=4,
+                dtype="float16",
+                causal=False,
+                padding_ratio=0.0,
+            )
+        )
+    }
     long_attention = {
         item.candidate_id
         for item in tuning.candidates_for_case(
@@ -108,6 +142,9 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
     assert "padding-fused" in launch
     assert "eager-cudagraph" in launch
     assert "launch-cudagraph" in launch
+    assert "balanced-cudagraph" in balanced
+    assert "s512-native-softmax" in s512_mask
+    assert "s512-native-softmax" not in common
     assert "long-pv" not in long_attention
     assert "long-tail-online" in long_attention
     assert "attention-preprocess" in long_attention
@@ -238,16 +275,16 @@ def test_fallback_candidate_is_reported_but_not_ranked(
                     "target": {"median_ms": 2.0 / speedup, "p90_ms": 2.0},
                     "speedup": speedup,
                 },
-                    "execution_path": {
+                "execution_path": {
                     "requested_policy": policy,
                     "selected_policy": selected,
                     "resolved_qkv_layout": (
                         "torch_three_contiguous_copies"
                         if policy == "torch"
                         else "view_fallback"
-                        ),
-                    },
-                    "source": {"solution_sha256": "fixture-solution-hash"},
+                    ),
+                },
+                "source": {"solution_sha256": "fixture-solution-hash"},
             },
             tmp_path / f"{policy}.json",
         )

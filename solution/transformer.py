@@ -19,6 +19,7 @@ from .kernels import (
     TRITON_ONLINE_ATTENTION_AVAILABLE,
     TRITON_QKV_LAYOUT_AVAILABLE,
     TRITON_RESIDUAL_AVAILABLE,
+    can_use_s512_native_half_softmax,
     can_use_triton_attention_preprocess,
     can_use_triton_attention_softmax,
     can_use_triton_fp32_probability_value,
@@ -26,6 +27,7 @@ from .kernels import (
     can_use_triton_qkv_layout,
     can_use_triton_residual,
     can_use_wide_exact_gelu,
+    s512_scale_mask_native_half_softmax,
     triton_fp32_probability_value,
     triton_online_attention,
     triton_qkv_to_bhsd,
@@ -144,6 +146,23 @@ class _SelfAttention(nn.Module):
                 causal=causal,
             )
         scores = torch.matmul(query, key.transpose(-2, -1))
+        use_s512_native_softmax = (
+            self.attention_policy == "s512_native_half_softmax"
+            and can_use_s512_native_half_softmax(
+                scores,
+                valid_token_mask,
+                self.head_dim,
+            )
+        )
+        if use_s512_native_softmax:
+            probabilities = s512_scale_mask_native_half_softmax(
+                scores,
+                valid_token_mask,
+                head_dim=self.head_dim,
+                scale=self.scale,
+                causal=causal,
+            )
+            return torch.matmul(probabilities, projected_value)
         use_triton_softmax = (
             self.attention_policy == "triton_softmax"
             and can_use_triton_attention_softmax(
@@ -499,6 +518,8 @@ class UserOptimizedTransformer(nn.Module):
         ffn_policy: str,
         use_cuda_graph: bool,
     ) -> None:
+        # A policy change can alter captured operators without changing tensor shape.
+        self._cuda_graph_replay = None
         self.requested_policy = requested_policy
         self.requested_qkv_layout = qkv_layout
         self.requested_attention = attention
@@ -546,6 +567,14 @@ class UserOptimizedTransformer(nn.Module):
                 "exact",
                 False,
             ),
+            "s512-native-softmax": (
+                "view",
+                "s512_native_half_softmax",
+                False,
+                False,
+                "exact",
+                False,
+            ),
             "long-pv": ("view", "triton_pv", False, False, "exact", False),
             "wide-epilogue": (
                 "view",
@@ -564,6 +593,14 @@ class UserOptimizedTransformer(nn.Module):
                 False,
             ),
             "cuda-graph": ("auto", "auto", False, False, "exact", True),
+            "balanced-cuda-graph": (
+                "auto",
+                "auto",
+                False,
+                False,
+                "exact",
+                True,
+            ),
             "padding": ("view", "auto", False, True, "exact", False),
             "packed": ("view", "auto", True, False, "exact", False),
         }
@@ -628,6 +665,7 @@ class UserOptimizedTransformer(nn.Module):
             "explicit",
             "reference",
             "fp32_sdpa",
+            "s512_native_half_softmax",
             "triton_preprocess",
             "triton_pv",
             "triton_softmax",
@@ -686,6 +724,16 @@ class UserOptimizedTransformer(nn.Module):
             and self.config.seq_len in (512, 2048)
             and head_dim == 64
         )
+        s512_native_softmax_eligible = (
+            TRITON_ATTENTION_SOFTMAX_AVAILABLE
+            and parameter.is_cuda
+            and parameter.dtype == torch.float16
+            and self.config.batch_size == 8
+            and self.config.seq_len == 512
+            and self.config.d_model == 512
+            and self.config.num_heads == 8
+            and head_dim == 64
+        )
         triton_preprocess_eligible = (
             TRITON_ATTENTION_PREPROCESS_AVAILABLE
             and parameter.is_cuda
@@ -733,12 +781,29 @@ class UserOptimizedTransformer(nn.Module):
             and not self.config.causal
             and not self.training
         )
+        balanced_cuda_graph_eligible = (
+            parameter.is_cuda
+            and parameter.dtype == torch.float16
+            and self.config.batch_size == 8
+            and self.config.seq_len == 128
+            and self.config.d_model == 512
+            and self.config.num_heads == 8
+            and self.config.ffn_dim == 2048
+            and self.config.num_layers == 6
+            and not self.config.causal
+            and not self.training
+        )
         triton_residual_eligible = (
             TRITON_RESIDUAL_AVAILABLE
             and parameter.is_cuda
             and parameter.dtype in (torch.float16, torch.bfloat16, torch.float32)
         )
         effective_policy = self.dispatch_policy or self.requested_policy
+        cuda_graph_eligible = (
+            effective_policy == "cuda-graph" and launch_cuda_graph_eligible
+        ) or (
+            effective_policy == "balanced-cuda-graph" and balanced_cuda_graph_eligible
+        )
         fallback_reasons = []
         if self.requested_qkv_layout == "triton":
             if triton_layout_eligible:
@@ -755,6 +820,11 @@ class UserOptimizedTransformer(nn.Module):
             resolved_attention = "three_explicit_layers_tail_online_attention"
         elif self.requested_attention == "triton_online" and triton_online_eligible:
             resolved_attention = "triton_two_pass_online_attention"
+        elif (
+            self.requested_attention == "s512_native_half_softmax"
+            and s512_native_softmax_eligible
+        ):
+            resolved_attention = "explicit_qk_triton_scale_mask_native_half_softmax_pv"
         elif self.requested_attention == "triton_softmax" and triton_softmax_eligible:
             resolved_attention = "explicit_qk_triton_softmax_pv"
         elif use_fp32_sdpa:
@@ -778,6 +848,8 @@ class UserOptimizedTransformer(nn.Module):
             resolved_attention = "explicit_reference_order"
             if self.requested_attention == "fp32_sdpa":
                 fallback_reasons.append("fp32_sdpa_not_eligible")
+            elif self.requested_attention == "s512_native_half_softmax":
+                fallback_reasons.append("s512_native_half_softmax_not_eligible")
             elif self.requested_attention == "triton_softmax":
                 fallback_reasons.append("triton_attention_softmax_not_eligible")
             elif self.requested_attention == "triton_preprocess":
@@ -799,8 +871,8 @@ class UserOptimizedTransformer(nn.Module):
             and not wide_epilogue_eligible
         ):
             fallback_reasons.append("wide_ffn_epilogue_not_eligible")
-        if self.use_cuda_graph and not launch_cuda_graph_eligible:
-            fallback_reasons.append("launch_cuda_graph_not_eligible")
+        if self.use_cuda_graph and not cuda_graph_eligible:
+            fallback_reasons.append("cuda_graph_policy_not_eligible")
 
         if effective_policy == "triton" and not (
             triton_layout_eligible and triton_softmax_eligible
@@ -812,11 +884,12 @@ class UserOptimizedTransformer(nn.Module):
             )
         elif (
             (effective_policy == "preprocess" and not triton_preprocess_eligible)
-            or (effective_policy == "long-pv" and not triton_pv_eligible)
             or (
-                effective_policy == "long-tail-online"
-                and not triton_online_eligible
+                effective_policy == "s512-native-softmax"
+                and not s512_native_softmax_eligible
             )
+            or (effective_policy == "long-pv" and not triton_pv_eligible)
+            or (effective_policy == "long-tail-online" and not triton_online_eligible)
             or (
                 effective_policy
                 in {
@@ -826,20 +899,32 @@ class UserOptimizedTransformer(nn.Module):
                 and not wide_epilogue_eligible
             )
             or (
-                effective_policy == "wide-triton-inplace"
-                and not triton_layout_eligible
+                effective_policy == "wide-triton-inplace" and not triton_layout_eligible
             )
-            or (effective_policy == "cuda-graph" and not launch_cuda_graph_eligible)
+            or (
+                effective_policy
+                in {
+                    "cuda-graph",
+                    "balanced-cuda-graph",
+                }
+                and not cuda_graph_eligible
+            )
         ):
             selected_policy = "torch_fallback"
         else:
             selected_policy = effective_policy
-        if effective_policy == "cuda-graph" and launch_cuda_graph_eligible:
+        if effective_policy == "cuda-graph" and cuda_graph_eligible:
             shape_route = "launch_fp16_eager_cuda_graph"
+        elif effective_policy == "balanced-cuda-graph" and cuda_graph_eligible:
+            shape_route = "balanced_fp16_eager_cuda_graph"
         elif resolved_attention == "three_explicit_layers_tail_online_attention":
             shape_route = "long_fp16_tail_layer_online_attention"
         elif resolved_attention == "triton_two_pass_online_attention":
             shape_route = "long_fp16_all_layers_online_attention_candidate"
+        elif (
+            resolved_attention == "explicit_qk_triton_scale_mask_native_half_softmax_pv"
+        ):
+            shape_route = "s512_fp16_scale_mask_native_half_softmax"
         elif (
             resolved_attention
             == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
@@ -874,7 +959,7 @@ class UserOptimizedTransformer(nn.Module):
             "dispatch_policy": self.dispatch_policy,
             "runtime_wrapper": (
                 "solution_eager_cuda_graph"
-                if self.use_cuda_graph and launch_cuda_graph_eligible
+                if self.use_cuda_graph and cuda_graph_eligible
                 else "eager"
             ),
             "qkv_projection": "packed",
@@ -889,6 +974,9 @@ class UserOptimizedTransformer(nn.Module):
                 if resolved_attention == "three_explicit_layers_tail_online_attention"
                 else "triton_two_pass_online"
                 if resolved_attention == "triton_two_pass_online_attention"
+                else "triton_scale_mask_native_half_softmax"
+                if resolved_attention
+                == "explicit_qk_triton_scale_mask_native_half_softmax_pv"
                 else "triton_preprocess_native_softmax_triton_pv"
                 if resolved_attention
                 == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
@@ -909,6 +997,7 @@ class UserOptimizedTransformer(nn.Module):
                 or self.requested_attention
                 in {
                     "triton_softmax",
+                    "s512_native_half_softmax",
                     "triton_preprocess",
                     "triton_pv",
                     "triton_online",
@@ -950,6 +1039,7 @@ class UserOptimizedTransformer(nn.Module):
                     "explicit_qk_triton_preprocess_native_softmax_pv",
                     "explicit_qk_triton_preprocess_native_softmax_triton_pv",
                     "explicit_qk_triton_softmax_pv",
+                    "explicit_qk_triton_scale_mask_native_half_softmax_pv",
                     "triton_two_pass_online_attention",
                     "three_explicit_layers_tail_online_attention",
                 }
@@ -994,6 +1084,15 @@ class UserOptimizedTransformer(nn.Module):
         ):
             return True
         if (
+            self.requested_attention == "s512_native_half_softmax"
+            and TRITON_ATTENTION_SOFTMAX_AVAILABLE
+            and value.is_contiguous()
+            and value.shape == (8, 512, 512)
+            and self.config.num_heads == 8
+            and head_dim == 64
+        ):
+            return True
+        if (
             self.requested_attention == "triton_online"
             and TRITON_ONLINE_ATTENTION_AVAILABLE
             and sequence_length == 2048
@@ -1007,7 +1106,7 @@ class UserOptimizedTransformer(nn.Module):
             and head_dim == 64
         )
 
-    def _can_use_launch_cuda_graph(
+    def _can_use_cuda_graph(
         self,
         value: torch.Tensor,
         valid_token_mask: torch.Tensor | None,
@@ -1019,20 +1118,46 @@ class UserOptimizedTransformer(nn.Module):
             and valid_token_mask.is_contiguous()
             and valid_token_mask.shape == value.shape[:2]
         )
-        return (
+        if not (
             self.use_cuda_graph
             and value.is_cuda
             and value.dtype == torch.float16
             and value.is_contiguous()
-            and value.shape == (1, 64, 256)
-            and self.config.num_heads == 8
-            and self.config.ffn_dim == 1024
-            and self.config.num_layers == 4
             and not self.config.causal
             and not self.training
             and not torch.is_grad_enabled()
             and mask_compatible
-        )
+        ):
+            return False
+
+        effective_policy = self.dispatch_policy or self.requested_policy
+        if effective_policy == "cuda-graph":
+            return (
+                value.shape == (1, 64, 256)
+                and (
+                    self.config.batch_size,
+                    self.config.seq_len,
+                    self.config.d_model,
+                )
+                == (1, 64, 256)
+                and self.config.num_heads == 8
+                and self.config.ffn_dim == 1024
+                and self.config.num_layers == 4
+            )
+        if effective_policy == "balanced-cuda-graph":
+            return (
+                value.shape == (8, 128, 512)
+                and (
+                    self.config.batch_size,
+                    self.config.seq_len,
+                    self.config.d_model,
+                )
+                == (8, 128, 512)
+                and self.config.num_heads == 8
+                and self.config.ffn_dim == 2048
+                and self.config.num_layers == 6
+            )
+        return False
 
     def _forward_eager(
         self,
@@ -1084,7 +1209,7 @@ class UserOptimizedTransformer(nn.Module):
         if torch.compiler.is_compiling():
             return self._forward_eager(x, valid_token_mask)
         self._resolve_dispatch(x)
-        if self._can_use_launch_cuda_graph(x, valid_token_mask):
+        if self._can_use_cuda_graph(x, valid_token_mask):
             if self._cuda_graph_replay is None:
                 self._cuda_graph_replay = CudaGraphReplay()
             return self._cuda_graph_replay.run(
