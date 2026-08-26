@@ -1,70 +1,134 @@
 # AI-Assisted Shape-Aware Transformer Kernel Optimizer
 
-This repository has one main goal: reduce the end-to-end CUDA latency of the supplied PyTorch Transformer while preserving its public interface and numerical behavior.
+This project reduces the end-to-end CUDA latency of a supplied PyTorch Transformer while preserving its constructor, forward interface, weights, output shape, and numerical behavior. The primary implementation entry is [`solution/transformer.py`](solution/transformer.py); measurements use the complete Transformer forward pass rather than isolated kernel timings.
 
-The primary optimization entry is [`solution/transformer.py`](solution/transformer.py). Performance work should stay focused there: change the implementation, run the benchmark, check correctness, and keep only changes that improve end-to-end latency.
+The current Solution establishes a stronger performance mainline with four concrete optimizations:
 
-## Current status
+- Q, K, and V weights are packed once by `copy_model_weights`, then evaluated through one fused QKV projection per layer.
+- A causal mask is created once per model and shared by all layers instead of being rebuilt during every attention call.
+- Token-mask inversion and broadcast views are prepared once per model forward and reused across all layers; masking and score scaling reuse fresh intermediate storage in place.
+- The validated short, non-causal CUDA FP32 region uses PyTorch scaled dot-product attention; other regions retain the reference operation and accumulation order as a numerical fallback.
 
-The current `UserOptimizedTransformer` is baseline-equivalent. It implements the reference computation and parameter structure so that the optimization loop starts from a known-correct solution.
+These mechanisms are intentionally bounded by correctness and measured behavior. The repository does not claim that one backend or optimization is best for every shape.
 
-No optimized kernel has been accepted yet, and this repository currently makes **no speedup claim**. Final measurements against the supplied benchmark will be produced only after the performance implementation is stable.
+## Target environment
 
-## Setup
+The checked development environment is native Windows with an NVIDIA RTX 4080 (`sm_89`), Python 3.12, PyTorch 2.12.1 + CUDA 13.2, and Triton for Windows 3.7.1.
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 . .\activate_dev_env.ps1
+python environment_check.py
 ```
 
-## Minimal workflow
+`activate_dev_env.ps1` activates the project environment and configures the local MSVC, CUDA, Triton, TorchInductor, and CUDA extension paths. `environment_check.py` exercises PyTorch CUDA, Triton JIT, `torch.compile`, and a small CUDA extension.
 
-Run the default CUDA smoke benchmark (`cuda:0`, `provisional_reference_v1`, and `default_fp32_noncausal_full`):
+## Quick start
+
+Probe the default GPU in a fresh worker process:
 
 ```powershell
-python -m runner benchmark
+python -m runner probe --device cuda:0
 ```
 
-Run the longer benchmark after a change is ready for a more stable measurement:
+Run one short development measurement:
 
 ```powershell
-python -m runner benchmark --preset formal --device cuda:0
+python -m runner benchmark --preset smoke --case-id balanced_s128_fp16
 ```
 
-Each benchmark initializes the baseline and Solution with identical weights, checks their outputs before timing, and measures the complete Transformer forward pass.
+Run the complete nine-case smoke sweep:
+
+```powershell
+python -m runner benchmark --preset smoke
+```
+
+Run the complete formal sweep with the official accuracy and timing counts:
+
+```powershell
+python -m runner benchmark --preset formal
+```
+
+Profile one representative case with the same model loader and workload definition:
+
+```powershell
+python -m runner profile --case-id attention_s2048_fp16
+```
+
+The CLI defaults to `--target solution`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. Use `python -m runner <command> --help` for compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
+
+## Core workload
+
+[`runner/workloads/rtx4080_core_v1.json`](runner/workloads/rtx4080_core_v1.json) is the single machine-readable source for nine RTX 4080 development cases:
+
+| Performance group | Cases | Main pressure |
+|---|---|---|
+| Launch / Graph | `launch_s64_fp16` | Small-shape launch and framework overhead |
+| Balanced / Precision | `balanced_s128_fp32`, `balanced_s128_fp16` | Shared shape across FP32 and FP16 paths |
+| Long Attention | `attention_s2048_fp16`, `attention_s2048_causal_fp16` | Long-context attention and causal behavior |
+| Padding / Mask | `mask_s512_full_fp16`, `mask_s512_padding_fp16`, `mask_s512_causal_padding_fp16` | Full, padded, and combined causal-padding masks |
+| Wide GEMM / FFN | `wide_s256_bf16` | Wide projections, FFN throughput, and BF16 execution |
+
+The set is deliberately compact rather than a Cartesian product. Its five groups have equal weight so that the three mask cases do not dominate the project-level metric.
+
+## Measurement behavior
+
+Before each benchmark worker starts, the parent validates the immutable official snapshot. Every benchmark case then runs in a fresh worker process. The worker:
+
+1. loads the requested target and constructs an independent baseline;
+2. copies identical weights and derives packed tensors before device transfer, compilation, correctness checks, warm-up, and timing;
+3. checks the Solution with the official comparator;
+4. measures alternating baseline and target rounds with the official full-forward timer; and
+5. returns a compact structured result to the parent process.
+
+A complete workload sweep prints every case outcome and speedup, the geometric mean within each performance group, the equal-weight group-balanced geometric mean, and the worst-case speedup. Aggregation is reported as `complete` only when every expected case succeeds, passes correctness, and produces a finite positive latency and speedup. Missing, failed, timed-out, out-of-memory, or invalid cases make the sweep `incomplete`; successful cases remain visible, but the runner does not construct a partial project score.
+
+Timeouts and Ctrl+C terminate the worker process tree. Failures are persisted with an explicit stage and type instead of being converted into performance numbers.
 
 ## Results
 
-Each run writes one compact JSON file to:
+Probe, benchmark, and profile commands each write one strict JSON document per worker run:
 
 ```text
 results/runs/<run_id>.json
 ```
 
-The structured result keeps only the information needed for performance development:
+Benchmark results include the workload signature and hash, measurement protocol, environment, correctness trials, raw latency samples, medians, speedup, resolved execution path, official snapshot hash, and Solution source hash. Profile results retain a compact top-operation summary for bottleneck selection. Full-sweep aggregation is printed from the ordered per-case results and is not stored as a second experiment database.
 
-- Correctness result and numerical error.
-- Raw baseline and Solution latency samples.
-- Median latencies and observed speedup.
-- Workload and measurement configuration.
-- Device and runtime environment.
-- SHA-256 of the measured Solution source.
+`results/` contains generated local measurements and is ignored by Git. Commit implementation and test changes, not machine-specific run history or profiler output.
 
-Generated runs are local artifacts and are not committed by default.
+## Official compatibility entry
 
-## Workload scope
+The supplied benchmark is preserved byte-for-byte at [`official/torch_transformer_benchmark.py`](official/torch_transformer_benchmark.py), with its checksum recorded in [`official/snapshot.json`](official/snapshot.json).
 
-[`runner/workloads/provisional_reference_v1.json`](runner/workloads/provisional_reference_v1.json) contains four development cases covering causal and non-causal attention with full and padded sequences at the published default dimensions.
+The root [`torch_transformer_benchmark.py`](torch_transformer_benchmark.py) is a thin compatibility entry that loads the current `UserOptimizedTransformer` and its optional `copy_model_weights` hook, then delegates argument parsing, correctness, and timing to the supplied benchmark:
 
-This workload is provisional. It provides stable coverage while the implementation is being optimized, but it does not claim to be a complete official test suite.
+```powershell
+python torch_transformer_benchmark.py --device cuda:0 --dtype float32
+```
 
-## Official snapshot
+Use this entry for direct single-configuration compatibility checks. Use `python -m runner` for repeatable development measurements, workload sweeps, device probes, and profiles.
 
-The supplied benchmark is preserved at [`official/torch_transformer_benchmark.py`](official/torch_transformer_benchmark.py). Its bytes are locked by the SHA-256 recorded in [`official/snapshot.json`](official/snapshot.json). No additional reproduction framework is part of the performance-development loop.
+## Tests
 
-The root `torch_transformer_benchmark.py` is only a thin direct-official entry for final validation. Day-to-day optimization measurements use the structured Runner above.
+```powershell
+python -m pytest -q
+python -m ruff check runner solution tests torch_transformer_benchmark.py environment_check.py
+```
 
-## Optimization mainline
+The tests cover the official snapshot and workload contract, weight packing, all mask modes, timing order, fresh-worker result persistence, invalid sweep data, aggregation, and the root compatibility entry.
 
-Current work is to profile the forward pass, identify the dominant GPU costs, and optimize the highest-impact operations for the representative shapes and mask modes. Correctness and compact timing data support each iteration; final official reproduction is deferred until performance work is complete and the Solution has stabilized.
+## Repository map
+
+```text
+official/                    Immutable supplied benchmark snapshot
+solution/transformer.py     Unique optimized Transformer entry
+runner/                      Probe, correctness, benchmark, profile, and sweep logic
+runner/workloads/            Machine-readable core workload
+tests/                       Focused correctness and runner regressions
+results/runs/                Generated local JSON results, ignored by Git
+environment/                 Local Windows runtime compatibility hook
+```
+
+Performance work stays centered on `solution/`: change the implementation, run the affected case, expand to its performance group when the mechanism works, and use the complete core sweep before retaining a cross-cutting optimization.

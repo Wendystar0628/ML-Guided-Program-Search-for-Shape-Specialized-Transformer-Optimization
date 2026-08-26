@@ -14,6 +14,7 @@ import torch
 from torch import nn
 
 from official import torch_transformer_benchmark as official
+from runner import __main__ as runner_cli
 from runner.contracts import (
     MeasurementProtocol,
     WorkloadCase,
@@ -22,12 +23,80 @@ from runner.contracts import (
 )
 from runner.execution import run_performance
 from runner.supervisor import run_managed_benchmark
+from runner.sweep import summarize_sweep
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_OFFICIAL_SHA256 = (
     "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b"
 )
-WORKLOAD_SET_ID = "provisional_reference_v1"
+WORKLOAD_SET_ID = "rtx4080_core_v1"
+EXPECTED_CASES = (
+    ("launch_s64_fp16", 1, 64, 256, 8, 1024, 4, "float16", False, 0.0),
+    ("balanced_s128_fp32", 8, 128, 512, 8, 2048, 6, "float32", False, 0.0),
+    ("balanced_s128_fp16", 8, 128, 512, 8, 2048, 6, "float16", False, 0.0),
+    ("attention_s2048_fp16", 1, 2048, 512, 8, 2048, 4, "float16", False, 0.0),
+    (
+        "attention_s2048_causal_fp16",
+        1,
+        2048,
+        512,
+        8,
+        2048,
+        4,
+        "float16",
+        True,
+        0.0,
+    ),
+    ("mask_s512_full_fp16", 8, 512, 512, 8, 2048, 4, "float16", False, 0.0),
+    (
+        "mask_s512_padding_fp16",
+        8,
+        512,
+        512,
+        8,
+        2048,
+        4,
+        "float16",
+        False,
+        0.75,
+    ),
+    (
+        "mask_s512_causal_padding_fp16",
+        8,
+        512,
+        512,
+        8,
+        2048,
+        4,
+        "float16",
+        True,
+        0.75,
+    ),
+    ("wide_s256_bf16", 16, 256, 1024, 8, 4096, 6, "bfloat16", False, 0.0),
+)
+EXPECTED_GROUPS = (
+    ("launch_graph", 0.2, ("launch_s64_fp16",)),
+    (
+        "balanced_precision",
+        0.2,
+        ("balanced_s128_fp32", "balanced_s128_fp16"),
+    ),
+    (
+        "long_attention",
+        0.2,
+        ("attention_s2048_fp16", "attention_s2048_causal_fp16"),
+    ),
+    (
+        "padding_mask",
+        0.2,
+        (
+            "mask_s512_full_fp16",
+            "mask_s512_padding_fp16",
+            "mask_s512_causal_padding_fp16",
+        ),
+    ),
+    ("wide_gemm_ffn", 0.2, ("wide_s256_bf16",)),
+)
 
 
 def _tiny_case(*, causal: bool = True, padding_ratio: float = 0.5) -> WorkloadCase:
@@ -42,6 +111,7 @@ def _tiny_case(*, causal: bool = True, padding_ratio: float = 0.5) -> WorkloadCa
         dtype="float32",
         causal=causal,
         padding_ratio=padding_ratio,
+        input_scale=1.0,
     )
 
 
@@ -72,25 +142,199 @@ def _copy_runtime_project(tmp_path: Path) -> Path:
     return project
 
 
-def test_official_snapshot_and_workload_are_usable() -> None:
+def _successful_run(case_id: str, speedup: float) -> dict[str, Any]:
+    workload_set = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    case = next(case for case in workload_set["cases"] if case.case_id == case_id)
+    target_median = 2.0 / speedup
+    return {
+        "outcome": "success",
+        "official_snapshot_sha256": EXPECTED_OFFICIAL_SHA256,
+        "solution_source_sha256": "fixture-solution-hash",
+        "workload": {
+            "set_id": WORKLOAD_SET_ID,
+            "case_id": case_id,
+            "sha256": workload_set["sha256"],
+            "signature": case.as_dict(),
+        },
+        "protocol": {"repeats": 1, "rounds": 1},
+        "environment": {
+            "resolved_device": "cuda:0",
+            "gpu": {"name": "fixture-gpu"},
+        },
+        "correctness": {"passed": True},
+        "performance": {
+            "baseline": {"samples_ms": [2.0], "median_ms": 2.0},
+            "target": {
+                "samples_ms": [target_median],
+                "median_ms": target_median,
+            },
+            "speedup": speedup,
+        },
+        "failure": None,
+    }
+
+
+def test_official_snapshot_and_core_workload_contract() -> None:
     metadata = validate_official_snapshot(PROJECT_ROOT)
     snapshot_path = PROJECT_ROOT / metadata["snapshot_path"]
-
     assert metadata["sha256"] == EXPECTED_OFFICIAL_SHA256
     assert hashlib.sha256(snapshot_path.read_bytes()).hexdigest() == (
         EXPECTED_OFFICIAL_SHA256
     )
 
     workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
-    cases = workload["cases"]
-    assert len(cases) == 4
-    assert len({case.case_id for case in cases}) == 4
-    assert {(case.causal, case.padding_ratio > 0.0) for case in cases} == {
-        (False, False),
-        (False, True),
-        (True, False),
-        (True, True),
+    actual_cases = tuple(
+        (
+            case.case_id,
+            case.batch_size,
+            case.seq_len,
+            case.d_model,
+            case.num_heads,
+            case.ffn_dim,
+            case.num_layers,
+            case.dtype,
+            case.causal,
+            case.padding_ratio,
+        )
+        for case in workload["cases"]
+    )
+    assert actual_cases == EXPECTED_CASES
+    assert all(case.input_scale == 1.0 for case in workload["cases"])
+    assert (
+        tuple(
+            (group.group_id, group.weight, group.case_ids)
+            for group in workload["groups"]
+        )
+        == EXPECTED_GROUPS
+    )
+
+    raw_document = json.loads(workload["path"].read_text(encoding="utf-8"))
+    canonical = json.dumps(
+        raw_document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    assert workload["sha256"] == hashlib.sha256(canonical).hexdigest()
+
+
+def test_sweep_uses_equal_group_weights() -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    speedups = {
+        case.case_id: (8.0 if case.case_id.startswith("mask_s512") else 2.0)
+        for case in workload["cases"]
     }
+    runs = [
+        _successful_run(case.case_id, speedups[case.case_id])
+        for case in workload["cases"]
+    ]
+    summary = summarize_sweep(workload, runs, target="solution")
+
+    assert summary["sweep_outcome"] == "complete"
+    assert [group["geomean_speedup"] for group in summary["groups"]] == pytest.approx(
+        [2.0, 2.0, 2.0, 8.0, 2.0]
+    )
+    expected = (2.0**0.8) * (8.0**0.2)
+    assert summary["group_balanced_geomean_speedup"] == pytest.approx(expected)
+    assert summary["worst_case_speedup"] == 2.0
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        {"outcome": "oom"},
+        {"outcome": "success", "speedup": 0.0},
+        {"outcome": "success", "speedup": float("nan")},
+        {"outcome": "success", "speedup": float("inf")},
+    ],
+    ids=("missing", "failed", "zero", "nan", "infinity"),
+)
+def test_incomplete_sweep_never_reports_aggregate(
+    replacement: dict[str, Any] | None,
+) -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [_successful_run(case.case_id, 2.0) for case in workload["cases"]]
+    if replacement is None:
+        runs.pop(3)
+    else:
+        original = runs[3]
+        original["outcome"] = replacement["outcome"]
+        if "speedup" in replacement:
+            original["performance"]["speedup"] = replacement["speedup"]
+
+    summary = summarize_sweep(workload, runs, target="solution")
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["groups"] == []
+    assert summary["group_balanced_geomean_speedup"] is None
+    assert summary["worst_case_speedup"] is None
+
+
+def test_cli_parses_probe_benchmark_and_profile() -> None:
+    parser = runner_cli.build_parser()
+
+    probe = parser.parse_args(["probe"])
+    assert probe.command == "probe"
+    assert probe.device == "cuda:0"
+
+    benchmark = parser.parse_args(["benchmark"])
+    assert benchmark.command == "benchmark"
+    assert benchmark.target == "solution"
+    assert benchmark.workload_set == WORKLOAD_SET_ID
+    assert benchmark.case_id is None
+    assert benchmark.preset == "smoke"
+
+    profile = parser.parse_args(["profile", "--case-id", "attention_s2048_fp16"])
+    assert profile.command == "profile"
+    assert profile.target == "solution"
+    assert profile.workload_set == WORKLOAD_SET_ID
+    assert profile.case_id == "attention_s2048_fp16"
+
+
+@pytest.mark.parametrize(
+    ("extra_arguments", "expected_count"),
+    [
+        (["--case-id", "balanced_s128_fp16"], 1),
+        ([], len(EXPECTED_CASES)),
+    ],
+    ids=("single-case", "ordered-sweep"),
+)
+def test_cli_dispatches_single_case_or_ordered_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    extra_arguments: list[str],
+    expected_count: int,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_run_managed_benchmark(
+        project_root: Path,
+        *,
+        workload_set_id: str,
+        case: WorkloadCase,
+        protocol: MeasurementProtocol,
+        device: str,
+        target: str,
+        workload_sha256: str | None,
+    ) -> tuple[dict[str, Any], Path]:
+        del project_root, protocol, device
+        calls.append((case.case_id, workload_sha256))
+        assert workload_set_id == WORKLOAD_SET_ID
+        assert target == "solution"
+        return _successful_run(case.case_id, 2.0), tmp_path / f"{case.case_id}.json"
+
+    monkeypatch.setattr(runner_cli, "run_managed_benchmark", fake_run_managed_benchmark)
+    exit_code = runner_cli.main(["benchmark", *extra_arguments])
+
+    assert exit_code == 0
+    assert len(calls) == expected_count
+    expected_ids = [case[0] for case in EXPECTED_CASES]
+    if expected_count == 1:
+        assert [case_id for case_id, _ in calls] == ["balanced_s128_fp16"]
+    else:
+        assert [case_id for case_id, _ in calls] == expected_ids
+    assert all(workload_hash for _, workload_hash in calls)
 
 
 def test_performance_alternates_order_and_uses_all_raw_samples(
@@ -107,6 +351,7 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
         dtype="float32",
         causal=False,
         padding_ratio=0.0,
+        input_scale=1.5,
     )
     protocol = MeasurementProtocol(
         preset="smoke",
@@ -186,6 +431,7 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
     )
 
     assert generated_arguments["seed"] == 100_017
+    assert generated_arguments["input_scale"] == 1.5
     assert events == [
         ("warmup", "baseline", 2),
         ("warmup", "solution", 2),
@@ -204,7 +450,7 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
         4.0,
         5.0,
     ]
-    assert performance["solution"]["samples_ms"] == [
+    assert performance["target"]["samples_ms"] == [
         1.0,
         9.0,
         2.0,
@@ -213,7 +459,7 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
         7.0,
     ]
     assert performance["baseline"]["median_ms"] == 3.5
-    assert performance["solution"]["median_ms"] == 5.0
+    assert performance["target"]["median_ms"] == 5.0
     assert performance["speedup"] == pytest.approx(0.7)
 
 
@@ -227,18 +473,21 @@ def test_managed_cpu_solution_smoke_persists_result(tmp_path: Path) -> None:
         case=_tiny_case(),
         protocol=protocol,
         device="cpu",
+        target="solution",
+        workload_sha256="fixture-hash",
     )
 
-    assert result["status"] == "success"
+    assert result["outcome"] == "success"
     assert result["correctness"]["passed"] is True
     assert result["failure"] is None
     performance = result["performance"]
     assert len(performance["baseline"]["samples_ms"]) == 1
-    assert len(performance["solution"]["samples_ms"]) == 1
+    assert len(performance["target"]["samples_ms"]) == 1
     assert performance["baseline"]["median_ms"] > 0
-    assert performance["solution"]["median_ms"] > 0
+    assert performance["target"]["median_ms"] > 0
     assert math.isfinite(performance["speedup"])
     assert performance["speedup"] > 0
 
+    assert result["workload"]["sha256"] == "fixture-hash"
     assert result_path.parent == project / "results" / "runs"
     assert json.loads(result_path.read_text(encoding="utf-8")) == result

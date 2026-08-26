@@ -1,52 +1,94 @@
-"""Fresh-process worker for one benchmark run."""
+"""Fresh-process worker for one managed runner request."""
 
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from runner.contracts import atomic_write_json
-from runner.execution import execute_benchmark
+from runner.contracts import ContractError, atomic_write_json, load_json
+from runner.execution import execute_benchmark, execute_profile
+from runner.probe import execute_probe
 
 
-def _failure(exc: BaseException) -> dict[str, Any]:
+def _legacy_status(outcome: str) -> str:
+    if outcome == "invalid_output":
+        return "correctness_failed"
+    if outcome == "cancelled":
+        return "interrupted"
+    return outcome
+
+
+def _failure(exc: BaseException, run_kind: str) -> dict[str, Any]:
     if isinstance(exc, torch.cuda.OutOfMemoryError):
-        kind = "cuda_out_of_memory"
+        outcome = "oom"
     elif isinstance(exc, KeyboardInterrupt):
-        kind = "interrupted"
+        outcome = "cancelled"
+    elif isinstance(exc, ContractError):
+        if run_kind == "probe":
+            outcome = "unsupported"
+        elif run_kind == "request":
+            outcome = "runtime_error"
+        else:
+            outcome = "build_error"
     else:
-        kind = type(exc).__name__
+        outcome = "runtime_error"
     return {
-        "status": "failed",
+        "outcome": outcome,
+        "status": _legacy_status(outcome),
         "solution_source_sha256": None,
         "environment": None,
         "correctness": None,
         "performance": None,
-        "failure": {"kind": kind, "message": str(exc)},
+        "profile": None,
+        "probe": None,
+        "path": None,
+        "failure": {
+            "stage": run_kind,
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "exit_code": None,
+        },
     }
 
 
 def execute_request(request: dict[str, Any]) -> dict[str, Any]:
+    run_kind = str(request.get("run_kind", "benchmark"))
     try:
-        return execute_benchmark(request)
+        if run_kind == "benchmark":
+            return execute_benchmark(request)
+        if run_kind == "profile":
+            return execute_profile(request)
+        if run_kind == "probe":
+            return execute_probe(request)
+        raise ContractError(f"unsupported run_kind: {run_kind}")
     except BaseException as exc:  # noqa: BLE001 - this is the worker boundary.
-        return _failure(exc)
+        return _failure(exc, run_kind)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Internal benchmark worker")
+    parser = argparse.ArgumentParser(description="Internal managed runner worker")
     parser.add_argument("request", type=Path)
     parser.add_argument("response", type=Path)
     args = parser.parse_args(argv)
 
-    request = json.loads(args.request.read_text(encoding="utf-8"))
-    response = execute_request(request)
+    try:
+        request = load_json(args.request)
+    except BaseException as exc:  # noqa: BLE001 - this is the process boundary.
+        response = _failure(exc, "request")
+    else:
+        response = execute_request(request)
     atomic_write_json(args.response, response)
-    return 0 if response["status"] in {"success", "correctness_failed"} else 1
+    outcome = response.get("outcome")
+    if outcome == "success":
+        return 0
+    if outcome == "invalid_output":
+        return 2
+    if outcome == "cancelled":
+        return 130
+    return 1
 
 
 if __name__ == "__main__":
