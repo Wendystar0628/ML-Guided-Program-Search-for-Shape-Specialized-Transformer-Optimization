@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from runner.contracts import ContractError, load_json, solution_implementation_hash
-from solution.dispatch import resolve_route, validate_route_table
+from solution.dispatch import ROUTE_FIELDS, resolve_route, validate_route_table
 
-ROUTE_SCHEMA_VERSION = 1
+TUNING_SCHEMA_VERSION = 1
+ROUTE_SCHEMA_VERSION = 2
 DEFAULT_ROUTE_POLICY = "auto"
 MINIMUM_ROUTE_GAIN = 1.02
 _FORMAL_MINIMUM_COUNTS = {
@@ -24,6 +25,9 @@ _FORMAL_MINIMUM_COUNTS = {
     "rounds": 3,
 }
 _FORMAL_MAXIMUM_TOLERANCES = {"rtol": 0.01, "atol": 0.001}
+_SHARED_ROUTE_CASE_GROUPS = (
+    frozenset({"mask_s512_full_fp16", "mask_s512_padding_fp16"}),
+)
 DEPLOYABLE_EAGER_POLICIES = frozenset(
     {
         "auto",
@@ -51,6 +55,15 @@ _SHAPE_FIELD_MAP = {
     "num_layers": "layers",
     "causal": "causal",
 }
+_DEVICE_ROUTE_FIELDS = (
+    "device_type",
+    "device_name",
+    "compute_capability",
+    "platform_system",
+    "torch",
+    "cuda_runtime",
+    "triton",
+)
 
 
 def _positive_number(value: Any) -> float | None:
@@ -167,6 +180,10 @@ def _route_match(summary: Mapping[str, Any]) -> dict[str, Any]:
         ("device_type", "device_type"),
         ("device_name", "device_name"),
         ("compute_capability", "compute_capability"),
+        ("platform_system", "platform_system"),
+        ("torch", "torch"),
+        ("cuda_runtime", "cuda_runtime"),
+        ("triton", "triton"),
     ):
         value = profile.get(profile_name)
         if not isinstance(value, str) or not value:
@@ -179,13 +196,94 @@ def _match_identity(match: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
     return tuple(sorted(match.items()))
 
 
+def _verified_profile_identity(profile: Mapping[str, Any]) -> dict[str, str]:
+    """Extract the exact route identity owned by one verified device package."""
+
+    hardware = profile.get("hardware_profile")
+    if not isinstance(hardware, Mapping):
+        raise ContractError("verified profile is missing hardware_profile")
+    gpu = hardware.get("gpu")
+    platform_profile = hardware.get("platform")
+    software = hardware.get("software")
+    if not all(
+        isinstance(section, Mapping)
+        for section in (gpu, platform_profile, software)
+    ):
+        raise ContractError("verified profile has incomplete identity sections")
+    assert isinstance(gpu, Mapping)
+    assert isinstance(platform_profile, Mapping)
+    assert isinstance(software, Mapping)
+    raw_identity = {
+        "device_type": hardware.get("device_type"),
+        "device_name": gpu.get("name"),
+        "compute_capability": gpu.get("compute_capability"),
+        "platform_system": platform_profile.get("system"),
+        "torch": software.get("torch"),
+        "cuda_runtime": software.get("cuda_runtime"),
+        "triton": software.get("triton"),
+    }
+    identity: dict[str, str] = {}
+    for field, value in raw_identity.items():
+        if not isinstance(value, str) or not value:
+            raise ContractError(f"verified profile is missing {field}")
+        identity[field] = value
+    return identity
+
+
+def _validate_verified_package_identity(
+    destination: Path,
+    existing: Mapping[str, Any] | None,
+    summaries: Sequence[Mapping[str, Any]],
+) -> None:
+    """Keep every route in a verified package tied to its sibling profile."""
+
+    resolved = destination.resolve()
+    is_verified_target = any(
+        part.lower() == "verified_hardware" for part in resolved.parts
+    )
+    if is_verified_target and resolved.name != "routes.json":
+        raise ContractError(
+            "verified route-table destination must be named routes.json"
+        )
+    profile_path = resolved.with_name("profile.json")
+    if not is_verified_target and not profile_path.is_file():
+        return
+    if not profile_path.is_file():
+        raise ContractError(
+            "verified route table requires a sibling profile.json"
+        )
+    expected = _verified_profile_identity(load_json(profile_path))
+
+    matches = [_route_match(summary) for summary in summaries]
+    if existing is not None:
+        try:
+            existing_table = validate_route_table(existing)
+        except (TypeError, ValueError) as exc:
+            raise ContractError(f"invalid dispatch route document: {exc}") from exc
+        matches.extend(match for match, _policy in existing_table.routes)
+
+    for match in matches:
+        if set(match) != ROUTE_FIELDS:
+            raise ContractError("verified device packages require exact routes")
+        mismatches = [
+            field
+            for field in _DEVICE_ROUTE_FIELDS
+            if match.get(field) != expected[field]
+        ]
+        if mismatches:
+            raise ContractError(
+                "route identity does not match the verified profile: "
+                + ", ".join(mismatches)
+            )
+
+
 def build_promoted_route_document(
     existing: Mapping[str, Any] | None,
     summary: Mapping[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return the updated route document without performing file I/O."""
 
-    if summary.get("schema_version") != ROUTE_SCHEMA_VERSION:
+    if summary.get("schema_version") != TUNING_SCHEMA_VERSION:
         raise ContractError(
             f"unsupported tuning summary schema: {summary.get('schema_version')!r}"
         )
@@ -197,9 +295,7 @@ def build_promoted_route_document(
     for field, minimum in _FORMAL_MINIMUM_COUNTS.items():
         value = protocol.get(field)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-            raise ContractError(
-                f"formal tuning summary requires {field} >= {minimum}"
-            )
+            raise ContractError(f"formal tuning summary requires {field} >= {minimum}")
     seed = protocol.get("seed")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ContractError("formal tuning summary requires an integer seed")
@@ -212,13 +308,11 @@ def build_promoted_route_document(
             or float(value) < 0
             or float(value) > maximum
         ):
-            raise ContractError(
-                f"formal tuning summary requires {field} <= {maximum}"
-            )
-    if protocol.get("matmul_precision") not in {"highest", "high", "medium"}:
-        raise ContractError("formal tuning summary has invalid matmul_precision")
-    if not isinstance(protocol.get("allow_tf32"), bool):
-        raise ContractError("formal tuning summary requires allow_tf32")
+            raise ContractError(f"formal tuning summary requires {field} <= {maximum}")
+    if protocol.get("matmul_precision") != "high":
+        raise ContractError("formal route promotion requires matmul_precision=high")
+    if protocol.get("allow_tf32") is not True:
+        raise ContractError("formal route promotion requires allow_tf32=true")
     if summary.get("source_consistent") is not True:
         raise ContractError("tuning candidates do not share one Solution source")
     if summary.get("implementation_consistent") is not True:
@@ -237,7 +331,9 @@ def build_promoted_route_document(
         or observation.get("solution_sha256") != expected_source
         for observation in observations
     ):
-        raise ContractError("tuning observation source hashes are missing or inconsistent")
+        raise ContractError(
+            "tuning observation source hashes are missing or inconsistent"
+        )
     expected_rounds = int(protocol["rounds"])
     for observation in observations:
         if (
@@ -280,6 +376,10 @@ def build_promoted_route_document(
     winner = select_deployable_winner(summary)
     incumbent_policy = resolve_route(existing_table, match)
     policy = winner["solution_policy"]
+    identity = _match_identity(match)
+    has_exact_route = any(
+        _match_identity(route["match"]) == identity for route in document["routes"]
+    )
     if policy != incumbent_policy:
         auto_winner = select_deployable_winner(
             summary,
@@ -310,25 +410,17 @@ def build_promoted_route_document(
                 raise ContractError(
                     "new winner does not exceed the incumbent by the promotion margin"
                 )
-    else:
+    elif has_exact_route:
         return document, winner
 
-    identity = _match_identity(match)
     routes = [
         copy.deepcopy(dict(route))
         for route in document["routes"]
         if _match_identity(route["match"]) != identity
     ]
-    provisional = copy.deepcopy(document)
-    provisional["routes"] = routes
-    try:
-        provisional_table = validate_route_table(provisional)
-    except (TypeError, ValueError) as exc:
-        raise ContractError(f"promoted dispatch route is invalid: {exc}") from exc
-    if resolve_route(provisional_table, match) != policy:
-        # A complete-shape exception must precede broad subset routes, including
-        # when it intentionally restores the table's default policy.
-        routes.insert(0, {"match": match, "policy": policy})
+    # A verified decision remains explicit even when it agrees with a broad
+    # route or the default auto policy.
+    routes.insert(0, {"match": match, "policy": policy})
     document["routes"] = routes
     try:
         table = validate_route_table(document)
@@ -347,24 +439,83 @@ def promote_tuning_summary(
 ) -> tuple[dict[str, Any], dict[str, Any], Path]:
     """Atomically publish a formally screened route."""
 
-    destination = (
-        route_path
-        if route_path is not None
-        else project_root.resolve() / "solution" / "dispatch_routes.json"
+    document, winners, destination = promote_tuning_summaries(
+        project_root,
+        [summary],
+        route_path=route_path,
     )
-    expected_implementation = summary.get("source_implementation_sha256")
+    return document, winners[0], destination
+
+
+def _summary_case_id(summary: Mapping[str, Any]) -> str:
+    workload = summary.get("workload")
+    case = workload.get("case") if isinstance(workload, Mapping) else None
+    case_id = case.get("case_id") if isinstance(case, Mapping) else None
+    if not isinstance(case_id, str) or not case_id:
+        raise ContractError("tuning summary workload is missing case_id")
+    return case_id
+
+
+def promote_tuning_summaries(
+    project_root: Path,
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    route_path: Path | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], Path]:
+    """Atomically promote one or more formal summaries with shared-key guards."""
+
+    if not summaries:
+        raise ContractError("at least one tuning summary is required")
+    if route_path is None:
+        raise ContractError(
+            "route_path is required; promote into an explicit verified device package"
+        )
+
+    destination = route_path
     current_implementation = solution_implementation_hash(
         project_root.resolve() / "solution"
     )
-    if current_implementation != expected_implementation:
-        raise ContractError(
-            "current Solution implementation does not match the tuning summary; "
-            "rerun tuning"
-        )
+    for summary in summaries:
+        expected_implementation = summary.get("source_implementation_sha256")
+        if current_implementation != expected_implementation:
+            raise ContractError(
+                "current Solution implementation does not match the tuning summary; "
+                "rerun tuning"
+            )
+
+    case_ids = {_summary_case_id(summary) for summary in summaries}
+    for required_group in _SHARED_ROUTE_CASE_GROUPS:
+        if case_ids & required_group and not required_group <= case_ids:
+            missing = ", ".join(sorted(required_group - case_ids))
+            raise ContractError(
+                "shared runtime route requires formal summaries for: "
+                f"{', '.join(sorted(required_group))}; missing: {missing}"
+            )
+
     existing = load_json(destination) if destination.is_file() else None
-    document, winner = build_promoted_route_document(existing, summary)
+    _validate_verified_package_identity(destination, existing, summaries)
+    proposals: dict[
+        tuple[tuple[str, Any], ...],
+        tuple[Mapping[str, Any], str],
+    ] = {}
+    winners: list[dict[str, Any]] = []
+    for summary in summaries:
+        _, winner = build_promoted_route_document(existing, summary)
+        identity = _match_identity(_route_match(summary))
+        policy = str(winner["solution_policy"])
+        prior = proposals.get(identity)
+        if prior is not None and prior[1] != policy:
+            raise ContractError(
+                "formal summaries sharing one runtime route selected different policies"
+            )
+        proposals.setdefault(identity, (summary, policy))
+        winners.append(winner)
+
+    document = existing
+    for summary, _ in proposals.values():
+        document, _ = build_promoted_route_document(document, summary)
     _atomic_replace_json(destination, document)
-    return document, winner, destination
+    return document, winners, destination
 
 
 def _atomic_replace_json(path: Path, document: Mapping[str, Any]) -> None:
@@ -397,7 +548,9 @@ __all__ = [
     "DEPLOYABLE_EAGER_POLICIES",
     "MINIMUM_ROUTE_GAIN",
     "ROUTE_SCHEMA_VERSION",
+    "TUNING_SCHEMA_VERSION",
     "build_promoted_route_document",
+    "promote_tuning_summaries",
     "promote_tuning_summary",
     "select_deployable_winner",
 ]

@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import platform
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
+    WorkloadCase,
     load_json,
     load_workload_set,
     new_run_id,
     select_workload_case,
 )
-from runner.route_promotion import promote_tuning_summary
+from runner.hardware_router import build_routing_plan
+from runner.route_promotion import promote_tuning_summaries
 from runner.supervisor import (
     run_managed_benchmark,
     run_managed_probe,
@@ -25,10 +29,19 @@ from runner.tuning import (
     SOLUTION_POLICIES,
     candidates_for_case,
     run_tuning_case,
+    select_candidates,
     solution_policy,
 )
 
-DEFAULT_WORKLOAD_SET = "rtx4080_core_v1"
+DEFAULT_WORKLOAD_SET = "transformer_core_v1"
+DEFAULT_CANDIDATE_LIMIT = 4
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
 
 
 def _add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
@@ -65,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     probe.add_argument("--device", default="cuda:0")
     probe.add_argument("--timeout", type=float, default=30.0)
+    probe.add_argument(
+        "--matmul-precision",
+        choices=("highest", "high", "medium"),
+        default="high",
+    )
+    probe.add_argument(
+        "--allow-tf32",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
 
     benchmark = subparsers.add_parser(
         "benchmark", help="run correctness and end-to-end performance measurement"
@@ -78,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="run one case; omit this option to sweep the ordered workload set",
     )
     benchmark.add_argument("--device", default="cuda:0")
+    benchmark.add_argument(
+        "--result-dir",
+        type=Path,
+        help="write per-case JSON results to this directory",
+    )
     benchmark.add_argument(
         "--solution-policy",
         choices=SOLUTION_POLICIES,
@@ -117,7 +145,13 @@ def build_parser() -> argparse.ArgumentParser:
     tune.add_argument(
         "--candidate",
         action="append",
-        help="candidate to run; omit to use the applicable fixed set",
+        help="candidate to run in the supplied order; omit for hardware routing",
+    )
+    tune.add_argument(
+        "--candidate-limit",
+        type=_positive_int,
+        default=DEFAULT_CANDIDATE_LIMIT,
+        help="maximum hardware-ranked candidates, including eager-auto",
     )
     tune.add_argument("--device", default="cuda:0")
     tune.add_argument("--preset", choices=("smoke", "formal"), default="smoke")
@@ -133,11 +167,57 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
     )
 
+    calibrate = subparsers.add_parser(
+        "calibrate",
+        help="probe one device and calibrate hardware-ranked routes",
+    )
+    calibrate.add_argument("--workload-set", default=DEFAULT_WORKLOAD_SET)
+    calibrate.add_argument(
+        "--case-id",
+        action="append",
+        help="case to calibrate; repeat as needed, or omit for the full workload",
+    )
+    calibrate.add_argument("--device", default="cuda:0")
+    calibrate.add_argument("--preset", choices=("smoke", "formal"), default="smoke")
+    calibrate.add_argument("--timeout", type=float)
+    calibrate.add_argument(
+        "--candidate-limit",
+        type=_positive_int,
+        default=DEFAULT_CANDIDATE_LIMIT,
+        help="maximum hardware-ranked candidates, including eager-auto",
+    )
+    calibrate.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="show candidate plans without running candidate benchmarks",
+    )
+    calibrate.add_argument(
+        "--matmul-precision",
+        choices=("highest", "high", "medium"),
+        default="high",
+    )
+    calibrate.add_argument(
+        "--allow-tf32",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+
     promote = subparsers.add_parser(
         "promote",
-        help="promote one formal tuning winner into the offline dispatcher",
+        help="promote formal tuning winners into the offline dispatcher",
     )
-    promote.add_argument("--tuning-id", required=True)
+    promote.add_argument(
+        "--tuning-id",
+        action="append",
+        required=True,
+        help="formal tuning summary to promote; repeat for a shared runtime key",
+    )
+    promote.add_argument(
+        "--route-table",
+        type=Path,
+        required=True,
+        help="verified device-package routes.json to update",
+    )
     return parser
 
 
@@ -233,6 +313,7 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
                 device=args.device,
                 target=args.target,
                 workload_sha256=workload_set["sha256"],
+                result_dir=args.result_dir,
             )
         _print_run_summary(result, result_path)
         return _exit_code(result["outcome"])
@@ -251,6 +332,7 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
                 target=args.target,
                 workload_sha256=workload_set["sha256"],
                 sweep_id=sweep_id,
+                result_dir=args.result_dir,
             )
             runs.append(result)
             _print_run_summary(result, result_path)
@@ -285,9 +367,237 @@ def _run_probe(args: argparse.Namespace, project_root: Path) -> int:
         project_root,
         device=args.device,
         timeout_seconds=args.timeout,
+        matmul_precision=args.matmul_precision,
+        allow_tf32=args.allow_tf32,
     )
     _print_run_summary(result, result_path)
     return _exit_code(result["outcome"])
+
+
+def _hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Build the compact flat profile consumed by the routing prior."""
+
+    environment = result.get("environment")
+    probe = result.get("probe")
+    if not isinstance(environment, Mapping) or not isinstance(probe, Mapping):
+        raise ContractError("successful routing probe is missing device details")
+
+    profile: dict[str, Any] = {}
+    for candidate in (
+        result.get("hardware_profile"),
+        probe.get("hardware_profile"),
+    ):
+        if not isinstance(candidate, Mapping):
+            continue
+        device_type = candidate.get("device_type")
+        if isinstance(device_type, str):
+            profile["device_type"] = device_type
+        gpu = candidate.get("gpu")
+        if isinstance(gpu, Mapping):
+            gpu_fields = {
+                "name": "device_name",
+                "compute_capability": "compute_capability",
+                "architecture_family": "architecture_family",
+                "bf16_supported": "bf16_supported",
+                "cuda_graph_available": "cuda_graph_available",
+                "total_memory_bytes": "total_memory_bytes",
+                "sm_count": "sm_count",
+                "l2_cache_bytes": "l2_cache_bytes",
+                "shared_memory_per_sm_bytes": "shared_memory_per_sm_bytes",
+                "registers_per_sm": "registers_per_sm",
+                "memory_bus_width_bits": "memory_bus_width_bits",
+                "memory_clock_rate_khz": "memory_clock_khz",
+                "theoretical_memory_bandwidth_gbps": (
+                    "theoretical_memory_bandwidth_gbps"
+                ),
+            }
+            for source_name, profile_name in gpu_fields.items():
+                value = gpu.get(source_name)
+                if value is not None:
+                    profile[profile_name] = value
+        software = candidate.get("software")
+        if isinstance(software, Mapping):
+            for field in (
+                "driver",
+                "torch",
+                "cuda_runtime",
+                "triton",
+                "triton_available",
+            ):
+                value = software.get(field)
+                if value is not None:
+                    profile[field] = value
+        platform_profile = candidate.get("platform")
+        if isinstance(platform_profile, Mapping):
+            for source_name, profile_name in (("system", "platform_system"),):
+                value = platform_profile.get(source_name)
+                if value is not None:
+                    profile[profile_name] = value
+
+    resolved_device = environment.get("device")
+    if isinstance(resolved_device, str) and resolved_device:
+        profile.setdefault("device_type", resolved_device.split(":", maxsplit=1)[0])
+    environment_fields = {
+        "gpu": "device_name",
+        "compute_capability": "compute_capability",
+        "total_memory_bytes": "total_memory_bytes",
+        "driver": "driver",
+        "torch": "torch",
+        "cuda_runtime": "cuda_runtime",
+    }
+    for source_name, profile_name in environment_fields.items():
+        value = environment.get(source_name)
+        if value is not None:
+            profile.setdefault(profile_name, value)
+    profile.setdefault("platform_system", platform.system())
+
+    raw_anchors = probe.get("performance_anchors")
+    if isinstance(raw_anchors, Mapping):
+        anchors: dict[str, Any] = {}
+        launch = raw_anchors.get("eager_launch")
+        if isinstance(launch, Mapping):
+            value = launch.get("effective_latency_us")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                anchors["launch_latency_us"] = value
+        graph = raw_anchors.get("cuda_graph_replay")
+        if isinstance(graph, Mapping):
+            value = graph.get("effective_latency_per_node_us")
+            if value is None:
+                value = graph.get("replay_latency_us")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                anchors["graph_replay_per_node_us"] = value
+        device_copy = raw_anchors.get("device_copy")
+        if isinstance(device_copy, Mapping):
+            value = device_copy.get("effective_bandwidth_gbps")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                anchors["memory_bandwidth_gbps"] = value
+        gemm_tflops: dict[str, Any] = {}
+        for source_name, dtype_name in (
+            ("gemm_float16", "float16"),
+            ("gemm_bfloat16", "bfloat16"),
+            ("gemm_float32", "float32"),
+        ):
+            gemm = raw_anchors.get(source_name)
+            if isinstance(gemm, Mapping):
+                value = gemm.get("tflops")
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    gemm_tflops[dtype_name] = value
+        if gemm_tflops:
+            anchors["gemm_tflops"] = gemm_tflops
+        softmax = raw_anchors.get("softmax_fp32")
+        if isinstance(softmax, Mapping):
+            value = softmax.get("throughput_gigaelements_per_second")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                anchors["softmax_giga_elements_per_s"] = value
+        if anchors:
+            profile["performance_anchors"] = anchors
+
+    for field in ("device_type",):
+        if not isinstance(profile.get(field), str) or not profile[field]:
+            raise ContractError(f"routing hardware profile is missing {field}")
+    if profile["device_type"].lower() == "cuda":
+        for field in ("device_name", "compute_capability"):
+            if not isinstance(profile.get(field), str) or not profile[field]:
+                raise ContractError(f"routing hardware profile is missing {field}")
+    return profile
+
+
+def _probe_for_routing(
+    args: argparse.Namespace,
+    project_root: Path,
+) -> tuple[dict[str, Any] | None, int]:
+    print("\n=== Hardware routing probe ===")
+    timeout = args.timeout if args.timeout is not None else 30.0
+    result, result_path = run_managed_probe(
+        project_root,
+        device=args.device,
+        timeout_seconds=timeout,
+        matmul_precision=getattr(args, "matmul_precision", "high"),
+        allow_tf32=getattr(args, "allow_tf32", True),
+    )
+    _print_run_summary(result, result_path)
+    exit_code = _exit_code(result["outcome"])
+    if exit_code != 0:
+        return None, exit_code
+    return _hardware_profile_from_probe(result), 0
+
+
+def _routing_plan_for_case(
+    case: WorkloadCase,
+    hardware_profile: Mapping[str, Any],
+    candidate_limit: int,
+) -> dict[str, Any]:
+    applicable = tuple(item.candidate_id for item in candidates_for_case(case))
+    try:
+        raw_plan = build_routing_plan(
+            case,
+            hardware_profile,
+            applicable,
+            limit=candidate_limit,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ContractError(
+            f"unable to build routing plan for {case.case_id}: {exc}"
+        ) from exc
+    if not isinstance(raw_plan, Mapping):
+        raise ContractError(f"routing plan for {case.case_id} must be an object")
+    raw_order = raw_plan.get("candidate_order")
+    if (
+        not isinstance(raw_order, Sequence)
+        or isinstance(raw_order, (str, bytes))
+        or not raw_order
+        or any(not isinstance(value, str) for value in raw_order)
+    ):
+        raise ContractError(
+            f"routing plan for {case.case_id} has no valid candidate order"
+        )
+    candidate_order = list(raw_order)
+    if len(candidate_order) > candidate_limit:
+        raise ContractError(f"routing plan for {case.case_id} exceeds candidate-limit")
+    if "eager-auto" in applicable and "eager-auto" not in candidate_order:
+        raise ContractError(f"routing plan for {case.case_id} must retain eager-auto")
+    select_candidates(case, candidate_order)
+    plan = dict(raw_plan)
+    plan["candidate_order"] = candidate_order
+    return plan
+
+
+def _print_routing_plan(case_id: str, plan: Mapping[str, Any]) -> None:
+    print(f"\n=== Routing plan: {case_id} ===")
+    print(f"source: {plan.get('source', 'unknown')}")
+    bottleneck = plan.get("bottleneck_class")
+    if isinstance(bottleneck, str):
+        print(f"bottleneck: {bottleneck}")
+    signals = plan.get("routing_signals")
+    if isinstance(signals, Mapping):
+        signal_labels = (
+            ("machine_ridge_flops_per_byte", "ridge"),
+            ("workload_intensity_to_ridge", "intensity/ridge"),
+            ("attention_matrix_to_l2", "attention/L2"),
+            ("estimated_blocks_per_sm", "blocks/SM"),
+            ("softmax_to_compute_lower_bound", "softmax/compute-LB"),
+        )
+        parts = [
+            f"{label}={float(signals[field]):.3f}"
+            for field, label in signal_labels
+            if isinstance(signals.get(field), (int, float))
+            and not isinstance(signals.get(field), bool)
+        ]
+        if parts:
+            print(f"signals: {', '.join(parts)}")
+    order = plan.get("candidate_order")
+    if isinstance(order, list):
+        print(f"candidates: {', '.join(str(value) for value in order)}")
+    reasons = plan.get("selection_reasons")
+    if isinstance(reasons, Mapping):
+        for candidate_id in order if isinstance(order, list) else []:
+            values = reasons.get(candidate_id)
+            if isinstance(values, list) and values:
+                print(f"  {candidate_id}: {'; '.join(str(value) for value in values)}")
+    rejections = plan.get("capability_rejections")
+    if isinstance(rejections, Mapping) and rejections:
+        rejected = ", ".join(str(value) for value in rejections)
+        print(f"capability rejections: {rejected}")
 
 
 def _print_tuning_summary(summary: dict[str, Any]) -> None:
@@ -360,6 +670,12 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
         allow_tf32=args.allow_tf32,
         timeout_seconds=args.timeout,
     )
+    hardware_profile: dict[str, Any] | None = None
+    if args.candidate is None:
+        hardware_profile, probe_exit_code = _probe_for_routing(args, project_root)
+        if hardware_profile is None:
+            return probe_exit_code
+
     summaries: list[dict[str, Any]] = []
     for case_id in args.case_id:
         case = select_workload_case(workload_set, case_id)
@@ -371,6 +687,20 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
                     f"candidates are not available for {case_id}: {unavailable}; "
                     f"available={sorted(available)}"
                 )
+            requested_candidates = list(args.candidate)
+            routing_plan: dict[str, Any] = {
+                "source": "explicit_candidates",
+                "candidate_order": requested_candidates,
+            }
+        else:
+            assert hardware_profile is not None
+            routing_plan = _routing_plan_for_case(
+                case,
+                hardware_profile,
+                args.candidate_limit,
+            )
+            requested_candidates = routing_plan["candidate_order"]
+            _print_routing_plan(case_id, routing_plan)
         summary = run_tuning_case(
             project_root,
             workload_set_id=args.workload_set,
@@ -378,7 +708,9 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
             case=case,
             base_protocol=protocol,
             device=args.device,
-            requested_candidates=args.candidate,
+            requested_candidates=requested_candidates,
+            routing_plan=routing_plan,
+            device_profile=hardware_profile,
         )
         summaries.append(summary)
         _print_tuning_summary(summary)
@@ -387,14 +719,98 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
     return 0 if all(summary["winner"] is not None for summary in summaries) else 1
 
 
+def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
+    workload_set = load_workload_set(project_root, args.workload_set)
+    cases = (
+        [select_workload_case(workload_set, case_id) for case_id in args.case_id]
+        if args.case_id
+        else list(workload_set["cases"])
+    )
+    hardware_profile, probe_exit_code = _probe_for_routing(args, project_root)
+    if hardware_profile is None:
+        return probe_exit_code
+
+    plans = [
+        _routing_plan_for_case(case, hardware_profile, args.candidate_limit)
+        for case in cases
+    ]
+    for case, plan in zip(cases, plans, strict=True):
+        _print_routing_plan(case.case_id, plan)
+    if args.plan_only:
+        print("\nplan-only: no candidate benchmarks were run")
+        return 0
+
+    protocol = MeasurementProtocol.for_preset(
+        args.preset,
+        matmul_precision=args.matmul_precision,
+        allow_tf32=args.allow_tf32,
+        timeout_seconds=args.timeout,
+    )
+    summaries: list[dict[str, Any]] = []
+    for case, plan in zip(cases, plans, strict=True):
+        summary = run_tuning_case(
+            project_root,
+            workload_set_id=args.workload_set,
+            workload_sha256=workload_set["sha256"],
+            case=case,
+            base_protocol=protocol,
+            device=args.device,
+            requested_candidates=plan["candidate_order"],
+            routing_plan=plan,
+            device_profile=hardware_profile,
+        )
+        summaries.append(summary)
+        _print_tuning_summary(summary)
+        if any(item["outcome"] == "cancelled" for item in summary["observations"]):
+            return 130
+
+    print("\n=== Calibration outputs ===")
+    for summary in summaries:
+        print(
+            f"{summary['case_id']}: tuning-id={summary['tuning_id']} | "
+            f"summary={summary['summary_path']}"
+        )
+    if args.preset == "formal":
+        print(
+            "promotion remains explicit: python -m runner promote "
+            "--tuning-id <id> --route-table <verified routes.json>"
+        )
+    else:
+        print("smoke calibration is screening-only and cannot be promoted")
+        for summary in summaries:
+            compact_plan = summary.get("routing_plan")
+            order = (
+                compact_plan.get("candidate_order", [])
+                if isinstance(compact_plan, Mapping)
+                else []
+            )
+            candidate_args = " ".join(
+                f"--candidate {candidate_id}" for candidate_id in order
+            )
+            print(
+                "formal rerun: python -m runner tune "
+                f"--case-id {summary['case_id']} --preset formal {candidate_args}"
+            )
+    return 0 if all(summary["winner"] is not None for summary in summaries) else 1
+
+
 def _run_promote(args: argparse.Namespace, project_root: Path) -> int:
-    tuning_id = args.tuning_id
-    if Path(tuning_id).name != tuning_id:
-        raise ContractError("tuning-id must be a file-safe identifier")
-    summary_path = project_root / "results" / "tuning" / f"{tuning_id}.json"
-    summary = load_json(summary_path)
-    _, winner, route_path = promote_tuning_summary(project_root, summary)
-    print(f"promoted: {winner['candidate_id']} -> {winner['solution_policy']}")
+    summaries: list[dict[str, Any]] = []
+    for tuning_id in args.tuning_id:
+        if Path(tuning_id).name != tuning_id:
+            raise ContractError("tuning-id must be a file-safe identifier")
+        summary_path = project_root / "results" / "tuning" / f"{tuning_id}.json"
+        summaries.append(load_json(summary_path))
+    route_path = args.route_table
+    if not route_path.is_absolute():
+        route_path = project_root / route_path
+    _, winners, route_path = promote_tuning_summaries(
+        project_root,
+        summaries,
+        route_path=route_path.resolve(),
+    )
+    for winner in winners:
+        print(f"promoted: {winner['candidate_id']} -> {winner['solution_policy']}")
     print(f"dispatch routes: {route_path}")
     return 0
 
@@ -411,6 +827,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_profile(args, project_root)
         if args.command == "tune":
             return _run_tune(args, project_root)
+        if args.command == "calibrate":
+            return _run_calibrate(args, project_root)
         if args.command == "promote":
             return _run_promote(args, project_root)
         raise ContractError(f"unsupported command: {args.command}")

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator, Sequence
+import platform
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from math import isfinite
@@ -104,6 +105,57 @@ _WIDE_CANDIDATE = TuningCandidate(
     True,
     "max-autotune",
 )
+
+_DEVICE_PROFILE_FIELDS = (
+    "device_type",
+    "device_name",
+    "compute_capability",
+    "architecture_family",
+    "platform_system",
+    "torch",
+    "cuda_runtime",
+    "triton",
+    "driver",
+)
+_ROUTING_PLAN_FIELDS = (
+    "source",
+    "bottleneck_class",
+    "routing_signals",
+    "candidate_order",
+    "selection_reasons",
+    "capability_rejections",
+)
+
+
+def _compact_device_profile(
+    profile: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Keep only route identity and reproducibility facts in tuning output."""
+
+    if profile is None:
+        return None
+    return {
+        field: profile[field]
+        for field in _DEVICE_PROFILE_FIELDS
+        if profile.get(field) is not None
+    }
+
+
+def _compact_routing_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop workload estimates already recoverable from the stored case."""
+
+    return {field: plan[field] for field in _ROUTING_PLAN_FIELDS if field in plan}
+
+
+def _installed_triton_version() -> str:
+    """Return the local optional Triton version for explicit tuning runs."""
+
+    try:
+        import triton
+    except Exception:  # noqa: BLE001 - Triton is an optional candidate backend.
+        return "unavailable"
+    version = getattr(triton, "__version__", None)
+    return str(version) if version is not None else "unknown"
 
 
 @contextmanager
@@ -404,12 +456,14 @@ def run_tuning_case(
     base_protocol: MeasurementProtocol,
     device: str,
     requested_candidates: Sequence[str] | None = None,
+    routing_plan: Mapping[str, Any] | None = None,
+    device_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run candidates serially and persist one compact screening summary."""
 
     observations: list[dict[str, Any]] = []
     tuning_id = new_run_id()
-    device_profile: dict[str, Any] | None = None
+    compact_device_profile = _compact_device_profile(device_profile)
     solution_root = project_root / "solution"
     implementation_hash_before = (
         solution_implementation_hash(solution_root) if solution_root.is_dir() else None
@@ -432,9 +486,9 @@ def run_tuning_case(
             )
         observations.append(_observation(candidate, result, result_path))
         environment = result.get("environment")
-        if device_profile is None and isinstance(environment, dict):
+        if compact_device_profile is None and isinstance(environment, dict):
             resolved_device = environment.get("device")
-            device_profile = {
+            compact_device_profile = {
                 "device_type": (
                     resolved_device.split(":", maxsplit=1)[0]
                     if isinstance(resolved_device, str)
@@ -442,8 +496,11 @@ def run_tuning_case(
                 ),
                 "device_name": environment.get("gpu"),
                 "compute_capability": environment.get("compute_capability"),
+                "platform_system": platform.system(),
                 "torch": environment.get("torch"),
                 "cuda_runtime": environment.get("cuda_runtime"),
+                "triton": _installed_triton_version(),
+                "driver": environment.get("driver"),
             }
         if result.get("outcome") == "cancelled":
             break
@@ -504,7 +561,19 @@ def run_tuning_case(
             "case": case.as_dict(),
         },
         "requested_device": device,
-        "device_profile": device_profile,
+        "device_profile": compact_device_profile,
+        "routing_plan": (
+            _compact_routing_plan(routing_plan)
+            if routing_plan is not None
+            else {
+                "source": (
+                    "explicit_candidates"
+                    if requested_candidates is not None
+                    else "fixed_candidate_set"
+                ),
+                "candidate_order": [item.candidate_id for item in candidates],
+            }
+        ),
         "protocol": base_protocol.as_dict(),
         "source_solution_sha256": (
             next(iter(solution_hashes)) if len(solution_hashes) == 1 else None

@@ -1,0 +1,303 @@
+{
+  "schema_version": 2,
+  "reference_type": "verified_hardware_formal_sweep",
+  "hardware_id": "nvidia_geforce_rtx_4080",
+  "sweep": {
+    "sweep_id": "20260826T233620.219336Z-e0617b9c",
+    "started_at": "2026-08-26T23:36:20.219840+00:00",
+    "completed_at": "2026-08-26T23:37:04.124486+00:00",
+    "preset": "formal"
+  },
+  "workload_set": {
+    "set_id": "transformer_core_v1",
+    "sha256": "f6a9d6265d53f198a041da687a928aedf524da9eb481b1e9a269242cd2cdec5f",
+    "case_count": 9,
+    "group_count": 5
+  },
+  "environment": {
+    "device": "cuda:0",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "torch": "2.12.1+cu132",
+    "cuda_runtime": "13.2",
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "compute_capability": "8.9",
+    "total_memory_bytes": 17170956288,
+    "driver": "610.88"
+  },
+  "protocol": {
+    "seed": 1234,
+    "accuracy_trials": 5,
+    "rtol": 0.01,
+    "atol": 0.001,
+    "warmup": 20,
+    "repeats": 100,
+    "rounds": 3,
+    "timer": "cuda_event",
+    "samples_per_side": 300,
+    "compile_baseline": false,
+    "compile_solution": false,
+    "cuda_graph_solution": false,
+    "compile_mode": "default",
+    "matmul_precision": "high",
+    "allow_tf32": true,
+    "timeout_seconds": 900.0
+  },
+  "source_hashes": {
+    "official_sha256": "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b",
+    "solution_sha256": "24fd330e06a2e56b2fbbe33165e160a77f06a85f801d73674d93ad7811a9186b"
+  },
+  "route_table": {
+    "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
+    "sha256": "30bb007460d08fe2ba8d46185eaed04d45dcb12d0e0c0c66dd798d8f082ffd8e"
+  },
+  "correctness": {
+    "all_cases_passed": true,
+    "passed_cases": 9,
+    "case_count": 9,
+    "total_trials": 45,
+    "failed_elements": 0,
+    "max_abs_error": 0.00390625,
+    "all_routes_calibrated": true
+  },
+  "cases": [
+    {
+      "group_id": "launch_graph",
+      "workload": {
+        "case_id": "launch_s64_fp16",
+        "batch_size": 1,
+        "seq_len": 64,
+        "d_model": 256,
+        "num_heads": 8,
+        "ffn_dim": 1024,
+        "num_layers": 4,
+        "dtype": "float16",
+        "causal": false,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 1.7760480046272278,
+        "baseline_p90_ms": 3.7437278985977174,
+        "target_median_ms": 0.13414399325847626,
+        "target_p90_ms": 0.13427519500255586,
+        "speedup": 13.239862341096687
+      },
+      "actual_policy": "cuda-graph",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "balanced_precision",
+      "workload": {
+        "case_id": "balanced_s128_fp32",
+        "batch_size": 8,
+        "seq_len": 128,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 6,
+        "dtype": "float32",
+        "causal": false,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 2.2348800897598267,
+        "baseline_p90_ms": 3.656495952606201,
+        "target_median_ms": 1.4551039934158325,
+        "target_p90_ms": 1.5126496195793167,
+        "speedup": 1.535890286792137
+      },
+      "actual_policy": "auto",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "balanced_precision",
+      "workload": {
+        "case_id": "balanced_s128_fp16",
+        "batch_size": 8,
+        "seq_len": 128,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 6,
+        "dtype": "float16",
+        "causal": false,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 2.3741599321365356,
+        "baseline_p90_ms": 2.765312075614929,
+        "target_median_ms": 0.8785920143127441,
+        "target_p90_ms": 0.8806399703025818,
+        "speedup": 2.7022325419081583
+      },
+      "actual_policy": "balanced-cuda-graph",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "long_attention",
+      "workload": {
+        "case_id": "attention_s2048_fp16",
+        "batch_size": 1,
+        "seq_len": 2048,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 4,
+        "dtype": "float16",
+        "causal": false,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 8.936448097229004,
+        "baseline_p90_ms": 9.137254142761229,
+        "target_median_ms": 5.090319871902466,
+        "target_p90_ms": 5.234246444702149,
+        "speedup": 1.7555769228877711
+      },
+      "actual_policy": "long-tail-online",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "long_attention",
+      "workload": {
+        "case_id": "attention_s2048_causal_fp16",
+        "batch_size": 1,
+        "seq_len": 2048,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 4,
+        "dtype": "float16",
+        "causal": true,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 10.706944465637207,
+        "baseline_p90_ms": 10.915020751953124,
+        "target_median_ms": 5.096447944641113,
+        "target_p90_ms": 5.255475187301635,
+        "speedup": 2.100864088466851
+      },
+      "actual_policy": "long-tail-online",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "padding_mask",
+      "workload": {
+        "case_id": "mask_s512_full_fp16",
+        "batch_size": 8,
+        "seq_len": 512,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 4,
+        "dtype": "float16",
+        "causal": false,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 4.940288066864014,
+        "baseline_p90_ms": 5.056204700469971,
+        "target_median_ms": 2.7504639625549316,
+        "target_p90_ms": 2.7637760639190674,
+        "speedup": 1.7961653503269077
+      },
+      "actual_policy": "s512-native-softmax",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "padding_mask",
+      "workload": {
+        "case_id": "mask_s512_padding_fp16",
+        "batch_size": 8,
+        "seq_len": 512,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 4,
+        "dtype": "float16",
+        "causal": false,
+        "padding_ratio": 0.75,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 4.932608127593994,
+        "baseline_p90_ms": 5.065420770645142,
+        "target_median_ms": 2.7494399547576904,
+        "target_p90_ms": 2.76582407951355,
+        "speedup": 1.794041044271035
+      },
+      "actual_policy": "s512-native-softmax",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "padding_mask",
+      "workload": {
+        "case_id": "mask_s512_causal_padding_fp16",
+        "batch_size": 8,
+        "seq_len": 512,
+        "d_model": 512,
+        "num_heads": 8,
+        "ffn_dim": 2048,
+        "num_layers": 4,
+        "dtype": "float16",
+        "causal": true,
+        "padding_ratio": 0.75,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 5.2111358642578125,
+        "baseline_p90_ms": 5.333513402938844,
+        "target_median_ms": 2.7494399547576904,
+        "target_p90_ms": 2.770944118499756,
+        "speedup": 1.8953444883349244
+      },
+      "actual_policy": "s512-native-softmax",
+      "route_origin": "calibrated"
+    },
+    {
+      "group_id": "wide_gemm_ffn",
+      "workload": {
+        "case_id": "wide_s256_bf16",
+        "batch_size": 16,
+        "seq_len": 256,
+        "d_model": 1024,
+        "num_heads": 8,
+        "ffn_dim": 4096,
+        "num_layers": 6,
+        "dtype": "bfloat16",
+        "causal": false,
+        "padding_ratio": 0.0,
+        "input_scale": 1.0
+      },
+      "performance": {
+        "baseline_median_ms": 10.2225923538208,
+        "baseline_p90_ms": 10.434662246704102,
+        "target_median_ms": 9.688063621520996,
+        "target_p90_ms": 9.90228443145752,
+        "speedup": 1.055173949427046
+      },
+      "actual_policy": "wide-triton-inplace",
+      "route_origin": "calibrated"
+    }
+  ],
+  "aggregate": {
+    "group_geomean_speedups": {
+      "launch_graph": 13.239862341096687,
+      "balanced_precision": 2.0372365384928592,
+      "long_attention": 1.9204761159243966,
+      "padding_mask": 1.8279133941488905,
+      "wide_gemm_ffn": 1.055173949427046
+    },
+    "group_balanced_geomean_speedup": 2.5114393956793846,
+    "worst_case": {
+      "case_id": "wide_s256_bf16",
+      "speedup": 1.055173949427046
+    }
+  }
+}

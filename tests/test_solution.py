@@ -356,3 +356,8 @@ def test_dispatch_is_the_default_and_falls_back_to_auto(
     assert execution_path["requested_policy"] == "dispatch"
     assert execution_path["selected_policy"] == "auto"
     assert execution_path["dispatch_policy"] == "auto"
+    assert execution_path["route_origin"] == "fallback"
+    assert execution_path["dispatch_source"] == (
+        "verified_hardware/nvidia_geforce_rtx_4080/routes.json"
+    )
+    assert len(execution_path["dispatch_table_sha256"]) == 64

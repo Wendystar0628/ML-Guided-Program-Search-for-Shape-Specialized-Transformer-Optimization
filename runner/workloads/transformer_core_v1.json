@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "workload_set_id": "rtx4080_core_v1",
+  "workload_set_id": "transformer_core_v1",
   "groups": [
     {
       "group_id": "launch_graph",

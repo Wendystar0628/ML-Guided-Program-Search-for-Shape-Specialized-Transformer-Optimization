@@ -269,16 +269,13 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _hash_solution_files(solution_root: Path, *, include_dispatch: bool) -> str:
+def _hash_solution_files(solution_root: Path) -> str:
     suffixes = {".py", ".cpp", ".cc", ".c", ".h", ".cu", ".cuh"}
     files = sorted(
         path
         for path in solution_root.rglob("*")
         if path.is_file()
-        and (
-            path.suffix.lower() in suffixes
-            or (include_dispatch and path.name == "dispatch_routes.json")
-        )
+        and path.suffix.lower() in suffixes
         and "__pycache__" not in path.parts
     )
     if not files:
@@ -295,15 +292,15 @@ def _hash_solution_files(solution_root: Path, *, include_dispatch: bool) -> str:
 
 
 def solution_source_hash(solution_root: Path) -> str:
-    """Hash implementation files and the deployed dispatch table."""
+    """Hash executable Solution code; route tables carry their own identity."""
 
-    return _hash_solution_files(solution_root, include_dispatch=True)
+    return _hash_solution_files(solution_root)
 
 
 def solution_implementation_hash(solution_root: Path) -> str:
-    """Hash executable implementation files while excluding calibrated routes."""
+    """Hash executable implementation files for promotion compatibility."""
 
-    return _hash_solution_files(solution_root, include_dispatch=False)
+    return _hash_solution_files(solution_root)
 
 
 def load_json(path: Path) -> dict[str, Any]:

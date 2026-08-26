@@ -459,11 +459,17 @@ class UserOptimizedTransformer(nn.Module):
         self._dispatcher: OfflineDispatcher | None = None
         self._dispatch_signature: tuple[object, ...] | None = None
         self.dispatch_policy: str | None = None
+        self.dispatch_route_origin: str | None = None
+        self.dispatch_route_source: str | None = None
+        self.dispatch_route_sha256: str | None = None
         if requested_policy.strip().lower() == "dispatch":
             self._dispatcher = OfflineDispatcher()
             self._configure_named_policy("auto")
             self.requested_policy = "dispatch"
             self.dispatch_policy = "auto"
+            self.dispatch_route_origin = "fallback"
+            self.dispatch_route_source = self._dispatcher.source
+            self.dispatch_route_sha256 = self._dispatcher.table_sha256
         else:
             self._configure_named_policy(requested_policy)
 
@@ -496,15 +502,18 @@ class UserOptimizedTransformer(nn.Module):
         signature = (device.type, device.index, dtype, shape)
         if signature == self._dispatch_signature:
             return
-        policy = self._dispatcher.resolve(
+        resolution = self._dispatcher.resolve_result(
             self.config,
             device=device,
             dtype=dtype,
             shape=shape,
         )
-        self._configure_named_policy(policy)
+        self._configure_named_policy(resolution.policy)
         self.requested_policy = "dispatch"
-        self.dispatch_policy = policy
+        self.dispatch_policy = resolution.policy
+        self.dispatch_route_origin = resolution.origin
+        self.dispatch_route_source = resolution.source
+        self.dispatch_route_sha256 = resolution.table_sha256
         self._dispatch_signature = signature
 
     def _apply_runtime_policy(
@@ -953,10 +962,10 @@ class UserOptimizedTransformer(nn.Module):
         return {
             "requested_policy": self.requested_policy,
             "selected_policy": selected_policy,
-            "dispatch_source": (
-                str(self._dispatcher.path) if self._dispatcher is not None else None
-            ),
+            "dispatch_source": self.dispatch_route_source,
+            "dispatch_table_sha256": self.dispatch_route_sha256,
             "dispatch_policy": self.dispatch_policy,
+            "route_origin": self.dispatch_route_origin,
             "runtime_wrapper": (
                 "solution_eager_cuda_graph"
                 if self.use_cuda_graph and cuda_graph_eligible

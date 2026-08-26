@@ -279,8 +279,13 @@ def _run_worker(
 def _persist_result(
     project_root: Path,
     result: dict[str, Any],
+    *,
+    result_dir: Path | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    result_path = project_root / "results" / "runs" / f"{result['run_id']}.json"
+    output_dir = result_dir or project_root / "results" / "runs"
+    if not output_dir.is_absolute():
+        output_dir = project_root / output_dir
+    result_path = output_dir.resolve() / f"{result['run_id']}.json"
     atomic_write_json(result_path, result)
     return result, result_path
 
@@ -549,6 +554,7 @@ def run_managed_benchmark(
     sweep_id: str | None = None,
     tuning_id: str | None = None,
     candidate_id: str | None = None,
+    result_dir: Path | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
     run_id = new_run_id()
@@ -608,7 +614,7 @@ def run_managed_benchmark(
     if failure is not None:
         result["failure"] = failure
     _enforce_success_contract(result)
-    return _persist_result(project_root, result)
+    return _persist_result(project_root, result, result_dir=result_dir)
 
 
 def run_managed_profile(
@@ -674,14 +680,25 @@ def run_managed_probe(
     *,
     device: str,
     timeout_seconds: float = 30.0,
+    matmul_precision: str = "high",
+    allow_tf32: bool = True,
 ) -> tuple[dict[str, Any], Path]:
     timeout_seconds = _validate_timeout_seconds(timeout_seconds)
+    if matmul_precision not in {"highest", "high", "medium"}:
+        raise ContractError(f"unsupported matmul precision: {matmul_precision}")
+    if not isinstance(allow_tf32, bool):
+        raise ContractError("allow_tf32 must be a boolean")
     project_root = project_root.resolve()
     run_id = new_run_id()
     created_at = utc_now()
     response = _run_worker(
         project_root,
-        {"run_kind": "probe", "device": device},
+        {
+            "run_kind": "probe",
+            "device": device,
+            "matmul_precision": matmul_precision,
+            "allow_tf32": allow_tf32,
+        },
         timeout_seconds,
     )
     result: dict[str, Any] = {

@@ -217,6 +217,21 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
         return result, tmp_path / f"{policy}-{protocol.compile_mode}.json"
 
     monkeypatch.setattr(tuning, "run_managed_benchmark", fake_run_managed_benchmark)
+    routing_plan = {
+        "source": "hardware_cost_model",
+        "bottleneck_class": "balanced",
+        "workload_analysis": {"estimated_bytes": 123},
+        "routing_signals": {"launch_dominant": False},
+        "candidate_order": ["eager-torch", "compile-default"],
+    }
+    device_profile = {
+        "device_type": "cuda",
+        "device_name": "fixture-gpu",
+        "compute_capability": "8.9",
+        "torch": "fixture-torch",
+        "cuda_runtime": "13.2",
+        "triton": "fixture-triton",
+    }
     summary = tuning.run_tuning_case(
         tmp_path,
         workload_set_id="fixture",
@@ -225,6 +240,8 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
         base_protocol=MeasurementProtocol.for_preset("smoke"),
         device="cuda:0",
         requested_candidates=("eager-torch", "compile-default"),
+        routing_plan=routing_plan,
+        device_profile=device_profile,
     )
 
     assert calls == [
@@ -244,6 +261,10 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
     assert summary["tuning_id"] == calls[0]["sweep_id"]
     assert summary["winner"]["candidate_id"] == "compile-default"
     assert len(summary["observations"]) == 2
+    assert summary["routing_plan"] == {
+        key: value for key, value in routing_plan.items() if key != "workload_analysis"
+    }
+    assert summary["device_profile"] == device_profile
     summary_path = Path(summary["summary_path"])
     assert summary_path.is_file()
     assert json.loads(summary_path.read_text(encoding="utf-8")) == summary
@@ -252,6 +273,19 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
 def test_select_candidates_rejects_a_route_that_does_not_fit_the_case() -> None:
     with pytest.raises(ContractError, match="not available"):
         tuning.select_candidates(_case(), ("padding-packed",))
+
+
+def test_select_candidates_preserves_explicit_order() -> None:
+    selected = tuning.select_candidates(
+        _case(),
+        ("compile-default", "eager-auto", "eager-torch"),
+    )
+
+    assert [item.candidate_id for item in selected] == [
+        "compile-default",
+        "eager-auto",
+        "eager-torch",
+    ]
 
 
 def test_fallback_candidate_is_reported_but_not_ranked(
