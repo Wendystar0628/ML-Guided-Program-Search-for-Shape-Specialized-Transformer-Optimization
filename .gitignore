@@ -42,14 +42,14 @@ dist/
 *.local.yaml
 *.local.yml
 
-# Mutable Agent and candidate working state
+# Mutable Agent working state
 agent_state/
-candidates/_drafts/
+
+# Generated measurement state
+/results/
 
 # Internal planning, competition research, and development notes
-/docs/01_赛题规则/
-/docs/02_开发路线/
-/docs/03_Agent系统/
+/docs/
 
 # Editor and operating-system files
 .idea/

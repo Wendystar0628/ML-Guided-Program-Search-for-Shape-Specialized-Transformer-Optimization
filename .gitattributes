@@ -1,0 +1,2 @@
+# Preserve the acquired official benchmark bytes across platforms.
+/official/torch_transformer_benchmark.py -text

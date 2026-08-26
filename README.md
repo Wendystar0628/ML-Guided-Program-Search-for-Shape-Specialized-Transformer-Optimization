@@ -1,100 +1,70 @@
 # AI-Assisted Shape-Aware Transformer Kernel Optimizer
 
-This project targets end-to-end GPU acceleration of a PyTorch Transformer while preserving its numerical behavior and public interface. The repository currently provides the official benchmark harness, a baseline inspection tool, and a reproducible reference environment for establishing trustworthy measurements before kernel optimization.
+This repository has one main goal: reduce the end-to-end CUDA latency of the supplied PyTorch Transformer while preserving its public interface and numerical behavior.
 
-## Benchmark flow
+The primary optimization entry is [`solution/transformer.py`](solution/transformer.py). Performance work should stay focused there: change the implementation, run the benchmark, check correctness, and keep only changes that improve end-to-end latency.
 
-The official harness:
+## Current status
 
-1. Builds the baseline and candidate models with identical weights.
-2. Runs randomized correctness trials across input and mask configurations.
-3. Measures complete CUDA forward passes after warm-up.
-4. Reports median baseline latency, candidate latency, and speedup.
+The current `UserOptimizedTransformer` is baseline-equivalent. It implements the reference computation and parameter structure so that the optimization loop starts from a known-correct solution.
 
-A speedup is meaningful only when the candidate passes the correctness checks. The timed region covers the complete Transformer forward pass rather than an isolated kernel.
+No optimized kernel has been accepted yet, and this repository currently makes **no speedup claim**. Final measurements against the supplied benchmark will be produced only after the performance implementation is stable.
 
-## Repository contents
-
-| Path | Purpose |
-|---|---|
-| `torch_transformer_benchmark.py` | Official benchmark and correctness harness |
-| `baseline_smoke_test.py` | Baseline data-flow inspection and short local timing run |
-| `environment_check.py` | CUDA, PyTorch, Triton, compiler, and extension checks |
-| `activate_dev_env.ps1` | PowerShell launcher for the reference Windows environment |
-| `environment/sitecustomize.py` | Windows compatibility support for PyTorch extension builds |
-| `requirements.txt` | Direct runtime dependencies |
-| `requirements-lock.txt` | Exact reference dependency snapshot |
-
-## Reference environment
-
-The included environment helpers were validated for the following configuration:
-
-| Component | Reference configuration |
-|---|---|
-| Operating system | Windows |
-| Python | 3.12 |
-| GPU | NVIDIA GeForce RTX 4080 |
-| Compute capability | 8.9 |
-| PyTorch | 2.12.1+cu132 |
-| CUDA Toolkit | 13.2 |
-| Triton | 3.7.1.post27 for Windows |
-| Build tools | MSVC and Ninja |
-
-Other CUDA systems can run the benchmark, but may need their own compiler and CUDA path configuration.
-
-## Quick start
+## Setup
 
 ```powershell
-git clone https://github.com/Wendystar0628/AI-Assisted-Shape-Aware-Transformer-Kernel-Optimizer.git
-Set-Location .\AI-Assisted-Shape-Aware-Transformer-Kernel-Optimizer
-
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 . .\activate_dev_env.ps1
 ```
 
-Check the environment and inspect the official baseline:
+## Minimal workflow
+
+Run the default CUDA smoke benchmark (`cuda:0`, `provisional_reference_v1`, and `default_fp32_noncausal_full`):
 
 ```powershell
-python .\environment_check.py --skip-compile --skip-extension
-python .\baseline_smoke_test.py --device cuda --dtype float32 --warmup 5 --repeats 20
+python -m runner benchmark
 ```
 
-Run the official benchmark workflow:
+Run the longer benchmark after a change is ready for a more stable measurement:
 
 ```powershell
-python .\torch_transformer_benchmark.py --device cuda --dtype float32
+python -m runner benchmark --preset formal --device cuda:0
 ```
 
-For a different workload shape or execution mode:
+Each benchmark initializes the baseline and Solution with identical weights, checks their outputs before timing, and measures the complete Transformer forward pass.
 
-```powershell
-python .\torch_transformer_benchmark.py `
-  --batch-size 8 `
-  --seq-len 512 `
-  --dtype float16 `
-  --causal
+## Results
+
+Each run writes one compact JSON file to:
+
+```text
+results/runs/<run_id>.json
 ```
 
-Run `python .\environment_check.py` without skip flags when compiler, `torch.compile`, and CUDA extension validation is required.
+The structured result keeps only the information needed for performance development:
 
-## Reported measurements
+- Correctness result and numerical error.
+- Raw baseline and Solution latency samples.
+- Median latencies and observed speedup.
+- Workload and measurement configuration.
+- Device and runtime environment.
+- SHA-256 of the measured Solution source.
 
-The benchmark reports:
+Generated runs are local artifacts and are not committed by default.
 
-- Correctness pass or failure.
-- Maximum absolute and relative error.
-- Baseline and candidate median forward latency.
-- End-to-end speedup.
-- Requested and effective execution configuration.
+## Workload scope
 
-The smoke test additionally exposes the generated input tensor, valid-token mask, randomly initialized weights, representative attention and feed-forward intermediates, final output, and per-run timing samples.
+[`runner/workloads/provisional_reference_v1.json`](runner/workloads/provisional_reference_v1.json) contains four development cases covering causal and non-causal attention with full and padded sequences at the published default dimensions.
 
-## Optimization constraints
+This workload is provisional. It provides stable coverage while the implementation is being optimized, but it does not claim to be a complete official test suite.
 
-- Preserve the Transformer computation and external interface.
-- Treat correctness as a prerequisite for performance claims.
-- Optimize the complete forward path, including shape-dependent behavior.
-- Keep model-serving APIs and online agents outside the timed hot path.
+## Official snapshot
 
-This public repository contains runnable project artifacts only. Restricted source material, competition research, and internal development notes are intentionally excluded.
+The supplied benchmark is preserved at [`official/torch_transformer_benchmark.py`](official/torch_transformer_benchmark.py). Its bytes are locked by the SHA-256 recorded in [`official/snapshot.json`](official/snapshot.json). No additional reproduction framework is part of the performance-development loop.
+
+The root `torch_transformer_benchmark.py` is only a thin direct-official entry for final validation. Day-to-day optimization measurements use the structured Runner above.
+
+## Optimization mainline
+
+Current work is to profile the forward pass, identify the dominant GPU costs, and optimize the highest-impact operations for the representative shapes and mask modes. Correctness and compact timing data support each iteration; final official reproduction is deferred until performance work is complete and the Solution has stabilized.

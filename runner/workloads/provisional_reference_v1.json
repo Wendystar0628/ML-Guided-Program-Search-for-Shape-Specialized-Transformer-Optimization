@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "workload_set_id": "provisional_reference_v1",
+  "ordered_cases": [
+    {
+      "case_id": "default_fp32_noncausal_full",
+      "batch_size": 8,
+      "seq_len": 128,
+      "d_model": 512,
+      "num_heads": 8,
+      "ffn_dim": 2048,
+      "num_layers": 6,
+      "dtype": "float32",
+      "causal": false,
+      "padding_ratio": 0.0
+    },
+    {
+      "case_id": "default_fp32_noncausal_padding",
+      "batch_size": 8,
+      "seq_len": 128,
+      "d_model": 512,
+      "num_heads": 8,
+      "ffn_dim": 2048,
+      "num_layers": 6,
+      "dtype": "float32",
+      "causal": false,
+      "padding_ratio": 0.25
+    },
+    {
+      "case_id": "default_fp32_causal_full",
+      "batch_size": 8,
+      "seq_len": 128,
+      "d_model": 512,
+      "num_heads": 8,
+      "ffn_dim": 2048,
+      "num_layers": 6,
+      "dtype": "float32",
+      "causal": true,
+      "padding_ratio": 0.0
+    },
+    {
+      "case_id": "default_fp32_causal_padding",
+      "batch_size": 8,
+      "seq_len": 128,
+      "d_model": 512,
+      "num_heads": 8,
+      "ffn_dim": 2048,
+      "num_layers": 6,
+      "dtype": "float32",
+      "causal": true,
+      "padding_ratio": 0.25
+    }
+  ]
+}
