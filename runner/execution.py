@@ -76,30 +76,6 @@ def load_solution_module(project_root: Path) -> ModuleType:
     return module
 
 
-def _legacy_status(outcome: str) -> str:
-    if outcome == "invalid_output":
-        return "correctness_failed"
-    if outcome == "cancelled":
-        return "interrupted"
-    return outcome
-
-
-def _finite(value: float) -> float | None:
-    return value if math.isfinite(value) else None
-
-
-def _accuracy_record(seed: int, result: official.AccuracyResult) -> dict[str, Any]:
-    return {
-        "seed": seed,
-        "passed": result.passed,
-        "total_elements": result.total_elements,
-        "failed_elements": result.failed_elements,
-        "max_abs_error": _finite(result.max_abs_error),
-        "max_relative_error": _finite(result.max_relative_error),
-        "mean_abs_error": _finite(result.mean_abs_error),
-    }
-
-
 def _assert_unchanged(name: str, value: torch.Tensor, snapshot: torch.Tensor) -> None:
     if (
         value.shape != snapshot.shape
@@ -142,10 +118,17 @@ def run_correctness(
     device: torch.device,
     dtype: torch.dtype,
 ) -> dict[str, Any]:
-    trials: list[dict[str, Any]] = []
+    trial_count = 0
+    all_passed = True
+    failed_elements = 0
+    failed_elements_known = True
+    max_abs_errors: list[float] = []
+    max_relative_errors: list[float] = []
+    diagnostic: str | None = None
     with torch.inference_mode():
         for trial_index in range(protocol.accuracy_trials):
             seed = protocol.seed + trial_index
+            trial_count += 1
             reference: torch.Tensor | None = None
             inputs, valid_mask = official.generate_random_case(
                 config=config,
@@ -171,51 +154,42 @@ def run_correctness(
                     rtol=protocol.rtol,
                     atol=protocol.atol,
                 )
-                trials.append(_accuracy_record(seed, result))
+                all_passed = all_passed and result.passed
+                failed_elements += int(result.failed_elements)
+                if math.isfinite(result.max_abs_error):
+                    max_abs_errors.append(float(result.max_abs_error))
+                if math.isfinite(result.max_relative_error):
+                    max_relative_errors.append(float(result.max_relative_error))
             except (AssertionError, ContractError, TypeError, ValueError) as exc:
-                trials.append(
-                    {
-                        "seed": seed,
-                        "passed": False,
-                        "total_elements": reference.numel()
-                        if reference is not None
-                        else None,
-                        "failed_elements": None,
-                        "max_abs_error": None,
-                        "max_relative_error": None,
-                        "mean_abs_error": None,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
+                all_passed = False
+                failed_elements_known = False
+                if diagnostic is None:
+                    diagnostic = f"seed {seed}: {type(exc).__name__}: {exc}"
 
-    finite_abs = [
-        trial["max_abs_error"]
-        for trial in trials
-        if isinstance(trial.get("max_abs_error"), (int, float))
-    ]
-    finite_relative = [
-        trial["max_relative_error"]
-        for trial in trials
-        if isinstance(trial.get("max_relative_error"), (int, float))
-    ]
-    failed_values = [trial.get("failed_elements") for trial in trials]
-    failed_elements = (
-        sum(int(value) for value in failed_values)
-        if all(isinstance(value, int) for value in failed_values)
-        else None
-    )
-    return {
-        "passed": len(trials) == protocol.accuracy_trials
-        and all(trial["passed"] for trial in trials),
-        "trial_count": len(trials),
-        "trials": trials,
-        "failed_elements": failed_elements,
-        "max_abs_error": max(finite_abs, default=None),
-        "max_relative_error": max(finite_relative, default=None),
+    passed = trial_count == protocol.accuracy_trials and all_passed
+    summary: dict[str, Any] = {
+        "passed": passed,
+        "trial_count": trial_count,
     }
+    if failed_elements_known:
+        summary["failed_elements"] = failed_elements
+    if max_abs_errors:
+        summary["max_abs_error"] = max(max_abs_errors)
+    if not passed:
+        if max_relative_errors:
+            summary["max_relative_error"] = max(max_relative_errors)
+        if diagnostic is not None:
+            summary["diagnostic"] = diagnostic[-500:]
+    return summary
 
 
-def _measurement_stats(samples: list[float], expected_count: int) -> dict[str, Any]:
+def _measurement_stats(
+    samples: list[float],
+    *,
+    repeats: int,
+    rounds: int,
+) -> dict[str, Any]:
+    expected_count = repeats * rounds
     if len(samples) != expected_count:
         raise ContractError(
             f"expected {expected_count} timing samples, received {len(samples)}"
@@ -232,7 +206,17 @@ def _measurement_stats(samples: list[float], expected_count: int) -> dict[str, A
     median = statistics.median(normalized)
     if not math.isfinite(median) or median <= 0:
         raise ContractError("timing median must be a finite positive number")
-    return {"samples_ms": normalized, "median_ms": median}
+    p90 = official.percentile(normalized, 0.9)
+    round_medians = [
+        statistics.median(normalized[index * repeats : (index + 1) * repeats])
+        for index in range(rounds)
+    ]
+    return {
+        "sample_count": expected_count,
+        "median_ms": median,
+        "p90_ms": p90,
+        "round_medians_ms": round_medians,
+    }
 
 
 def run_performance(
@@ -285,9 +269,16 @@ def run_performance(
 
     _assert_unchanged("input", inputs, input_snapshot)
     _assert_unchanged("valid_token_mask", valid_mask, mask_snapshot)
-    expected_count = protocol.repeats * protocol.rounds
-    baseline_stats = _measurement_stats(baseline_samples, expected_count)
-    solution_stats = _measurement_stats(solution_samples, expected_count)
+    baseline_stats = _measurement_stats(
+        baseline_samples,
+        repeats=protocol.repeats,
+        rounds=protocol.rounds,
+    )
+    solution_stats = _measurement_stats(
+        solution_samples,
+        repeats=protocol.repeats,
+        rounds=protocol.rounds,
+    )
     speedup = baseline_stats["median_ms"] / solution_stats["median_ms"]
     if not math.isfinite(speedup) or speedup <= 0:
         raise ContractError("speedup must be a finite positive number")
@@ -295,7 +286,6 @@ def run_performance(
         "timer": "cuda_event" if device.type == "cuda" else "perf_counter_ns",
         "baseline": baseline_stats,
         "target": solution_stats,
-        "solution": solution_stats,
         "speedup": speedup,
     }
 
@@ -328,13 +318,14 @@ def run_baseline_performance(
         )
     _assert_unchanged("input", inputs, input_snapshot)
     _assert_unchanged("valid_token_mask", valid_mask, mask_snapshot)
-    stats = _measurement_stats(samples, protocol.repeats * protocol.rounds)
+    stats = _measurement_stats(
+        samples,
+        repeats=protocol.repeats,
+        rounds=protocol.rounds,
+    )
     return {
         "timer": "cuda_event" if device.type == "cuda" else "perf_counter_ns",
         "baseline": stats,
-        "target": stats,
-        "solution": None,
-        "speedup": None,
     }
 
 
@@ -396,18 +387,15 @@ def _failure_response(
     correctness: dict[str, Any] | None,
     performance: dict[str, Any] | None,
     solution_hash: str | None,
-    target: str,
     execution_path: dict[str, Any] | None,
 ) -> dict[str, Any]:
     outcome = _exception_outcome(exc, stage)
     return {
         "outcome": outcome,
-        "status": _legacy_status(outcome),
         "solution_source_sha256": solution_hash,
         "environment": environment,
         "correctness": correctness,
         "performance": performance,
-        "path": {"requested": target, "resolved": target},
         "execution_path": execution_path,
         "failure": {
             "stage": stage,
@@ -441,7 +429,7 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
             torch.cuda.set_device(device)
         if device.type == "cpu" and protocol.preset != "smoke":
             raise ContractError("CPU execution is supported only by the smoke preset")
-        environment = collect_environment(device, requested_device)
+        environment = collect_environment(device)
 
         stage = "dtype"
         dtype = official.resolve_dtype(case.dtype)
@@ -471,8 +459,6 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
         execution_path = _describe_execution_path(
             solution if solution is not None else baseline,
             case=case,
-            protocol=protocol,
-            target=target,
         )
 
         stage = "compile"
@@ -502,12 +488,10 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
                 outcome = "invalid_output"
                 return {
                     "outcome": outcome,
-                    "status": _legacy_status(outcome),
                     "solution_source_sha256": measured_source_hash,
                     "environment": environment,
                     "correctness": correctness,
                     "performance": None,
-                    "path": {"requested": target, "resolved": target},
                     "execution_path": execution_path,
                     "failure": {
                         "stage": "correctness",
@@ -525,10 +509,8 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
             correctness = {
                 "passed": True,
                 "trial_count": 0,
-                "trials": [],
                 "failed_elements": 0,
                 "max_abs_error": 0.0,
-                "max_relative_error": 0.0,
                 "skipped": "baseline target has no comparison candidate",
             }
             stage = "timing"
@@ -546,12 +528,10 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
 
         return {
             "outcome": "success",
-            "status": "success",
             "solution_source_sha256": measured_source_hash,
             "environment": environment,
             "correctness": correctness,
             "performance": performance,
-            "path": {"requested": target, "resolved": target},
             "execution_path": execution_path,
             "failure": None,
         }
@@ -563,7 +543,6 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
             correctness=correctness,
             performance=performance,
             solution_hash=measured_source_hash,
-            target=target,
             execution_path=execution_path,
         )
 
@@ -585,8 +564,6 @@ def _describe_execution_path(
     model: nn.Module,
     *,
     case: WorkloadCase,
-    protocol: MeasurementProtocol,
-    target: str,
 ) -> dict[str, Any]:
     description: dict[str, Any]
     describe = getattr(model, "describe_execution_path", None)
@@ -600,21 +577,6 @@ def _describe_execution_path(
             "selected_attention_backend": "explicit",
             "causal_mask": "per_forward" if case.causal else "none",
         }
-    description.update(
-        {
-            "target": target,
-            "dtype": case.dtype,
-            "head_dim": case.d_model // case.num_heads,
-            "causal": case.causal,
-            "mask_kind": "prefix_padding" if case.padding_ratio > 0 else "all_valid",
-            "compile": {
-                "enabled": protocol.compile_solution
-                if target == "solution"
-                else protocol.compile_baseline,
-                "mode": protocol.compile_mode,
-            },
-        }
-    )
     return description
 
 
@@ -651,7 +613,7 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
         device = official.resolve_device(requested_device)
         if device.type == "cuda":
             torch.cuda.set_device(device)
-        environment = collect_environment(device, requested_device)
+        environment = collect_environment(device)
 
         stage = "dtype"
         dtype = official.resolve_dtype(case.dtype)
@@ -681,8 +643,6 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
         execution_path = _describe_execution_path(
             solution if solution is not None else baseline,
             case=case,
-            protocol=protocol,
-            target=target,
         )
 
         stage = "compile"
@@ -717,12 +677,10 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
                 outcome = "invalid_output"
                 return {
                     "outcome": outcome,
-                    "status": _legacy_status(outcome),
                     "solution_source_sha256": measured_source_hash,
                     "environment": environment,
                     "correctness": correctness,
                     "profile": None,
-                    "path": {"requested": target, "resolved": target},
                     "execution_path": execution_path,
                     "failure": {
                         "stage": "correctness",
@@ -759,35 +717,59 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
         ):
             for _ in range(iterations):
                 model(inputs, valid_mask)
-                profiler.step()
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         _assert_unchanged("input", inputs, input_snapshot)
         _assert_unchanged("valid_token_mask", valid_mask, mask_snapshot)
 
-        events = list(profiler.key_averages())
+        events = list(profiler.key_averages(group_by_input_shape=True))
         observed_attention_backend = _observed_attention_backend(events)
         if (
             observed_attention_backend is None
             and execution_path.get("selected_attention_backend") == "explicit"
         ):
             observed_attention_backend = "explicit"
-        events.sort(key=lambda event: _profile_time(event, device), reverse=True)
-        top_ops = [
-            {
+        operator_events = [
+            event for event in events if str(event.key).startswith("aten::")
+        ]
+        operator_events.sort(
+            key=lambda event: _profile_time(event, device), reverse=True
+        )
+        total_operator_self_time_us = math.fsum(
+            max(_profile_time(event, device), 0.0) for event in operator_events
+        )
+        if (
+            not math.isfinite(total_operator_self_time_us)
+            or total_operator_self_time_us <= 0
+        ):
+            raise ContractError("profiler did not record positive ATen self time")
+        operator_hotspots: list[dict[str, Any]] = []
+        for event in operator_events:
+            operation_time = _profile_time(event, device)
+            calls = int(event.count)
+            if not math.isfinite(operation_time) or operation_time <= 0 or calls <= 0:
+                continue
+            hotspot: dict[str, Any] = {
                 "name": str(event.key),
-                "calls": int(event.count),
-                "self_cpu_time_total_us": _finite(
-                    float(getattr(event, "self_cpu_time_total", 0.0) or 0.0)
-                ),
-                "self_device_time_total_us": _finite(
-                    _profile_time(event, torch.device("cuda"))
-                    if device.type == "cuda"
-                    else 0.0
+                "calls_per_forward": round(calls / iterations, 6),
+                "self_time_us_per_forward": round(operation_time / iterations, 6),
+                "share_pct": round(
+                    operation_time / total_operator_self_time_us * 100.0,
+                    3,
                 ),
             }
-            for event in events[:15]
-        ]
+            input_shapes = getattr(event, "input_shapes", [])
+            if isinstance(input_shapes, (list, tuple)):
+                tensor_shapes = [
+                    list(shape)
+                    for shape in input_shapes
+                    if isinstance(shape, (list, tuple)) and shape
+                ]
+                if tensor_shapes:
+                    hotspot["input_shapes"] = tensor_shapes
+            operator_hotspots.append(hotspot)
+            if len(operator_hotspots) == 8:
+                break
 
         if measured_source_hash is not None:
             stage = "source_integrity"
@@ -799,21 +781,25 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
 
         return {
             "outcome": "success",
-            "status": "success",
             "solution_source_sha256": measured_source_hash,
             "environment": environment,
             "correctness": correctness,
             "profile": {
-                "profiler": "torch.profiler",
                 "iterations": iterations,
-                "sort_by": "self_device_time_total_us"
+                "time_basis": "self_device_us_per_forward"
                 if device.type == "cuda"
-                else "self_cpu_time_total_us",
-                "observed_attention_backend": observed_attention_backend,
-                "top_ops_are_non_additive": True,
-                "top_ops": top_ops,
+                else "self_cpu_us_per_forward",
+                "total_self_time_us_per_forward": round(
+                    total_operator_self_time_us / iterations,
+                    6,
+                ),
+                "operator_hotspots": operator_hotspots,
+                **(
+                    {"observed_attention_backend": observed_attention_backend}
+                    if observed_attention_backend is not None
+                    else {}
+                ),
             },
-            "path": {"requested": target, "resolved": target},
             "execution_path": execution_path,
             "failure": None,
         }
@@ -825,7 +811,6 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
             correctness=correctness,
             performance=None,
             solution_hash=measured_source_hash,
-            target=target,
             execution_path=execution_path,
         )
         response["profile"] = None

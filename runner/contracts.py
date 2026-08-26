@@ -402,7 +402,6 @@ def atomic_write_json(path: Path, document: dict[str, Any]) -> None:
         document,
         ensure_ascii=False,
         indent=2,
-        sort_keys=True,
         allow_nan=False,
     ).encode("utf-8")
     descriptor, temporary_name = tempfile.mkstemp(

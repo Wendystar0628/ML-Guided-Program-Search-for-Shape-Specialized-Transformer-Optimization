@@ -40,39 +40,55 @@ def _driver_version(index: int) -> tuple[str | None, str | None]:
     return value[0].strip(), None
 
 
-def collect_environment(device: torch.device, requested_device: str) -> dict[str, Any]:
+def collect_environment(device: torch.device) -> dict[str, Any]:
     value: dict[str, Any] = {
+        "device": str(device),
         "platform": platform.platform(),
-        "python": platform.python_version(),
         "torch": torch.__version__,
         "cuda_runtime": torch.version.cuda,
-        "cuda_available": torch.cuda.is_available(),
-        "requested_device": requested_device,
-        "resolved_device": str(device),
-        "torch_num_threads": torch.get_num_threads(),
-        "torch_num_interop_threads": torch.get_num_interop_threads(),
     }
     if device.type == "cuda":
         index = device.index
         if index is None:
             index = torch.cuda.current_device()
         properties = torch.cuda.get_device_properties(index)
-        driver, driver_error = _driver_version(index)
-        value["gpu"] = {
-            "index": index,
-            "name": properties.name,
-            "compute_capability": f"{properties.major}.{properties.minor}",
-            "total_memory_bytes": properties.total_memory,
-        }
-        value["driver"] = driver
-        if driver_error is not None:
-            value["driver_query_error"] = driver_error
+        driver, _ = _driver_version(index)
+        value["gpu"] = properties.name
+        value["compute_capability"] = f"{properties.major}.{properties.minor}"
+        value["total_memory_bytes"] = properties.total_memory
+        if driver is not None:
+            value["driver"] = driver
     return value
+
+
+def _error_code(error: str | None) -> str:
+    message = str(error or "").lower()
+    if "not compiled" in message:
+        return "not_compiled"
+    if "no available kernel" in message:
+        return "no_kernel"
+    if "explicit attn_mask" in message and "is_causal=true" in message:
+        return "invalid_mask_combination"
+    if "non-finite" in message:
+        return "non_finite"
+    if "disabled" in message:
+        return "policy_disabled"
+    return "runtime_error"
+
+
+def _call_form(*, causal: bool, padding: bool) -> str:
+    if causal and padding:
+        return "padding_mask_plus_is_causal"
+    if causal:
+        return "is_causal"
+    if padding:
+        return "padding_mask"
+    return "dense"
 
 
 def _sdpa_capabilities(device: torch.device) -> dict[str, Any]:
     if device.type != "cuda":
-        return {"supported": False, "reason": "CUDA device required"}
+        return {"available": False, "reason": "cuda_required"}
 
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
@@ -88,14 +104,15 @@ def _sdpa_capabilities(device: torch.device) -> dict[str, Any]:
         ("fp16_causal_padding_head64", torch.float16, 64, True, True),
         ("bf16_dense_head128", torch.bfloat16, 128, False, False),
     )
+    test_shape = {"batch_size": 1, "num_heads": 8, "seq_len": 64}
     results: list[dict[str, Any]] = []
     generator = torch.Generator(device=device)
     generator.manual_seed(2026)
     for scenario_id, dtype, head_dim, causal, padding in scenarios:
         query = torch.randn(
-            1,
-            8,
-            64,
+            test_shape["batch_size"],
+            test_shape["num_heads"],
+            test_shape["seq_len"],
             head_dim,
             device=device,
             dtype=dtype,
@@ -119,6 +136,8 @@ def _sdpa_capabilities(device: torch.device) -> dict[str, Any]:
                 1, 1, 1, query.shape[-2], device=device, dtype=torch.bool
             )
             attention_mask[..., -16:] = False
+        supported_backends: list[str] = []
+        unsupported_backends: dict[str, str] = {}
         for backend_name, backend in backend_values.items():
             error = None
             try:
@@ -140,32 +159,40 @@ def _sdpa_capabilities(device: torch.device) -> dict[str, Any]:
             except (RuntimeError, NotImplementedError) as exc:
                 success = False
                 error = f"{type(exc).__name__}: {exc}"
-            results.append(
-                {
-                    "scenario_id": scenario_id,
-                    "dtype": str(dtype).removeprefix("torch."),
-                    "head_dim": head_dim,
-                    "causal": causal,
-                    "padding": padding,
-                    "backend": backend_name,
-                    "success": success,
-                    "error": error,
-                }
-            )
+            if success:
+                supported_backends.append(backend_name)
+            else:
+                unsupported_backends[backend_name] = _error_code(error)
+        results.append(
+            {
+                "id": scenario_id,
+                "dtype": str(dtype).removeprefix("torch."),
+                "head_dim": head_dim,
+                "call_form": _call_form(causal=causal, padding=padding),
+                "supported_backends": supported_backends,
+                "unsupported_backends": unsupported_backends,
+            }
+        )
 
     flash_available = getattr(torch.backends.cuda, "is_flash_attention_available", None)
     policy_flags = {}
     for name in ("flash", "mem_efficient", "cudnn", "math"):
         getter = getattr(torch.backends.cuda, f"{name}_sdp_enabled", None)
         policy_flags[name] = bool(getter()) if callable(getter) else None
-    return {
-        "supported": True,
-        "flash_compiled_available": bool(flash_available())
-        if callable(flash_available)
-        else None,
-        "policy_enabled_flags": policy_flags,
-        "actual_call_results": results,
+    result: dict[str, Any] = {
+        "available": True,
+        "test_shape": test_shape,
+        "global_policy_enabled": {
+            "flash": policy_flags["flash"],
+            "efficient": policy_flags["mem_efficient"],
+            "cudnn": policy_flags["cudnn"],
+            "math": policy_flags["math"],
+        },
+        "scenarios": results,
     }
+    if callable(flash_available):
+        result["flash_compiled"] = bool(flash_available())
+    return result
 
 
 def execute_probe(request: dict[str, Any]) -> dict[str, Any]:
@@ -179,15 +206,10 @@ def execute_probe(request: dict[str, Any]) -> dict[str, Any]:
         torch.cuda.synchronize(device)
     return {
         "outcome": "success",
-        "status": "success",
-        "environment": collect_environment(device, requested_device),
+        "environment": collect_environment(device),
         "probe": {
-            "operation": "sum(arange(16)^2 + 1)",
-            "observed": observed,
-            "expected": 1256.0,
-            "passed": observed == 1256.0,
-            "sdpa_capabilities": _sdpa_capabilities(device),
+            "device_operation_passed": observed == 1256.0,
+            "sdpa": _sdpa_capabilities(device),
         },
-        "path": {"requested": requested_device, "resolved": str(device)},
         "failure": None,
     }

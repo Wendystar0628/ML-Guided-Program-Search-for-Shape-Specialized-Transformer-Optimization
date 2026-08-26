@@ -2,14 +2,24 @@
 
 This project reduces the end-to-end CUDA latency of a supplied PyTorch Transformer while preserving its constructor, forward interface, weights, output shape, and numerical behavior. The primary implementation entry is [`solution/transformer.py`](solution/transformer.py); measurements use the complete Transformer forward pass rather than isolated kernel timings.
 
-The current Solution establishes a stronger performance mainline with four concrete optimizations:
+The current Solution establishes a shape-aware performance mainline with a safe
+default path and several real, correctness-gated candidates:
 
 - Q, K, and V weights are packed once by `copy_model_weights`, then evaluated through one fused QKV projection per layer.
+- The default path exposes Q, K, and V as strided head views, removing three layout materializations while preserving the reference low-precision operation order.
 - A causal mask is created once per model and shared by all layers instead of being rebuilt during every attention call.
 - Token-mask inversion and broadcast views are prepared once per model forward and reused across all layers; masking and score scaling reuse fresh intermediate storage in place.
 - The validated short, non-causal CUDA FP32 region uses PyTorch scaled dot-product attention; other regions retain the reference operation and accumulation order as a numerical fallback.
+- A bounded Triton route provides a single-pass QKV re-layout and a fused scale, causal/padding mask, and FP32-softmax candidate for supported attention shapes.
+- A padding-aware route packs valid token rows before the FFN and uses a Triton residual-plus-padding fusion when applicable.
+- `torch.compile` modes are screened as candidates through the same official comparator and full-forward timer.
 
-These mechanisms are intentionally bounded by correctness and measured behavior. The repository does not claim that one backend or optimization is best for every shape.
+The Triton, padding-aware, and compiled routes are candidates rather than
+unconditional defaults. A faster candidate is retained only when the official
+comparator passes and the requested route actually ran. This keeps unsupported
+or numerically incompatible shapes on the safe PyTorch fallback while leaving
+the kernel parameters, fusion boundaries, and shape thresholds open for later
+tuning.
 
 ## Target environment
 
@@ -44,6 +54,20 @@ Run the complete nine-case smoke sweep:
 python -m runner benchmark --preset smoke
 ```
 
+Screen the finite candidates applicable to one case:
+
+```powershell
+python -m runner tune --case-id launch_s64_fp16 --preset smoke
+```
+
+Run only selected candidates when iterating on one mechanism:
+
+```powershell
+python -m runner tune --case-id mask_s512_padding_fp16 `
+  --candidate eager-auto --candidate padding-fused `
+  --candidate padding-packed --preset smoke
+```
+
 Run the complete formal sweep with the official accuracy and timing counts:
 
 ```powershell
@@ -56,7 +80,7 @@ Profile one representative case with the same model loader and workload definiti
 python -m runner profile --case-id attention_s2048_fp16
 ```
 
-The CLI defaults to `--target solution`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. Use `python -m runner <command> --help` for compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
+The CLI defaults to `--target solution`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. `tune` runs a deliberately small, shape-relevant candidate set serially on one GPU. It reuses the same fresh worker, correctness check, timing protocol, and result JSON as `benchmark`; all candidates from one case-level screening share a `sweep_id`, so the comparison can be reconstructed without a second experiment database. Use `python -m runner <command> --help` for candidate names, policies, compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
 
 ## Core workload
 
@@ -84,17 +108,33 @@ Before each benchmark worker starts, the parent validates the immutable official
 
 A complete workload sweep prints every case outcome and speedup, the geometric mean within each performance group, the equal-weight group-balanced geometric mean, and the worst-case speedup. Aggregation is reported as `complete` only when every expected case succeeds, passes correctness, and produces a finite positive latency and speedup. Missing, failed, timed-out, out-of-memory, or invalid cases make the sweep `incomplete`; successful cases remain visible, but the runner does not construct a partial project score.
 
+Candidate screening follows the same rule at case level. Incorrect, failed, or
+fallback candidates remain visible with their result path but cannot become the
+winner. The five solution policies have distinct roles:
+
+| Policy | Purpose |
+|---|---|
+| `auto` | Default packed-QKV, zero-copy layout, and verified shape routing |
+| `torch` | Conservative materialized-layout comparison path |
+| `triton` | Experimental custom QKV-layout and attention-softmax route |
+| `padding` | Residual-plus-padding Triton fusion route |
+| `packed` | Experimental valid-token FFN route |
+
 Timeouts and Ctrl+C terminate the worker process tree. Failures are persisted with an explicit stage and type instead of being converted into performance numbers.
 
 ## Results
 
-Probe, benchmark, and profile commands each write one strict JSON document per worker run:
+Probe, benchmark, and profile commands write strict schema-v2 JSON documents:
 
 ```text
 results/runs/<run_id>.json
 ```
 
-Benchmark results include the workload signature and hash, measurement protocol, environment, correctness trials, raw latency samples, medians, speedup, resolved execution path, official snapshot hash, and Solution source hash. Profile results retain a compact top-operation summary for bottleneck selection. Full-sweep aggregation is printed from the ordered per-case results and is not stored as a second experiment database.
+Each benchmark or profile case produces one JSON file. A benchmark result keeps the complete workload case and workload hash, complete measurement protocol, compact device/runtime environment, aggregate correctness, baseline and target median/P90 latency, per-round medians, sample count, speedup, execution path, and source hashes. All cases launched by one sweep share a `sweep_id`, allowing an interrupted or completed sweep to be identified without a second results database. Raw latency samples and per-trial correctness records remain worker-local and are not persisted. The document also avoids duplicate compatibility fields such as separate `target` and `solution` statistics, `status`, `path`, and repeated top-level workload or preset fields.
+
+Profile results store compact ATen `operator_hotspots` normalized per measured forward, separated by input shape and accompanied by a time share so the Agent can route work to the relevant GEMM, attention, normalization, or pointwise path. Probe results store whether the device operation passed and a compressed SDPA call matrix with its fixed test shape and call form. A failed run keeps only the context already established when the failure occurred plus a short stage, type, message, and exit code; it does not populate synthetic latency or correctness data.
+
+Full-sweep aggregation is printed from the ordered per-case results and is not stored as a second experiment database. Existing schema-v1 result files remain local historical artifacts; the Runner writes schema v2 and does not migrate old runs.
 
 `results/` contains generated local measurements and is ignored by Git. Commit implementation and test changes, not machine-specific run history or profiler output.
 
@@ -124,7 +164,9 @@ The tests cover the official snapshot and workload contract, weight packing, all
 ```text
 official/                    Immutable supplied benchmark snapshot
 solution/transformer.py     Unique optimized Transformer entry
-runner/                      Probe, correctness, benchmark, profile, and sweep logic
+solution/kernels/            Bounded Triton kernel candidates
+runner/                      Probe, correctness, benchmark, profile, sweep, and tuning logic
+runner/tuning.py             Finite serial candidate-screening loop
 runner/workloads/            Machine-readable core workload
 tests/                       Focused correctness and runner regressions
 results/runs/                Generated local JSON results, ignored by Git

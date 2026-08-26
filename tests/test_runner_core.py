@@ -15,7 +15,9 @@ from torch import nn
 
 from official import torch_transformer_benchmark as official
 from runner import __main__ as runner_cli
+from runner import supervisor
 from runner.contracts import (
+    ContractError,
     MeasurementProtocol,
     WorkloadCase,
     load_workload_set,
@@ -142,35 +144,56 @@ def _copy_runtime_project(tmp_path: Path) -> Path:
     return project
 
 
-def _successful_run(case_id: str, speedup: float) -> dict[str, Any]:
+def _successful_run(
+    case_id: str,
+    speedup: float,
+    *,
+    sweep_id: str = "fixture-sweep",
+) -> dict[str, Any]:
     workload_set = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
     case = next(case for case in workload_set["cases"] if case.case_id == case_id)
     target_median = 2.0 / speedup
     return {
+        "schema_version": 2,
+        "run_kind": "benchmark",
+        "target": "solution",
+        "sweep_id": sweep_id,
         "outcome": "success",
-        "official_snapshot_sha256": EXPECTED_OFFICIAL_SHA256,
-        "solution_source_sha256": "fixture-solution-hash",
+        "source": {
+            "official_sha256": EXPECTED_OFFICIAL_SHA256,
+            "solution_sha256": "fixture-solution-hash",
+        },
         "workload": {
             "set_id": WORKLOAD_SET_ID,
-            "case_id": case_id,
             "sha256": workload_set["sha256"],
-            "signature": case.as_dict(),
+            "case": case.as_dict(),
         },
-        "protocol": {"repeats": 1, "rounds": 1},
+        "protocol": {"accuracy_trials": 1, "repeats": 1, "rounds": 1},
         "environment": {
-            "resolved_device": "cuda:0",
-            "gpu": {"name": "fixture-gpu"},
+            "device": "cuda:0",
+            "gpu": "fixture-gpu",
         },
-        "correctness": {"passed": True},
+        "correctness": {
+            "passed": True,
+            "trial_count": 1,
+            "failed_elements": 0,
+            "max_abs_error": 0.0,
+        },
         "performance": {
-            "baseline": {"samples_ms": [2.0], "median_ms": 2.0},
+            "timer": "cuda_event",
+            "sample_count": 1,
+            "baseline": {
+                "median_ms": 2.0,
+                "p90_ms": 2.0,
+                "round_medians_ms": [2.0],
+            },
             "target": {
-                "samples_ms": [target_median],
                 "median_ms": target_median,
+                "p90_ms": target_median,
+                "round_medians_ms": [target_median],
             },
             "speedup": speedup,
         },
-        "failure": None,
     }
 
 
@@ -271,7 +294,74 @@ def test_incomplete_sweep_never_reports_aggregate(
     assert summary["worst_case_speedup"] is None
 
 
-def test_cli_parses_probe_benchmark_and_profile() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("timer", "perf_counter_ns"),
+        ("sample_count", 2),
+        ("baseline_p90", 0.0),
+        ("baseline_p90", 1.0),
+        ("target_round_medians", []),
+        ("speedup", 3.0),
+    ],
+    ids=(
+        "non-cuda-timer",
+        "sample-count",
+        "invalid-p90",
+        "p90-below-median",
+        "round-count",
+        "speedup-mismatch",
+    ),
+)
+def test_incomplete_sweep_rejects_invalid_compact_statistics(
+    field: str,
+    value: Any,
+) -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [_successful_run(case.case_id, 2.0) for case in workload["cases"]]
+    performance = runs[3]["performance"]
+    if field == "timer":
+        performance["timer"] = value
+    elif field == "sample_count":
+        performance["sample_count"] = value
+    elif field == "baseline_p90":
+        performance["baseline"]["p90_ms"] = value
+    elif field == "target_round_medians":
+        performance["target"]["round_medians_ms"] = value
+    else:
+        performance["speedup"] = value
+
+    summary = summarize_sweep(workload, runs, target="solution")
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["groups"] == []
+    assert summary["group_balanced_geomean_speedup"] is None
+    assert summary["worst_case_speedup"] is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("trial_count", 0),
+        ("failed_elements", 1),
+        ("max_abs_error", float("nan")),
+    ],
+)
+def test_incomplete_sweep_rejects_invalid_correctness_summary(
+    field: str,
+    value: Any,
+) -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [_successful_run(case.case_id, 2.0) for case in workload["cases"]]
+    runs[3]["correctness"][field] = value
+
+    summary = summarize_sweep(workload, runs, target="solution")
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["groups"] == []
+    assert summary["group_balanced_geomean_speedup"] is None
+    assert summary["worst_case_speedup"] is None
+
+
+def test_cli_parses_probe_benchmark_profile_and_tune() -> None:
     parser = runner_cli.build_parser()
 
     probe = parser.parse_args(["probe"])
@@ -284,12 +374,20 @@ def test_cli_parses_probe_benchmark_and_profile() -> None:
     assert benchmark.workload_set == WORKLOAD_SET_ID
     assert benchmark.case_id is None
     assert benchmark.preset == "smoke"
+    assert benchmark.solution_policy == "auto"
 
     profile = parser.parse_args(["profile", "--case-id", "attention_s2048_fp16"])
     assert profile.command == "profile"
     assert profile.target == "solution"
     assert profile.workload_set == WORKLOAD_SET_ID
     assert profile.case_id == "attention_s2048_fp16"
+    assert profile.solution_policy == "auto"
+
+    tune = parser.parse_args(["tune", "--case-id", "launch_s64_fp16"])
+    assert tune.command == "tune"
+    assert tune.case_id == ["launch_s64_fp16"]
+    assert tune.candidate is None
+    assert tune.preset == "smoke"
 
 
 @pytest.mark.parametrize(
@@ -306,7 +404,7 @@ def test_cli_dispatches_single_case_or_ordered_sweep(
     extra_arguments: list[str],
     expected_count: int,
 ) -> None:
-    calls: list[tuple[str, str | None]] = []
+    calls: list[tuple[str, str | None, str | None]] = []
 
     def fake_run_managed_benchmark(
         project_root: Path,
@@ -317,12 +415,17 @@ def test_cli_dispatches_single_case_or_ordered_sweep(
         device: str,
         target: str,
         workload_sha256: str | None,
+        sweep_id: str | None = None,
     ) -> tuple[dict[str, Any], Path]:
         del project_root, protocol, device
-        calls.append((case.case_id, workload_sha256))
+        calls.append((case.case_id, workload_sha256, sweep_id))
         assert workload_set_id == WORKLOAD_SET_ID
         assert target == "solution"
-        return _successful_run(case.case_id, 2.0), tmp_path / f"{case.case_id}.json"
+        return _successful_run(
+            case.case_id,
+            2.0,
+            sweep_id=sweep_id or "single-case",
+        ), tmp_path / f"{case.case_id}.json"
 
     monkeypatch.setattr(runner_cli, "run_managed_benchmark", fake_run_managed_benchmark)
     exit_code = runner_cli.main(["benchmark", *extra_arguments])
@@ -331,10 +434,14 @@ def test_cli_dispatches_single_case_or_ordered_sweep(
     assert len(calls) == expected_count
     expected_ids = [case[0] for case in EXPECTED_CASES]
     if expected_count == 1:
-        assert [case_id for case_id, _ in calls] == ["balanced_s128_fp16"]
+        assert [case_id for case_id, _, _ in calls] == ["balanced_s128_fp16"]
+        assert calls[0][2] is None
     else:
-        assert [case_id for case_id, _ in calls] == expected_ids
-    assert all(workload_hash for _, workload_hash in calls)
+        assert [case_id for case_id, _, _ in calls] == expected_ids
+        sweep_ids = {sweep_id for _, _, sweep_id in calls}
+        assert len(sweep_ids) == 1
+        assert None not in sweep_ids
+    assert all(workload_hash for _, workload_hash, _ in calls)
 
 
 def test_performance_alternates_order_and_uses_all_raw_samples(
@@ -442,25 +549,17 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
         ("timing", "baseline", 2),
         ("timing", "solution", 2),
     ]
-    assert performance["baseline"]["samples_ms"] == [
-        1.0,
-        100.0,
-        2.0,
-        3.0,
-        4.0,
-        5.0,
-    ]
-    assert performance["target"]["samples_ms"] == [
-        1.0,
-        9.0,
-        2.0,
-        8.0,
-        3.0,
-        7.0,
-    ]
     assert performance["baseline"]["median_ms"] == 3.5
+    assert performance["baseline"]["p90_ms"] == pytest.approx(52.5)
+    assert performance["baseline"]["round_medians_ms"] == [50.5, 2.5, 4.5]
+    assert performance["baseline"]["sample_count"] == 6
     assert performance["target"]["median_ms"] == 5.0
+    assert performance["target"]["p90_ms"] == pytest.approx(8.5)
+    assert performance["target"]["round_medians_ms"] == [5.0, 5.0, 5.0]
+    assert performance["target"]["sample_count"] == 6
     assert performance["speedup"] == pytest.approx(0.7)
+    assert "samples_ms" not in json.dumps(performance)
+    assert "solution" not in performance
 
 
 def test_managed_cpu_solution_smoke_persists_result(tmp_path: Path) -> None:
@@ -478,16 +577,220 @@ def test_managed_cpu_solution_smoke_persists_result(tmp_path: Path) -> None:
     )
 
     assert result["outcome"] == "success"
+    assert result["schema_version"] == 2
+    assert "sweep_id" not in result
     assert result["correctness"]["passed"] is True
-    assert result["failure"] is None
+    assert "failure" not in result
     performance = result["performance"]
-    assert len(performance["baseline"]["samples_ms"]) == 1
-    assert len(performance["target"]["samples_ms"]) == 1
+    assert performance["sample_count"] == 1
     assert performance["baseline"]["median_ms"] > 0
+    assert performance["baseline"]["p90_ms"] > 0
+    assert len(performance["baseline"]["round_medians_ms"]) == 1
     assert performance["target"]["median_ms"] > 0
+    assert performance["target"]["p90_ms"] > 0
+    assert len(performance["target"]["round_medians_ms"]) == 1
     assert math.isfinite(performance["speedup"])
     assert performance["speedup"] > 0
 
     assert result["workload"]["sha256"] == "fixture-hash"
+    assert result["workload"]["case"]["case_id"] == "tiny_cpu_smoke"
+    assert "status" not in result
+    assert "path" not in result
+    assert "case" not in result
+    assert "workload_set_id" not in result
+    assert "trials" not in result["correctness"]
+    assert "samples_ms" not in json.dumps(result)
     assert result_path.parent == project / "results" / "runs"
     assert json.loads(result_path.read_text(encoding="utf-8")) == result
+
+
+def test_managed_cpu_profile_persists_compact_hotspots(tmp_path: Path) -> None:
+    project = _copy_runtime_project(tmp_path)
+
+    result, result_path = supervisor.run_managed_profile(
+        project,
+        workload_set_id="tiny_test_fixture",
+        case=_tiny_case(),
+        protocol=_tiny_protocol(),
+        device="cpu",
+        target="solution",
+        workload_sha256="fixture-hash",
+    )
+
+    assert result["outcome"] == "success"
+    assert result["correctness"]["passed"] is True
+    profile = result["profile"]
+    assert profile["iterations"] == 1
+    assert profile["operator_hotspots"]
+    for hotspot in profile["operator_hotspots"]:
+        assert hotspot["name"].startswith("aten::")
+        assert hotspot["calls_per_forward"] > 0
+        assert hotspot["self_time_us_per_forward"] > 0
+        assert 0 < hotspot["share_pct"] <= 100
+    assert "trace" not in json.dumps(result).lower()
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
+
+
+def test_managed_failure_persists_only_known_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run_worker(
+        project_root: Path,
+        request: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        del project_root, request, timeout_seconds
+        return {
+            "outcome": "timeout",
+            "environment": None,
+            "probe": None,
+            "failure": {
+                "stage": "worker",
+                "type": "TimeoutExpired",
+                "message": "worker exceeded its time limit",
+                "exit_code": None,
+            },
+        }
+
+    monkeypatch.setattr(supervisor, "_run_worker", fake_run_worker)
+    result, result_path = supervisor.run_managed_probe(
+        tmp_path,
+        device="cuda:0",
+        timeout_seconds=1.0,
+    )
+
+    assert set(result) == {
+        "schema_version",
+        "run_id",
+        "created_at",
+        "run_kind",
+        "requested_device",
+        "outcome",
+        "failure",
+    }
+    assert result["outcome"] == "timeout"
+    assert result["failure"] == {
+        "stage": "worker",
+        "type": "TimeoutExpired",
+        "message": "worker exceeded its time limit",
+    }
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
+
+
+def test_correctness_failure_persists_summary_not_trials(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = _copy_runtime_project(tmp_path)
+
+    def fake_run_worker(
+        project_root: Path,
+        request: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        del project_root, request, timeout_seconds
+        return {
+            "outcome": "invalid_output",
+            "solution_source_sha256": "fixture-solution-hash",
+            "environment": {
+                "device": "cpu",
+                "torch": torch.__version__,
+                "cuda_runtime": torch.version.cuda,
+            },
+            "correctness": {
+                "passed": False,
+                "trial_count": 1,
+                "failed_elements": 3,
+                "max_abs_error": 0.25,
+                "max_relative_error": 2.0,
+                "trials": [
+                    {
+                        "seed": 17,
+                        "passed": False,
+                        "failed_elements": 3,
+                        "max_abs_error": 0.25,
+                        "max_relative_error": 2.0,
+                        "error": "ContractError: output shape mismatch",
+                    }
+                ],
+            },
+            "execution_path": {"qkv_projection": "packed"},
+            "failure": {
+                "stage": "correctness",
+                "type": "CorrectnessError",
+                "message": "Solution failed the correctness contract",
+                "exit_code": None,
+            },
+        }
+
+    monkeypatch.setattr(supervisor, "_run_worker", fake_run_worker)
+    result, result_path = supervisor.run_managed_benchmark(
+        project,
+        workload_set_id="tiny_test_fixture",
+        case=_tiny_case(),
+        protocol=_tiny_protocol(),
+        device="cpu",
+        target="solution",
+        workload_sha256="fixture-hash",
+    )
+
+    assert result["outcome"] == "invalid_output"
+    assert result["correctness"] == {
+        "passed": False,
+        "trial_count": 1,
+        "failed_elements": 3,
+        "max_abs_error": 0.25,
+        "max_relative_error": 2.0,
+        "diagnostic": "ContractError: output shape mismatch",
+    }
+    assert "performance" not in result
+    assert "trials" not in result["correctness"]
+    assert "samples_ms" not in json.dumps(result)
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
+
+
+def test_probe_rejects_failed_device_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fake_run_worker(
+        project_root: Path,
+        request: dict[str, Any],
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        del project_root, request, timeout_seconds
+        return {
+            "outcome": "success",
+            "environment": {"device": "cpu", "torch": torch.__version__},
+            "probe": {
+                "device_operation_passed": False,
+                "sdpa": {"available": False, "reason": "cuda_required"},
+            },
+            "failure": None,
+        }
+
+    monkeypatch.setattr(supervisor, "_run_worker", fake_run_worker)
+    result, _ = supervisor.run_managed_probe(tmp_path, device="cpu")
+
+    assert result["outcome"] == "runtime_error"
+    assert result["probe"]["device_operation_passed"] is False
+    assert result["failure"] == {
+        "stage": "result_compaction",
+        "type": "InvalidWorkerResponse",
+        "message": "device operation failed",
+    }
+
+
+@pytest.mark.parametrize("timeout", [0.0, float("nan"), float("inf")])
+def test_probe_rejects_invalid_timeout_before_start(
+    tmp_path: Path,
+    timeout: float,
+) -> None:
+    with pytest.raises(ContractError, match="timeout_seconds must be finite"):
+        supervisor.run_managed_probe(
+            tmp_path,
+            device="cpu",
+            timeout_seconds=timeout,
+        )
+    assert not (tmp_path / "results").exists()

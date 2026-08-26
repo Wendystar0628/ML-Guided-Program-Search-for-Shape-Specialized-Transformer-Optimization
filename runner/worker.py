@@ -13,14 +13,6 @@ from runner.execution import execute_benchmark, execute_profile
 from runner.probe import execute_probe
 
 
-def _legacy_status(outcome: str) -> str:
-    if outcome == "invalid_output":
-        return "correctness_failed"
-    if outcome == "cancelled":
-        return "interrupted"
-    return outcome
-
-
 def _failure(exc: BaseException, run_kind: str) -> dict[str, Any]:
     if isinstance(exc, torch.cuda.OutOfMemoryError):
         outcome = "oom"
@@ -37,14 +29,12 @@ def _failure(exc: BaseException, run_kind: str) -> dict[str, Any]:
         outcome = "runtime_error"
     return {
         "outcome": outcome,
-        "status": _legacy_status(outcome),
         "solution_source_sha256": None,
         "environment": None,
         "correctness": None,
         "performance": None,
         "profile": None,
         "probe": None,
-        "path": None,
         "failure": {
             "stage": run_kind,
             "type": type(exc).__name__,

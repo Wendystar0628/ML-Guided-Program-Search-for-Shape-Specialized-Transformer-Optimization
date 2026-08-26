@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import statistics
 from typing import Any
 
 from runner.contracts import ContractError, WorkloadGroup
@@ -27,14 +26,7 @@ def _geometric_mean(values: list[float], weights: list[float] | None = None) -> 
 
 def _outcome(run: dict[str, Any]) -> str:
     value = run.get("outcome")
-    if isinstance(value, str):
-        return value
-    legacy = run.get("status")
-    if legacy == "correctness_failed":
-        return "invalid_output"
-    if legacy == "interrupted":
-        return "cancelled"
-    return str(legacy or "runtime_error")
+    return value if isinstance(value, str) else "runtime_error"
 
 
 def _finite_positive(value: Any) -> float | None:
@@ -46,29 +38,27 @@ def _finite_positive(value: Any) -> float | None:
     return normalized
 
 
-def _validated_median(
-    performance: dict[str, Any],
+def _validated_timing_side(
+    record: Any,
     side: str,
-    expected_count: int,
+    expected_rounds: int,
 ) -> tuple[float | None, str | None]:
-    record = performance.get(side)
     if not isinstance(record, dict):
         return None, f"missing_{side}_timing"
-    samples = record.get("samples_ms")
-    if not isinstance(samples, list):
-        return None, f"missing_{side}_samples"
-    if len(samples) != expected_count:
-        return None, f"{side}_sample_count_mismatch"
-    normalized = [_finite_positive(value) for value in samples]
-    if any(value is None for value in normalized):
-        return None, f"invalid_{side}_samples"
-    recomputed = statistics.median([value for value in normalized if value is not None])
-    stored = _finite_positive(record.get("median_ms"))
-    if stored is None:
+    median = _finite_positive(record.get("median_ms"))
+    if median is None:
         return None, f"invalid_{side}_median"
-    if not math.isclose(stored, recomputed, rel_tol=1e-12, abs_tol=1e-12):
-        return None, f"{side}_median_mismatch"
-    return recomputed, None
+    p90 = _finite_positive(record.get("p90_ms"))
+    if p90 is None:
+        return None, f"invalid_{side}_p90"
+    if p90 < median and not math.isclose(p90, median, rel_tol=1e-12, abs_tol=1e-12):
+        return None, f"{side}_p90_below_median"
+    round_medians = record.get("round_medians_ms")
+    if not isinstance(round_medians, list) or len(round_medians) != expected_rounds:
+        return None, f"{side}_round_count_mismatch"
+    if any(_finite_positive(value) is None for value in round_medians):
+        return None, f"invalid_{side}_round_medians"
+    return median, None
 
 
 def _validated_performance(
@@ -92,14 +82,27 @@ def _validated_performance(
     performance = run.get("performance")
     if not isinstance(performance, dict):
         return None, "missing_performance"
+    if performance.get("timer") != "cuda_event":
+        return None, "non_cuda_timing"
     expected_count = repeats * rounds
-    baseline_median, error = _validated_median(performance, "baseline", expected_count)
+    sample_count = performance.get("sample_count")
+    if (
+        isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or sample_count != expected_count
+    ):
+        return None, "sample_count_mismatch"
+    baseline_median, error = _validated_timing_side(
+        performance.get("baseline"), "baseline", rounds
+    )
     if error is not None:
         return None, error
     if target == "baseline":
         return None, None
 
-    target_median, error = _validated_median(performance, "target", expected_count)
+    target_median, error = _validated_timing_side(
+        performance.get("target"), "target", rounds
+    )
     if error is not None:
         return None, error
     assert baseline_median is not None and target_median is not None
@@ -117,15 +120,68 @@ def _validated_performance(
     return recomputed_speedup, None
 
 
+def _validated_correctness(
+    run: dict[str, Any],
+    target: str,
+) -> str | None:
+    if target == "baseline":
+        return None
+    correctness = run.get("correctness")
+    protocol = run.get("protocol")
+    if not isinstance(correctness, dict) or not isinstance(protocol, dict):
+        return "invalid_correctness"
+    trial_count = correctness.get("trial_count")
+    expected_trials = protocol.get("accuracy_trials")
+    failed_elements = correctness.get("failed_elements")
+    max_abs_error = correctness.get("max_abs_error")
+    if correctness.get("passed") is not True:
+        return "invalid_correctness"
+    if (
+        isinstance(trial_count, bool)
+        or not isinstance(trial_count, int)
+        or isinstance(expected_trials, bool)
+        or not isinstance(expected_trials, int)
+        or expected_trials <= 0
+        or trial_count != expected_trials
+    ):
+        return "invalid_correctness_summary"
+    if (
+        isinstance(failed_elements, bool)
+        or not isinstance(failed_elements, int)
+        or failed_elements != 0
+    ):
+        return "invalid_correctness_summary"
+    if (
+        isinstance(max_abs_error, bool)
+        or not isinstance(max_abs_error, (int, float))
+        or not math.isfinite(float(max_abs_error))
+        or float(max_abs_error) < 0
+    ):
+        return "invalid_correctness_summary"
+    return None
+
+
 def _run_context(
     run: dict[str, Any],
     *,
     target: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    official_hash = run.get("official_snapshot_sha256")
+    if run.get("schema_version") != 2:
+        return None, "unsupported_schema"
+    if run.get("run_kind") != "benchmark":
+        return None, "run_kind_mismatch"
+    if run.get("target") != target:
+        return None, "target_mismatch"
+    sweep_id = run.get("sweep_id")
+    if not isinstance(sweep_id, str) or not sweep_id:
+        return None, "missing_sweep_id"
+    source = run.get("source")
+    if not isinstance(source, dict):
+        return None, "missing_source"
+    official_hash = source.get("official_sha256")
     if not isinstance(official_hash, str) or not official_hash:
         return None, "missing_official_snapshot_hash"
-    solution_hash = run.get("solution_source_sha256")
+    solution_hash = source.get("solution_sha256")
     if target == "solution" and (
         not isinstance(solution_hash, str) or not solution_hash
     ):
@@ -136,15 +192,15 @@ def _run_context(
     environment = run.get("environment")
     if not isinstance(environment, dict):
         return None, "missing_environment"
-    resolved_device = environment.get("resolved_device")
+    resolved_device = environment.get("device")
     if not isinstance(resolved_device, str) or not resolved_device:
         return None, "missing_resolved_device"
     return {
+        "sweep_id": sweep_id,
         "official_snapshot_sha256": official_hash,
         "solution_source_sha256": solution_hash if target == "solution" else None,
         "protocol": protocol,
-        "resolved_device": resolved_device,
-        "gpu": environment.get("gpu"),
+        "environment": environment,
     }, None
 
 
@@ -153,11 +209,11 @@ def _context_mismatch(
     actual: dict[str, Any],
 ) -> str | None:
     labels = {
+        "sweep_id": "sweep_id_mismatch",
         "official_snapshot_sha256": "official_snapshot_mismatch",
         "solution_source_sha256": "solution_source_mismatch",
         "protocol": "protocol_mismatch",
-        "resolved_device": "device_mismatch",
-        "gpu": "device_mismatch",
+        "environment": "environment_mismatch",
     }
     for key, reason in labels.items():
         if actual.get(key) != expected.get(key):
@@ -183,7 +239,8 @@ def summarize_sweep(
     unexpected: list[str] = []
     for run in runs:
         workload = run.get("workload") or {}
-        case_id = workload.get("case_id") or (run.get("case") or {}).get("case_id")
+        case = workload.get("case") if isinstance(workload, dict) else None
+        case_id = case.get("case_id") if isinstance(case, dict) else None
         if not isinstance(case_id, str):
             unexpected.append("<missing-case-id>")
             continue
@@ -211,19 +268,15 @@ def summarize_sweep(
         reason: str | None = None
         if outcome != "success":
             reason = outcome
-        correctness = run.get("correctness")
-        correctness_passed = target == "baseline" or (
-            isinstance(correctness, dict) and correctness.get("passed") is True
-        )
-        if reason is None and not correctness_passed:
-            reason = "invalid_correctness"
+        if reason is None:
+            reason = _validated_correctness(run, target)
 
         workload = run.get("workload")
         if reason is None and (
             not isinstance(workload, dict)
             or workload.get("set_id") != workload_set["workload_set_id"]
             or workload.get("sha256") != workload_set["sha256"]
-            or workload.get("signature") != case.as_dict()
+            or workload.get("case") != case.as_dict()
         ):
             reason = "workload_mismatch"
 
