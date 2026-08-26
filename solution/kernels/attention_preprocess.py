@@ -1,4 +1,4 @@
-"""Triton softmax for the explicit reference-order attention path."""
+"""Triton preprocessing for the native FP32 attention softmax path."""
 
 from __future__ import annotations
 
@@ -12,16 +12,16 @@ except (ImportError, OSError):
     tl = None
 
 
-TRITON_ATTENTION_SOFTMAX_AVAILABLE = triton is not None and tl is not None
+TRITON_ATTENTION_PREPROCESS_AVAILABLE = triton is not None and tl is not None
 
 
-if TRITON_ATTENTION_SOFTMAX_AVAILABLE:
+if TRITON_ATTENTION_PREPROCESS_AVAILABLE:
 
     @triton.jit
-    def _scale_mask_softmax_kernel(
+    def _scale_mask_to_fp32_kernel(
         scores_ptr,
         valid_mask_ptr,
-        probabilities_ptr,
+        output_ptr,
         scale,
         sequence_length: tl.constexpr,
         num_heads: tl.constexpr,
@@ -32,52 +32,50 @@ if TRITON_ATTENTION_SOFTMAX_AVAILABLE:
         row_index = tl.program_id(axis=0)
         column_offsets = tl.arange(0, BLOCK_SIZE)
         column_mask = column_offsets < sequence_length
-
-        query_index = row_index % sequence_length
-        batch_head_index = row_index // sequence_length
-        batch_index = batch_head_index // num_heads
         row_offsets = row_index * sequence_length + column_offsets
 
-        scores = tl.load(scores_ptr + row_offsets, mask=column_mask, other=-float("inf"))
-        # Match the reference boundary: scale in FP16, then promote for softmax.
-        scores = (scores.to(tl.float32) * scale).to(tl.float16).to(tl.float32)
+        values = tl.load(scores_ptr + row_offsets, mask=column_mask, other=0.0)
+        # Preserve the reference boundary: scale in FP16 before promotion.
+        values = (values.to(tl.float32) * scale).to(tl.float16).to(tl.float32)
+
         if IS_CAUSAL:
-            scores = tl.where(column_offsets <= query_index, scores, -float("inf"))
+            query_index = row_index % sequence_length
+            values = tl.where(column_offsets <= query_index, values, -float("inf"))
+
         if HAS_VALID_MASK:
+            batch_head_index = row_index // sequence_length
+            batch_index = batch_head_index // num_heads
             valid_keys = tl.load(
                 valid_mask_ptr + batch_index * sequence_length + column_offsets,
                 mask=column_mask,
                 other=False,
             )
-            scores = tl.where(valid_keys, scores, -float("inf"))
+            values = tl.where(valid_keys, values, -float("inf"))
 
-        row_max = tl.max(scores, axis=0)
-        numerator = tl.exp(scores - row_max)
-        denominator = tl.sum(numerator, axis=0)
-        probabilities = numerator / denominator
-        tl.store(
-            probabilities_ptr + row_offsets,
-            probabilities,
-            mask=column_mask,
-        )
+        tl.store(output_ptr + row_offsets, values, mask=column_mask)
 
 
-def can_use_triton_attention_softmax(
+def can_use_triton_attention_preprocess(
     scores: torch.Tensor,
     valid_token_mask: torch.Tensor | None,
     head_dim: int,
 ) -> bool:
-    """Return whether scores match the deliberately narrow tuned shape family."""
+    """Return whether the long-sequence FP16 route is supported."""
 
-    if not TRITON_ATTENTION_SOFTMAX_AVAILABLE:
+    if not TRITON_ATTENTION_PREPROCESS_AVAILABLE:
         return False
     if not scores.is_cuda or not scores.is_contiguous():
         return False
     if scores.dtype != torch.float16 or scores.ndim != 4:
         return False
-    if scores.shape[-1] != scores.shape[-2] or scores.shape[-1] not in (512, 2048):
+    sequence_length = scores.shape[-1]
+    if scores.shape[-2] != sequence_length:
         return False
-    if head_dim != 64:
+    supported_shape = (sequence_length, head_dim) in {
+        (64, 32),
+        (2048, 64),
+    }
+    if not supported_shape:
         return False
     if valid_token_mask is None:
         return True
@@ -86,12 +84,11 @@ def can_use_triton_attention_softmax(
         and valid_token_mask.device == scores.device
         and valid_token_mask.dtype == torch.bool
         and valid_token_mask.is_contiguous()
-        and valid_token_mask.shape
-        == (scores.shape[0], scores.shape[-1])
+        and valid_token_mask.shape == (scores.shape[0], scores.shape[-1])
     )
 
 
-def triton_scale_mask_softmax(
+def triton_scale_mask_to_fp32(
     scores: torch.Tensor,
     valid_token_mask: torch.Tensor | None,
     *,
@@ -99,32 +96,33 @@ def triton_scale_mask_softmax(
     scale: float,
     causal: bool,
 ) -> torch.Tensor:
-    """Apply scale, optional masks and FP32 softmax, then store in FP16."""
+    """Scale and mask FP16 scores while writing native-softmax FP32 input."""
 
-    if not can_use_triton_attention_softmax(
+    if not can_use_triton_attention_preprocess(
         scores,
         valid_token_mask,
         head_dim,
     ):
-        raise ValueError("scores are not supported by the Triton attention softmax")
+        raise ValueError("scores are not supported by the Triton preprocessor")
     assert triton is not None
 
     batch_size, num_heads, sequence_length, _ = scores.shape
-    probabilities = torch.empty_like(scores)
+    output = torch.empty_like(scores, dtype=torch.float32)
     block_size = triton.next_power_of_2(sequence_length)
+    num_warps = 4 if sequence_length <= 128 else 8
     grid = (batch_size * num_heads * sequence_length,)
     mask_pointer = scores if valid_token_mask is None else valid_token_mask
-    _scale_mask_softmax_kernel[grid](
+    _scale_mask_to_fp32_kernel[grid](
         scores,
         mask_pointer,
-        probabilities,
+        output,
         scale,
         sequence_length=sequence_length,
         num_heads=num_heads,
         HAS_VALID_MASK=valid_token_mask is not None,
         IS_CAUSAL=causal,
         BLOCK_SIZE=block_size,
-        num_warps=8,
+        num_warps=num_warps,
         num_stages=1,
     )
-    return probabilities
+    return output

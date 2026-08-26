@@ -547,6 +547,8 @@ def run_managed_benchmark(
     target: str = "solution",
     workload_sha256: str | None = None,
     sweep_id: str | None = None,
+    tuning_id: str | None = None,
+    candidate_id: str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
     run_id = new_run_id()
@@ -570,6 +572,13 @@ def run_managed_benchmark(
     }
     if sweep_id is not None:
         result["sweep_id"] = sweep_id
+    if tuning_id is not None or candidate_id is not None:
+        if not tuning_id or not candidate_id:
+            raise ContractError("tuning_id and candidate_id must be provided together")
+        result["tuning"] = {
+            "id": tuning_id,
+            "candidate_id": candidate_id,
+        }
     result.update(
         {
             "created_at": created_at,

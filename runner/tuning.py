@@ -14,12 +14,27 @@ from runner.contracts import (
     ContractError,
     MeasurementProtocol,
     WorkloadCase,
+    atomic_write_json,
     new_run_id,
+    solution_implementation_hash,
+    utc_now,
 )
 from runner.supervisor import run_managed_benchmark
 
 SOLUTION_POLICY_ENV = "TRANSFORMER_OPT_POLICY"
-SOLUTION_POLICIES = ("auto", "torch", "triton", "padding", "packed")
+SOLUTION_POLICIES = (
+    "dispatch",
+    "auto",
+    "reference",
+    "torch",
+    "triton",
+    "preprocess",
+    "long-pv",
+    "wide-epilogue",
+    "cuda-graph",
+    "padding",
+    "packed",
+)
 
 
 @dataclass(frozen=True)
@@ -30,9 +45,11 @@ class TuningCandidate:
     solution_policy: str
     compile_solution: bool = False
     compile_mode: str = "default"
+    cuda_graph_solution: bool = False
 
 
 _EAGER_CANDIDATES = (
+    TuningCandidate("eager-reference", "reference"),
     TuningCandidate("eager-torch", "torch"),
     TuningCandidate("eager-auto", "auto"),
     TuningCandidate("eager-triton", "triton"),
@@ -49,8 +66,23 @@ _COMPILE_REDUCE_OVERHEAD = TuningCandidate(
     True,
     "reduce-overhead",
 )
+_EAGER_CUDAGRAPH = TuningCandidate(
+    "eager-cudagraph",
+    "auto",
+    cuda_graph_solution=True,
+)
+_SOLUTION_CUDAGRAPH = TuningCandidate("launch-cudagraph", "cuda-graph")
 _PADDING_FUSION_CANDIDATE = TuningCandidate("padding-fused", "padding")
 _PADDING_PACKED_CANDIDATE = TuningCandidate("padding-packed", "packed")
+_ATTENTION_PREPROCESS_CANDIDATE = TuningCandidate(
+    "attention-preprocess",
+    "preprocess",
+)
+_LONG_PV_CANDIDATE = TuningCandidate("long-pv", "long-pv")
+_WIDE_EPILOGUE_CANDIDATE = TuningCandidate(
+    "wide-gelu-epilogue",
+    "wide-epilogue",
+)
 _WIDE_CANDIDATE = TuningCandidate(
     "compile-max-autotune",
     "auto",
@@ -82,12 +114,51 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
     candidates = list(_EAGER_CANDIDATES)
     if case.seq_len <= 128:
         candidates.extend((_COMPILE_DEFAULT, _COMPILE_REDUCE_OVERHEAD))
+    if case.dtype == "float16" and (case.seq_len, case.d_model // case.num_heads) in {
+        (64, 32),
+        (2048, 64),
+    }:
+        candidates.append(_ATTENTION_PREPROCESS_CANDIDATE)
+    if (
+        case.batch_size == 1
+        and case.seq_len == 2048
+        and case.d_model == 512
+        and case.num_heads == 8
+        and case.dtype == "float16"
+    ):
+        candidates.append(_LONG_PV_CANDIDATE)
     if case.padding_ratio > 0 or case.case_id.startswith("mask_s512_"):
         candidates.extend((_PADDING_FUSION_CANDIDATE, _PADDING_PACKED_CANDIDATE))
+    elif (
+        case.batch_size == 1
+        and case.seq_len == 64
+        and case.d_model == 256
+        and case.num_heads == 8
+        and case.ffn_dim == 1024
+        and case.dtype == "float16"
+    ):
+        candidates.extend(
+            (
+                _PADDING_FUSION_CANDIDATE,
+                _EAGER_CUDAGRAPH,
+                _SOLUTION_CUDAGRAPH,
+            )
+        )
     if case.d_model >= 1024 or case.ffn_dim >= 4096:
         if _COMPILE_DEFAULT not in candidates:
             candidates.append(_COMPILE_DEFAULT)
         candidates.append(_WIDE_CANDIDATE)
+        if (
+            case.batch_size == 16
+            and case.seq_len == 256
+            and case.d_model == 1024
+            and case.num_heads == 8
+            and case.ffn_dim == 4096
+            and case.num_layers == 6
+            and case.dtype == "bfloat16"
+            and not case.causal
+        ):
+            candidates.append(_WIDE_EPILOGUE_CANDIDATE)
     return tuple(candidates)
 
 
@@ -117,6 +188,7 @@ def _candidate_protocol(
         base,
         compile_baseline=False,
         compile_solution=candidate.compile_solution,
+        cuda_graph_solution=candidate.cuda_graph_solution,
         compile_mode=candidate.compile_mode,
     )
     protocol.validate()
@@ -133,6 +205,7 @@ def _observation(
     baseline = performance.get("baseline") if isinstance(performance, dict) else None
     correctness = result.get("correctness")
     execution_path = result.get("execution_path")
+    source = result.get("source")
     requested_policy = (
         execution_path.get("requested_policy")
         if isinstance(execution_path, dict)
@@ -162,16 +235,72 @@ def _observation(
             route_matches = (
                 execution_path.get("padding_route") == "packed_valid_token_ffn"
             )
+        elif candidate.solution_policy == "reference":
+            route_matches = (
+                execution_path.get("resolved_attention") == "explicit_reference_order"
+            )
+        elif candidate.solution_policy == "preprocess":
+            route_matches = (
+                execution_path.get("resolved_attention")
+                == "explicit_qk_triton_preprocess_native_softmax_pv"
+            )
+        elif candidate.solution_policy == "long-pv":
+            route_matches = (
+                execution_path.get("resolved_attention")
+                == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
+            )
+        elif candidate.solution_policy == "wide-epilogue":
+            route_matches = (
+                execution_path.get("resolved_ffn") == "cublaslt_tanh_gelu_epilogue"
+            )
+        elif candidate.solution_policy == "cuda-graph":
+            route_matches = (
+                execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph"
+            )
     policy_applied = (
         requested_policy == candidate.solution_policy
         and selected_matches
         and route_matches
     )
+    if candidate.cuda_graph_solution:
+        policy_applied = (
+            policy_applied
+            and isinstance(execution_path, dict)
+            and (execution_path.get("runtime_wrapper") == "eager_cuda_graph")
+        )
+    baseline_rounds = (
+        baseline.get("round_medians_ms") if isinstance(baseline, dict) else None
+    )
+    target_rounds = target.get("round_medians_ms") if isinstance(target, dict) else None
+    paired_round_speedups: list[float] | None = None
+    if (
+        isinstance(baseline_rounds, list)
+        and isinstance(target_rounds, list)
+        and len(baseline_rounds) == len(target_rounds)
+        and baseline_rounds
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and isfinite(float(value))
+            and float(value) > 0
+            for value in (*baseline_rounds, *target_rounds)
+        )
+    ):
+        paired_round_speedups = [
+            float(baseline_value) / float(target_value)
+            for baseline_value, target_value in zip(
+                baseline_rounds,
+                target_rounds,
+                strict=True,
+            )
+        ]
+    conservative_speedup = min(paired_round_speedups) if paired_round_speedups else None
     return {
         "candidate_id": candidate.candidate_id,
         "solution_policy": candidate.solution_policy,
         "compile_solution": candidate.compile_solution,
         "compile_mode": candidate.compile_mode,
+        "cuda_graph_solution": candidate.cuda_graph_solution,
         "outcome": result.get("outcome"),
         "correctness_passed": (
             correctness.get("passed") if isinstance(correctness, dict) else None
@@ -182,9 +311,7 @@ def _observation(
             else None
         ),
         "max_abs_error": (
-            correctness.get("max_abs_error")
-            if isinstance(correctness, dict)
-            else None
+            correctness.get("max_abs_error") if isinstance(correctness, dict) else None
         ),
         "baseline_median_ms": (
             baseline.get("median_ms") if isinstance(baseline, dict) else None
@@ -193,10 +320,18 @@ def _observation(
             target.get("median_ms") if isinstance(target, dict) else None
         ),
         "target_p90_ms": target.get("p90_ms") if isinstance(target, dict) else None,
+        "baseline_round_medians_ms": baseline_rounds,
+        "target_round_medians_ms": target_rounds,
+        "paired_round_speedups": paired_round_speedups,
+        "conservative_speedup": conservative_speedup,
         "speedup": (
             performance.get("speedup") if isinstance(performance, dict) else None
         ),
         "policy_applied": policy_applied,
+        "run_id": result.get("run_id"),
+        "solution_sha256": (
+            source.get("solution_sha256") if isinstance(source, dict) else None
+        ),
         "execution_path": execution_path,
         "result_path": str(result_path),
     }
@@ -212,11 +347,19 @@ def run_tuning_case(
     device: str,
     requested_candidates: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Run applicable candidates serially and return an in-memory comparison."""
+    """Run candidates serially and persist one compact screening summary."""
 
     observations: list[dict[str, Any]] = []
     tuning_id = new_run_id()
-    for candidate in select_candidates(case, requested_candidates):
+    device_profile: dict[str, Any] | None = None
+    solution_root = project_root / "solution"
+    implementation_hash_before = (
+        solution_implementation_hash(solution_root)
+        if solution_root.is_dir()
+        else None
+    )
+    candidates = select_candidates(case, requested_candidates)
+    for candidate in candidates:
         protocol = _candidate_protocol(base_protocol, candidate)
         with solution_policy(candidate.solution_policy):
             result, result_path = run_managed_benchmark(
@@ -228,8 +371,24 @@ def run_tuning_case(
                 target="solution",
                 workload_sha256=workload_sha256,
                 sweep_id=tuning_id,
+                tuning_id=tuning_id,
+                candidate_id=candidate.candidate_id,
             )
         observations.append(_observation(candidate, result, result_path))
+        environment = result.get("environment")
+        if device_profile is None and isinstance(environment, dict):
+            resolved_device = environment.get("device")
+            device_profile = {
+                "device_type": (
+                    resolved_device.split(":", maxsplit=1)[0]
+                    if isinstance(resolved_device, str)
+                    else None
+                ),
+                "device_name": environment.get("gpu"),
+                "compute_capability": environment.get("compute_capability"),
+                "torch": environment.get("torch"),
+                "cuda_runtime": environment.get("cuda_runtime"),
+            }
         if result.get("outcome") == "cancelled":
             break
 
@@ -246,10 +405,67 @@ def run_tuning_case(
         and isfinite(float(item["target_median_ms"]))
         and float(item["target_median_ms"]) > 0
     ]
-    winner = max(eligible, key=lambda item: float(item["speedup"])) if eligible else None
-    return {
+    solution_hashes = {
+        item["solution_sha256"]
+        for item in observations
+        if isinstance(item.get("solution_sha256"), str)
+    }
+    source_consistent = len(solution_hashes) == 1 and all(
+        item.get("solution_sha256") in solution_hashes for item in observations
+    )
+    implementation_hash_after = (
+        solution_implementation_hash(solution_root)
+        if solution_root.is_dir()
+        else None
+    )
+    implementation_consistent = (
+        implementation_hash_before is not None
+        and implementation_hash_before == implementation_hash_after
+    )
+    if not source_consistent:
+        eligible = []
+
+    def ranking_speedup(item: dict[str, Any]) -> float:
+        conservative = item.get("conservative_speedup")
+        return float(
+            conservative if isinstance(conservative, (int, float)) else item["speedup"]
+        )
+
+    winner = max(eligible, key=ranking_speedup) if eligible else None
+    deployable = [
+        item
+        for item in eligible
+        if item["compile_solution"] is False and item["cuda_graph_solution"] is False
+    ]
+    deployable_winner = max(deployable, key=ranking_speedup) if deployable else None
+    summary = {
+        "schema_version": 1,
         "tuning_id": tuning_id,
+        "created_at": utc_now(),
+        "complete": len(observations) == len(candidates)
+        and all(item.get("outcome") != "cancelled" for item in observations),
+        "workload": {
+            "set_id": workload_set_id,
+            "sha256": workload_sha256,
+            "case": case.as_dict(),
+        },
+        "requested_device": device,
+        "device_profile": device_profile,
+        "protocol": base_protocol.as_dict(),
+        "source_solution_sha256": (
+            next(iter(solution_hashes)) if len(solution_hashes) == 1 else None
+        ),
+        "source_consistent": source_consistent,
+        "source_implementation_sha256": (
+            implementation_hash_before if implementation_consistent else None
+        ),
+        "implementation_consistent": implementation_consistent,
         "case_id": case.case_id,
         "observations": observations,
         "winner": winner,
+        "deployable_winner": deployable_winner,
     }
+    summary_path = project_root / "results" / "tuning" / f"{tuning_id}.json"
+    summary["summary_path"] = str(summary_path)
+    atomic_write_json(summary_path, summary)
+    return summary

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "default_policy": "auto",
+  "routes": [
+    {
+      "match": {
+        "dtype": "float16",
+        "B": 1,
+        "S": 64,
+        "D": 256,
+        "heads": 8,
+        "ffn": 1024,
+        "layers": 4,
+        "causal": false,
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "cuda-graph"
+    }
+  ]
+}

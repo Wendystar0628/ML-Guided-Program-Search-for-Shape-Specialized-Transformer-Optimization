@@ -109,6 +109,100 @@ def _validate_output(
     return output
 
 
+class _CudaGraphSolution(nn.Module):
+    """Bounded eager CUDA Graph wrapper used only by the tuning runner."""
+
+    def __init__(self, module: nn.Module) -> None:
+        super().__init__()
+        self.module = module
+        self.train(module.training)
+        self._signature: tuple[object, ...] | None = None
+        self._graph: torch.cuda.CUDAGraph | None = None
+        self._static_input: torch.Tensor | None = None
+        self._static_mask: torch.Tensor | None = None
+        self._static_output: torch.Tensor | None = None
+
+    @staticmethod
+    def _input_signature(
+        value: torch.Tensor,
+        valid_mask: torch.Tensor | None,
+    ) -> tuple[object, ...]:
+        mask_signature = None
+        if valid_mask is not None:
+            mask_signature = (
+                valid_mask.device,
+                valid_mask.dtype,
+                tuple(valid_mask.shape),
+                tuple(valid_mask.stride()),
+            )
+        return (
+            value.device,
+            value.dtype,
+            tuple(value.shape),
+            tuple(value.stride()),
+            mask_signature,
+        )
+
+    def _capture(
+        self,
+        value: torch.Tensor,
+        valid_mask: torch.Tensor | None,
+    ) -> None:
+        if not value.is_cuda:
+            raise ContractError("the eager CUDA Graph candidate requires CUDA input")
+        if self.training or torch.is_grad_enabled():
+            raise ContractError(
+                "the eager CUDA Graph candidate requires eval inference mode"
+            )
+        self._signature = self._input_signature(value, valid_mask)
+        self._static_input = value.detach().clone()
+        self._static_mask = None if valid_mask is None else valid_mask.detach().clone()
+
+        current_stream = torch.cuda.current_stream(value.device)
+        capture_stream = torch.cuda.Stream(device=value.device)
+        capture_stream.wait_stream(current_stream)
+        with torch.cuda.stream(capture_stream), torch.inference_mode():
+            for _ in range(3):
+                self.module(self._static_input, self._static_mask)
+        current_stream.wait_stream(capture_stream)
+
+        graph = torch.cuda.CUDAGraph()
+        with (
+            torch.inference_mode(),
+            torch.cuda.graph(
+                graph,
+                stream=capture_stream,
+            ),
+        ):
+            static_output = self.module(self._static_input, self._static_mask)
+        current_stream.wait_stream(capture_stream)
+        self._graph = graph
+        self._static_output = static_output
+
+    def forward(
+        self,
+        value: torch.Tensor,
+        valid_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        signature = self._input_signature(value, valid_mask)
+        if self._graph is None:
+            self._capture(value, valid_mask)
+        elif signature != self._signature:
+            raise ContractError(
+                "the eager CUDA Graph candidate received a different input signature"
+            )
+
+        assert self._static_input is not None
+        assert self._static_output is not None
+        assert self._graph is not None
+        self._static_input.copy_(value)
+        if valid_mask is not None:
+            assert self._static_mask is not None
+            self._static_mask.copy_(valid_mask)
+        self._graph.replay()
+        return self._static_output.clone()
+
+
 def run_correctness(
     baseline: nn.Module,
     solution: nn.Module,
@@ -421,6 +515,8 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
         case = WorkloadCase.from_dict(request["case"])
         protocol = MeasurementProtocol(**request["protocol"])
         protocol.validate()
+        if target == "baseline" and protocol.cuda_graph_solution:
+            raise ContractError("CUDA Graph wrapping applies only to the Solution")
 
         stage = "device"
         requested_device = str(request["device"])
@@ -460,6 +556,13 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
             solution if solution is not None else baseline,
             case=case,
         )
+        _validate_cuda_graph_composition(execution_path, protocol)
+
+        if solution is not None and protocol.cuda_graph_solution:
+            if device.type != "cuda":
+                raise ContractError("the eager CUDA Graph candidate requires CUDA")
+            solution = _CudaGraphSolution(solution).eval()
+            execution_path["runtime_wrapper"] = "eager_cuda_graph"
 
         stage = "compile"
         baseline = official.maybe_compile(
@@ -580,6 +683,35 @@ def _describe_execution_path(
     return description
 
 
+def _validate_cuda_graph_composition(
+    execution_path: dict[str, Any],
+    protocol: MeasurementProtocol,
+) -> None:
+    """Reject nested or compiled use of a Solution-owned CUDA Graph route."""
+
+    if execution_path.get("runtime_wrapper") != "solution_eager_cuda_graph":
+        return
+    if protocol.compile_solution:
+        raise ContractError(
+            "the Solution CUDA Graph route cannot combine with torch.compile; "
+            "select the auto policy for compile screening"
+        )
+    if protocol.cuda_graph_solution:
+        raise ContractError(
+            "the Solution CUDA Graph route cannot be wrapped by another CUDA Graph"
+        )
+
+
+def _validate_profile_execution_path(execution_path: dict[str, Any]) -> None:
+    """Keep operator profiling on an eager path with visible ATen work."""
+
+    if execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph":
+        raise ContractError(
+            "the Solution CUDA Graph route hides per-operator profile work; "
+            "select the auto policy to profile its eager computation body"
+        )
+
+
 def _observed_attention_backend(events: list[Any]) -> str | None:
     keys = {str(event.key).lower() for event in events}
     if any("cudnn_attention" in key for key in keys):
@@ -607,6 +739,10 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
         case = WorkloadCase.from_dict(request["case"])
         protocol = MeasurementProtocol(**request["protocol"])
         protocol.validate()
+        if protocol.cuda_graph_solution:
+            raise ContractError(
+                "the eager CUDA Graph candidate is supported only by benchmark runs"
+            )
 
         stage = "device"
         requested_device = str(request["device"])
@@ -644,6 +780,8 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
             solution if solution is not None else baseline,
             case=case,
         )
+        _validate_cuda_graph_composition(execution_path, protocol)
+        _validate_profile_execution_path(execution_path)
 
         stage = "compile"
         if target == "baseline":

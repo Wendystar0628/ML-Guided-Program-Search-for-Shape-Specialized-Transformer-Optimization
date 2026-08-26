@@ -21,9 +21,15 @@ from runner.contracts import (
     MeasurementProtocol,
     WorkloadCase,
     load_workload_set,
+    solution_implementation_hash,
+    solution_source_hash,
     validate_official_snapshot,
 )
-from runner.execution import run_performance
+from runner.execution import (
+    _validate_cuda_graph_composition,
+    _validate_profile_execution_path,
+    run_performance,
+)
 from runner.supervisor import run_managed_benchmark
 from runner.sweep import summarize_sweep
 
@@ -242,6 +248,27 @@ def test_official_snapshot_and_core_workload_contract() -> None:
     assert workload["sha256"] == hashlib.sha256(canonical).hexdigest()
 
 
+def test_solution_hash_includes_the_deployed_dispatch_table(tmp_path: Path) -> None:
+    solution_root = tmp_path / "solution"
+    solution_root.mkdir()
+    (solution_root / "transformer.py").write_text("VALUE = 1\n", encoding="utf-8")
+    route_path = solution_root / "dispatch_routes.json"
+    route_path.write_text(
+        '{"schema_version":1,"default_policy":"auto","routes":[]}\n',
+        encoding="utf-8",
+    )
+    original = solution_source_hash(solution_root)
+    implementation = solution_implementation_hash(solution_root)
+
+    route_path.write_text(
+        '{"schema_version":1,"default_policy":"reference","routes":[]}\n',
+        encoding="utf-8",
+    )
+
+    assert solution_source_hash(solution_root) != original
+    assert solution_implementation_hash(solution_root) == implementation
+
+
 def test_sweep_uses_equal_group_weights() -> None:
     workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
     speedups = {
@@ -374,20 +401,59 @@ def test_cli_parses_probe_benchmark_profile_and_tune() -> None:
     assert benchmark.workload_set == WORKLOAD_SET_ID
     assert benchmark.case_id is None
     assert benchmark.preset == "smoke"
-    assert benchmark.solution_policy == "auto"
+    assert benchmark.solution_policy == "dispatch"
 
     profile = parser.parse_args(["profile", "--case-id", "attention_s2048_fp16"])
     assert profile.command == "profile"
     assert profile.target == "solution"
     assert profile.workload_set == WORKLOAD_SET_ID
     assert profile.case_id == "attention_s2048_fp16"
-    assert profile.solution_policy == "auto"
+    assert profile.solution_policy == "dispatch"
 
     tune = parser.parse_args(["tune", "--case-id", "launch_s64_fp16"])
     assert tune.command == "tune"
     assert tune.case_id == ["launch_s64_fp16"]
     assert tune.candidate is None
     assert tune.preset == "smoke"
+
+    promote = parser.parse_args(["promote", "--tuning-id", "fixture-tuning"])
+    assert promote.command == "promote"
+    assert promote.tuning_id == "fixture-tuning"
+
+
+def test_compile_and_cuda_graph_candidates_are_mutually_exclusive() -> None:
+    protocol = MeasurementProtocol(
+        preset="smoke",
+        compile_solution=True,
+        cuda_graph_solution=True,
+    )
+
+    with pytest.raises(ContractError, match="cannot combine"):
+        protocol.validate()
+
+
+@pytest.mark.parametrize(
+    "protocol",
+    [
+        MeasurementProtocol(preset="smoke", compile_solution=True),
+        MeasurementProtocol(preset="smoke", cuda_graph_solution=True),
+    ],
+)
+def test_solution_graph_rejects_compile_or_outer_graph(
+    protocol: MeasurementProtocol,
+) -> None:
+    with pytest.raises(ContractError, match="Solution CUDA Graph"):
+        _validate_cuda_graph_composition(
+            {"runtime_wrapper": "solution_eager_cuda_graph"},
+            protocol,
+        )
+
+
+def test_operator_profile_rejects_the_solution_graph_wrapper() -> None:
+    with pytest.raises(ContractError, match="hides per-operator"):
+        _validate_profile_execution_path(
+            {"runtime_wrapper": "solution_eager_cuda_graph"}
+        )
 
 
 @pytest.mark.parametrize(

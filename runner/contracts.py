@@ -156,6 +156,7 @@ class MeasurementProtocol:
     rounds: int = 3
     compile_baseline: bool = False
     compile_solution: bool = False
+    cuda_graph_solution: bool = False
     compile_mode: str = "default"
     matmul_precision: str = "high"
     allow_tf32: bool = True
@@ -168,6 +169,7 @@ class MeasurementProtocol:
         *,
         compile_baseline: bool = False,
         compile_solution: bool = False,
+        cuda_graph_solution: bool = False,
         compile_mode: str = "default",
         matmul_precision: str = "high",
         allow_tf32: bool = True,
@@ -190,6 +192,7 @@ class MeasurementProtocol:
         values.update(
             compile_baseline=compile_baseline,
             compile_solution=compile_solution,
+            cuda_graph_solution=cuda_graph_solution,
             compile_mode=compile_mode,
             matmul_precision=matmul_precision,
             allow_tf32=allow_tf32,
@@ -234,6 +237,14 @@ class MeasurementProtocol:
             self.compile_solution, bool
         ):
             raise ContractError("compile flags must be booleans")
+        if not isinstance(self.cuda_graph_solution, bool):
+            raise ContractError("cuda_graph_solution must be a boolean")
+        if self.cuda_graph_solution and (
+            self.compile_baseline or self.compile_solution
+        ):
+            raise ContractError(
+                "CUDA Graph and torch.compile candidates cannot combine"
+            )
         if not isinstance(self.allow_tf32, bool):
             raise ContractError("allow_tf32 must be a boolean")
 
@@ -258,15 +269,16 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def solution_source_hash(solution_root: Path) -> str:
-    """Hash files that can change the measured implementation."""
-
+def _hash_solution_files(solution_root: Path, *, include_dispatch: bool) -> str:
     suffixes = {".py", ".cpp", ".cc", ".c", ".h", ".cu", ".cuh"}
     files = sorted(
         path
         for path in solution_root.rglob("*")
         if path.is_file()
-        and path.suffix.lower() in suffixes
+        and (
+            path.suffix.lower() in suffixes
+            or (include_dispatch and path.name == "dispatch_routes.json")
+        )
         and "__pycache__" not in path.parts
     )
     if not files:
@@ -280,6 +292,18 @@ def solution_source_hash(solution_root: Path) -> str:
         digest.update(len(data).to_bytes(8, "big"))
         digest.update(data)
     return digest.hexdigest()
+
+
+def solution_source_hash(solution_root: Path) -> str:
+    """Hash implementation files and the deployed dispatch table."""
+
+    return _hash_solution_files(solution_root, include_dispatch=True)
+
+
+def solution_implementation_hash(solution_root: Path) -> str:
+    """Hash executable implementation files while excluding calibrated routes."""
+
+    return _hash_solution_files(solution_root, include_dispatch=False)
 
 
 def load_json(path: Path) -> dict[str, Any]:

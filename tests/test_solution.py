@@ -172,15 +172,19 @@ def test_strict_weight_hook_rejects_incompatible_models() -> None:
         (False, "none"),
         (False, "all-true"),
         (False, "padding"),
+        (False, "scattered"),
         (True, "all-true"),
         (True, "padding"),
+        (True, "scattered"),
     ],
     ids=(
         "noncausal-none",
         "noncausal-all-true",
         "noncausal-padding",
+        "noncausal-scattered",
         "causal-all-true",
         "causal-padding",
+        "causal-scattered",
     ),
 )
 def test_solution_matches_baseline_without_mutating_inputs(
@@ -196,9 +200,14 @@ def test_solution_matches_baseline_without_mutating_inputs(
         valid_mask = None
     elif mask_kind == "all-true":
         valid_mask = torch.ones(2, 4, dtype=torch.bool)
-    else:
+    elif mask_kind == "padding":
         valid_mask = torch.tensor(
             [[True, True, False, False], [True, True, True, False]],
+            dtype=torch.bool,
+        )
+    else:
+        valid_mask = torch.tensor(
+            [[True, False, True, False], [False, True, True, False]],
             dtype=torch.bool,
         )
     input_snapshot = inputs.clone()
@@ -224,3 +233,83 @@ def test_solution_matches_baseline_without_mutating_inputs(
         assert torch.equal(valid_mask, mask_snapshot)
         invalid_output = solution_output.masked_select(~valid_mask[..., None])
         assert torch.count_nonzero(invalid_output) == 0
+
+
+def test_causal_solution_accepts_a_sequence_shorter_than_config() -> None:
+    _, baseline, solution = _build_models(causal=True)
+    inputs = torch.randn(2, 2, 8)
+    valid_mask = torch.tensor(
+        [[True, False], [True, True]],
+        dtype=torch.bool,
+    )
+
+    with torch.inference_mode():
+        reference = baseline(inputs, valid_mask)
+        solution_output = solution(inputs, valid_mask)
+
+    comparison = official.compare_outputs(
+        reference,
+        solution_output,
+        rtol=0.01,
+        atol=0.001,
+    )
+    assert comparison.passed
+
+
+@pytest.mark.parametrize(
+    "policy",
+    ["preprocess", "long-pv", "wide-epilogue", "cuda-graph"],
+)
+def test_specialized_gpu_policy_reports_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: str,
+) -> None:
+    monkeypatch.setenv("TRANSFORMER_OPT_POLICY", policy)
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+
+    execution_path = solution.describe_execution_path()
+
+    assert execution_path["requested_policy"] == policy
+    assert execution_path["selected_policy"] == "torch_fallback"
+    assert execution_path["fallback_reason"]
+
+
+def test_module_transform_invalidates_cuda_graph_state() -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+    solution._cuda_graph_replay = object()
+    solution._dispatch_signature = ("fixture",)
+
+    solution.to(dtype=torch.float64)
+
+    assert solution._cuda_graph_replay is None
+    assert solution._dispatch_signature is None
+
+
+def test_reference_policy_is_an_isolated_attention_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRANSFORMER_OPT_POLICY", "reference")
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+
+    execution_path = solution.describe_execution_path()
+
+    assert execution_path["selected_policy"] == "reference"
+    assert execution_path["resolved_qkv_layout"] == "torch_zero_copy_view"
+    assert execution_path["resolved_attention"] == "explicit_reference_order"
+
+
+def test_dispatch_is_the_default_and_falls_back_to_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRANSFORMER_OPT_POLICY", raising=False)
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+
+    execution_path = solution.describe_execution_path()
+
+    assert execution_path["requested_policy"] == "dispatch"
+    assert execution_path["selected_policy"] == "auto"
+    assert execution_path["dispatch_policy"] == "auto"

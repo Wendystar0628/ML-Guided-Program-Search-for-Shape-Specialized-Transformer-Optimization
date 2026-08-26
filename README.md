@@ -7,19 +7,22 @@ default path and several real, correctness-gated candidates:
 
 - Q, K, and V weights are packed once by `copy_model_weights`, then evaluated through one fused QKV projection per layer.
 - The default path exposes Q, K, and V as strided head views, removing three layout materializations while preserving the reference low-precision operation order.
-- A causal mask is created once per model and shared by all layers instead of being rebuilt during every attention call.
-- Token-mask inversion and broadcast views are prepared once per model forward and reused across all layers; masking and score scaling reuse fresh intermediate storage in place.
+- A causal mask is created once per model and shared by all layers. Causal and padding masks are combined once for the PyTorch fallback, while compatible Triton routes consume the original masks directly without materializing a full union.
+- Token-mask inversion and broadcast views are prepared once per model forward and reused across all layers; redundant attention-output query masking is deferred to the existing block boundary.
 - The validated short, non-causal CUDA FP32 region uses PyTorch scaled dot-product attention; other regions retain the reference operation and accumulation order as a numerical fallback.
-- A bounded Triton route provides a single-pass QKV re-layout and a fused scale, causal/padding mask, and FP32-softmax candidate for supported attention shapes.
+- Low-precision sequences up to 512 use PyTorch's native FP32-dtype softmax entry, avoiding a separate score-promotion pass while preserving the final low-precision probability boundary.
+- The long FP16 route fuses score scaling, causal/padding masking, and FP16-to-FP32 promotion in Triton, then keeps PyTorch's native FP32 softmax and the original PV matmul.
+- The calibrated RTX 4080 launch route uses a fixed-shape eager CUDA Graph. Every call copies the current input and mask into static buffers, replays the complete Transformer, and clones the output, so repeated calls do not alias or reuse an old result.
+- Separate bounded Triton candidates provide single-pass QKV re-layout and a fully custom attention softmax for controlled comparisons; numerically incompatible candidates remain outside the default route.
+- Wide BF16 Bias+GELU epilogue and long-sequence fused-PV implementations remain explicit candidates until the official comparator and end-to-end timer accept them.
 - A padding-aware route packs valid token rows before the FFN and uses a Triton residual-plus-padding fusion when applicable.
 - `torch.compile` modes are screened as candidates through the same official comparator and full-forward timer.
 
-The Triton, padding-aware, and compiled routes are candidates rather than
-unconditional defaults. A faster candidate is retained only when the official
-comparator passes and the requested route actually ran. This keeps unsupported
-or numerically incompatible shapes on the safe PyTorch fallback while leaving
-the kernel parameters, fusion boundaries, and shape thresholds open for later
-tuning.
+Shape-specialized routes enter the default policy only after the official
+comparator and full-forward timing both pass. Other Triton, padding-aware, and
+compiled routes remain controlled candidates. Unsupported or numerically
+incompatible inputs use the safe PyTorch fallback, while kernel parameters,
+fusion boundaries, and shape thresholds remain open for later tuning.
 
 ## Target environment
 
@@ -60,6 +63,15 @@ Screen the finite candidates applicable to one case:
 python -m runner tune --case-id launch_s64_fp16 --preset smoke
 ```
 
+Repeat the finalists with the formal protocol, then explicitly promote the
+correct stable eager winner into the offline dispatcher:
+
+```powershell
+python -m runner tune --case-id launch_s64_fp16 `
+  --candidate eager-auto --candidate launch-cudagraph --preset formal
+python -m runner promote --tuning-id <tuning-id>
+```
+
 Run only selected candidates when iterating on one mechanism:
 
 ```powershell
@@ -80,7 +92,7 @@ Profile one representative case with the same model loader and workload definiti
 python -m runner profile --case-id attention_s2048_fp16
 ```
 
-The CLI defaults to `--target solution`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. `tune` runs a deliberately small, shape-relevant candidate set serially on one GPU. It reuses the same fresh worker, correctness check, timing protocol, and result JSON as `benchmark`; all candidates from one case-level screening share a `sweep_id`, so the comparison can be reconstructed without a second experiment database. Use `python -m runner <command> --help` for candidate names, policies, compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
+The CLI defaults to `--target solution`, `--solution-policy dispatch`, `--workload-set rtx4080_core_v1`, and `--device cuda:0`. Supplying `--case-id` runs one case; omitting it from `benchmark` runs the workload set in its declared order. `tune` runs a deliberately small, shape-relevant candidate set serially on one GPU. It reuses the same fresh worker, correctness check, timing protocol, and result JSON as `benchmark`; all candidates from one case-level screening share a `sweep_id`. The compact tuning summary ranks candidates by the worst paired round speedup, which prevents one favorable hot or throttled round from deciding a route. Promotion fails closed unless the run is complete, uses the full formal counts, retains internally consistent round data and source hashes, still matches the current Solution implementation, and a specialized winner exceeds `auto` by at least 2%. Use `python -m runner <command> --help` for candidate names, policies, compile modes, TF32 controls, timeouts, alternative devices, and baseline-only diagnostics.
 
 ## Core workload
 
@@ -110,17 +122,25 @@ A complete workload sweep prints every case outcome and speedup, the geometric m
 
 Candidate screening follows the same rule at case level. Incorrect, failed, or
 fallback candidates remain visible with their result path but cannot become the
-winner. The five solution policies have distinct roles:
+winner. The main solution policies have distinct roles:
 
 | Policy | Purpose |
 |---|---|
-| `auto` | Default packed-QKV, zero-copy layout, and verified shape routing |
+| `dispatch` | Offline device/shape lookup with deterministic `auto` fallback |
+| `auto` | Packed-QKV, zero-copy layout, and verified component routing |
+| `reference` | Zero-copy QKV with the older reference-order attention control |
 | `torch` | Conservative materialized-layout comparison path |
 | `triton` | Experimental custom QKV-layout and attention-softmax route |
+| `preprocess` | Explicit Triton scale/mask/promotion plus native softmax candidate |
+| `long-pv` | Experimental long-sequence fused probability-cast/PV route |
+| `wide-epilogue` | Experimental BF16 Bias+Tanh-GELU epilogue route |
+| `cuda-graph` | Exact fixed-shape eager CUDA Graph route inside the Solution |
 | `padding` | Residual-plus-padding Triton fusion route |
 | `packed` | Experimental valid-token FFN route |
 
 Timeouts and Ctrl+C terminate the worker process tree. Failures are persisted with an explicit stage and type instead of being converted into performance numbers.
+
+Mask-content-dependent `padding` and `packed` policies remain screening candidates rather than promotable static routes, because the public forward interface does not provide a zero-synchronization mask class. The Solution-owned CUDA Graph route is also mutually exclusive with `torch.compile` and the Runner-only CUDA Graph control. Use `--solution-policy auto` when profiling or compile-screening the underlying eager computation.
 
 ## Results
 
@@ -130,11 +150,17 @@ Probe, benchmark, and profile commands write strict schema-v2 JSON documents:
 results/runs/<run_id>.json
 ```
 
+Each `tune` invocation also writes one small candidate index:
+
+```text
+results/tuning/<tuning_id>.json
+```
+
 Each benchmark or profile case produces one JSON file. A benchmark result keeps the complete workload case and workload hash, complete measurement protocol, compact device/runtime environment, aggregate correctness, baseline and target median/P90 latency, per-round medians, sample count, speedup, execution path, and source hashes. All cases launched by one sweep share a `sweep_id`, allowing an interrupted or completed sweep to be identified without a second results database. Raw latency samples and per-trial correctness records remain worker-local and are not persisted. The document also avoids duplicate compatibility fields such as separate `target` and `solution` statistics, `status`, `path`, and repeated top-level workload or preset fields.
 
 Profile results store compact ATen `operator_hotspots` normalized per measured forward, separated by input shape and accompanied by a time share so the Agent can route work to the relevant GEMM, attention, normalization, or pointwise path. Probe results store whether the device operation passed and a compressed SDPA call matrix with its fixed test shape and call form. A failed run keeps only the context already established when the failure occurred plus a short stage, type, message, and exit code; it does not populate synthetic latency or correctness data.
 
-Full-sweep aggregation is printed from the ordered per-case results and is not stored as a second experiment database. Existing schema-v1 result files remain local historical artifacts; the Runner writes schema v2 and does not migrate old runs.
+The tuning summary contains only the workload, protocol, static device identity, candidate outcome, correctness, route, paired-round ranking values, and links to the ordinary run files. It is the input to explicit route promotion, not a second experiment database. The tracked [`solution/dispatch_routes.json`](solution/dispatch_routes.json) contains only deployed device/shape winners; `forward` never benchmarks or scans historical results. Full-sweep aggregation remains a printed view over ordered per-case results.
 
 `results/` contains generated local measurements and is ignored by Git. Commit implementation and test changes, not machine-specific run history or profiler output.
 
@@ -164,12 +190,17 @@ The tests cover the official snapshot and workload contract, weight packing, all
 ```text
 official/                    Immutable supplied benchmark snapshot
 solution/transformer.py     Unique optimized Transformer entry
-solution/kernels/            Bounded Triton kernel candidates
+solution/dispatch.py        Deterministic offline device/shape resolver
+solution/dispatch_routes.json  Promoted eager winners only
+solution/cuda_graph.py      Fixed-shape eager CUDA Graph replay helper
+solution/kernels/           Bounded Triton kernels and controlled candidates
 runner/                      Probe, correctness, benchmark, profile, sweep, and tuning logic
 runner/tuning.py             Finite serial candidate-screening loop
+runner/route_promotion.py    Formal tuning summary to dispatch promotion
 runner/workloads/            Machine-readable core workload
 tests/                       Focused correctness and runner regressions
 results/runs/                Generated local JSON results, ignored by Git
+results/tuning/              Generated compact candidate summaries, ignored by Git
 environment/                 Local Windows runtime compatibility hook
 ```
 

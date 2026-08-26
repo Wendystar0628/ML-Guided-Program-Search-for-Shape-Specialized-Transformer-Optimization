@@ -1,5 +1,15 @@
 """GPU kernels used by the submitted Transformer solution."""
 
+from .attention_preprocess import (
+    TRITON_ATTENTION_PREPROCESS_AVAILABLE,
+    can_use_triton_attention_preprocess,
+    triton_scale_mask_to_fp32,
+)
+from .attention_pv import (
+    TRITON_ATTENTION_PV_AVAILABLE,
+    can_use_triton_fp32_probability_value,
+    triton_fp32_probability_value,
+)
 from .attention_softmax import (
     TRITON_ATTENTION_SOFTMAX_AVAILABLE,
     can_use_triton_attention_softmax,
@@ -17,13 +27,19 @@ from .residual import (
 )
 
 __all__ = [
+    "TRITON_ATTENTION_PREPROCESS_AVAILABLE",
+    "TRITON_ATTENTION_PV_AVAILABLE",
     "TRITON_ATTENTION_SOFTMAX_AVAILABLE",
     "TRITON_QKV_LAYOUT_AVAILABLE",
     "TRITON_RESIDUAL_AVAILABLE",
+    "can_use_triton_attention_preprocess",
     "can_use_triton_attention_softmax",
+    "can_use_triton_fp32_probability_value",
     "can_use_triton_qkv_layout",
     "can_use_triton_residual",
+    "triton_fp32_probability_value",
     "triton_qkv_to_bhsd",
     "triton_residual_add_padding",
     "triton_scale_mask_softmax",
+    "triton_scale_mask_to_fp32",
 ]
