@@ -153,6 +153,31 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
     assert "wide-triton-inplace" in exact_wide
 
 
+def test_deployed_policy_maps_back_to_an_available_retest_candidate() -> None:
+    launch = WorkloadCase(
+        case_id="launch",
+        batch_size=1,
+        seq_len=64,
+        d_model=256,
+        num_heads=8,
+        ffn_dim=1024,
+        num_layers=4,
+        dtype="float16",
+        causal=False,
+        padding_ratio=0.0,
+    )
+
+    assert tuning.deployable_candidate_id_for_policy(launch, "auto") == "eager-auto"
+    assert (
+        tuning.deployable_candidate_id_for_policy(launch, "cuda-graph")
+        == "launch-cudagraph"
+    )
+    assert tuning.deployable_candidate_id_for_policy(
+        launch,
+        "balanced-cuda-graph",
+    ) is None
+
+
 def test_solution_policy_restores_the_parent_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -260,6 +285,9 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
     ]
     assert summary["tuning_id"] == calls[0]["sweep_id"]
     assert summary["winner"]["candidate_id"] == "compile-default"
+    assert summary["winner_basis"] == (
+        "full_transformer_correctness_and_paired_timing"
+    )
     assert len(summary["observations"]) == 2
     assert summary["routing_plan"] == {
         key: value for key, value in routing_plan.items() if key != "workload_analysis"

@@ -41,11 +41,27 @@ Timestamped runs and summaries are useful locally but remain ignored.
 
 ## Adding another GPU
 
-1. run the shared probe and calibration workflow on the target device;
-2. keep `auto` for shapes without a verified specialized winner;
-3. create a package only for the exact hardware/software stack that was tested;
-4. promote stable formal winners into that package's `routes.json`;
-5. run the package launcher and retain one compact formal reference summary.
+Run the normal formal calibration on the target device:
+
+```powershell
+python -m runner calibrate --preset formal --device cuda:0
+```
+
+Runner probes the device once, measures the bounded candidates with the complete
+Transformer Workloads, applies every correctness and promotion gate, then
+automatically locates or creates the stable package for the measured
+hardware/software identity. All accepted routes are published to `routes.json`
+with one atomic update; a failure leaves the prior table unchanged. A challenger
+below the promotion margin keeps the measured incumbent; a new exact key without
+a qualified specialized winner records the formally measured `auto` decision.
+
+Smoke calibration, plan-only calibration, and `tune` are non-deploying
+workflows. The manual `promote` command exists only for replaying a compatible
+historical formal summary or recovering from an interrupted deployment; it is
+not part of normal calibration.
+
+After automatic publication, use the package launcher to reproduce the checked
+routes and retain one compact formal reference summary when needed.
 
 The package name is an index, not the complete match condition. Exact matching
 still uses the hardware, software, dtype, and Transformer shape fields inside

@@ -214,6 +214,12 @@ def test_runtime_identity_requires_an_exact_route_stack() -> None:
     with pytest.raises(verified.VerifiedHardwareError, match="software.triton"):
         verified.validate_runtime_identity(expected, changed)
 
+    machine_drift = {
+        **IDENTITY,
+        "platform": {**IDENTITY["platform"], "machine": "aarch64"},
+    }
+    verified.validate_runtime_identity(expected, machine_drift)
+
 
 def test_runtime_identity_reports_an_unavailable_cuda_ordinal(
     monkeypatch: pytest.MonkeyPatch,

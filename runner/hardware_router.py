@@ -525,6 +525,7 @@ def build_routing_plan(
     candidate_ids: Sequence[str],
     *,
     limit: int = 4,
+    required_candidate_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Rank a bounded candidate set for short calibration on new hardware.
 
@@ -543,6 +544,10 @@ def build_routing_plan(
         raise TypeError("candidate_ids must be a sequence of strings")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         raise ValueError("limit must be a positive integer")
+    if isinstance(required_candidate_ids, (str, bytes)) or not isinstance(
+        required_candidate_ids, Sequence
+    ):
+        raise TypeError("required_candidate_ids must be a sequence of strings")
 
     unique_candidates: list[str] = []
     seen: set[str] = set()
@@ -566,20 +571,43 @@ def build_routing_plan(
         ranked.append((score, index, candidate_id, reasons))
 
     ranked.sort(key=lambda item: (-item[0], item[1]))
-    selected = ranked[:limit]
+    required: list[str] = []
+    fallback = next((item[2] for item in ranked if item[2] in _AUTO_CANDIDATES), None)
+    if fallback is not None:
+        required.append(fallback)
+    for candidate_id in required_candidate_ids:
+        if not isinstance(candidate_id, str) or not candidate_id:
+            raise ValueError("required_candidate_ids must contain non-empty strings")
+        if candidate_id not in seen:
+            raise ValueError(f"required candidate is unavailable: {candidate_id}")
+        if candidate_id in rejections:
+            raise ValueError(
+                f"required candidate is not eligible: {candidate_id}: "
+                f"{rejections[candidate_id]}"
+            )
+        if candidate_id not in required:
+            required.append(candidate_id)
+    if len(required) > limit:
+        raise ValueError(
+            "candidate limit is too small to retain auto and the current incumbent"
+        )
 
-    fallback = next(
-        (item for item in ranked if item[2] in _AUTO_CANDIDATES),
-        None,
-    )
-    if fallback is not None and all(item[2] != fallback[2] for item in selected):
-        if len(selected) >= limit:
-            selected[-1] = fallback
-        else:
-            selected.append(fallback)
+    selected_ids = {item[2] for item in ranked[:limit]}
+    selected_ids.update(required)
+    while len(selected_ids) > limit:
+        removable = next(
+            (
+                item[2]
+                for item in reversed(ranked)
+                if item[2] in selected_ids and item[2] not in required
+            ),
+            None,
+        )
+        if removable is None:
+            raise ValueError("unable to retain required routing candidates")
+        selected_ids.remove(removable)
+    selected = [item for item in ranked if item[2] in selected_ids]
 
-    # A replacement can disturb score order only at the final fallback slot,
-    # which is intentional: candidates are tried first and auto remains safe.
     candidate_order = [item[2] for item in selected]
     selection_reasons = {item[2]: item[3] for item in selected}
     routing_signals = {
@@ -600,6 +628,8 @@ def build_routing_plan(
     }
     return {
         "source": "hardware_cost_model",
+        "decision_scope": "candidate_order_only",
+        "requires_full_workload_measurement": True,
         "bottleneck_class": signals.bottleneck_class,
         "workload_analysis": analysis.as_dict(),
         "routing_signals": routing_signals,

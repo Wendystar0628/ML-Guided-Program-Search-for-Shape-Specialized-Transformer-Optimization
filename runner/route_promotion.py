@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
+import re
+import shutil
 import tempfile
+import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -35,6 +39,8 @@ DEPLOYABLE_EAGER_POLICIES = frozenset(
         "torch",
         "triton",
         "preprocess",
+        "padding",
+        "packed",
         "s512-native-softmax",
         "long-pv",
         "long-tail-online",
@@ -196,9 +202,60 @@ def _match_identity(match: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
     return tuple(sorted(match.items()))
 
 
+def _upsert_exact_route(
+    document: Mapping[str, Any],
+    match: Mapping[str, Any],
+    policy: str,
+) -> dict[str, Any]:
+    """Return a validated route document with one exact decision updated."""
+
+    updated = copy.deepcopy(dict(document))
+    identity = _match_identity(match)
+    routes = updated.get("routes")
+    if not isinstance(routes, list):
+        raise ContractError("dispatch route document is missing routes")
+    exact = [
+        route
+        for route in routes
+        if isinstance(route, Mapping)
+        and isinstance(route.get("match"), Mapping)
+        and _match_identity(route["match"]) == identity
+    ]
+    if len(exact) == 1 and exact[0].get("policy") == policy:
+        try:
+            current_table = validate_route_table(updated)
+        except (TypeError, ValueError) as exc:
+            raise ContractError(f"invalid dispatch route document: {exc}") from exc
+        if resolve_route(current_table, match) == policy:
+            return updated
+
+    retained = [
+        copy.deepcopy(dict(route))
+        for route in routes
+        if not (
+            isinstance(route, Mapping)
+            and isinstance(route.get("match"), Mapping)
+            and _match_identity(route["match"]) == identity
+        )
+    ]
+    retained.insert(0, {"match": copy.deepcopy(dict(match)), "policy": policy})
+    updated["routes"] = retained
+    try:
+        table = validate_route_table(updated)
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"promoted dispatch route is invalid: {exc}") from exc
+    if resolve_route(table, match) != policy:
+        raise ContractError("promoted dispatch route is shadowed by another route")
+    return updated
+
+
 def _verified_profile_identity(profile: Mapping[str, Any]) -> dict[str, str]:
     """Extract the exact route identity owned by one verified device package."""
 
+    if profile.get("schema_version") != 1:
+        raise ContractError("verified profile must use schema_version 1")
+    if profile.get("device_operation_passed") is not True:
+        raise ContractError("verified profile did not pass its device operation")
     hardware = profile.get("hardware_profile")
     if not isinstance(hardware, Mapping):
         raise ContractError("verified profile is missing hardware_profile")
@@ -228,6 +285,282 @@ def _verified_profile_identity(profile: Mapping[str, Any]) -> dict[str, str]:
             raise ContractError(f"verified profile is missing {field}")
         identity[field] = value
     return identity
+
+
+def _verified_bundle_identity(profile: Mapping[str, Any]) -> dict[str, str]:
+    """Validate the package profile and return its route-visible identity."""
+
+    identity = _verified_profile_identity(profile)
+    hardware = profile.get("hardware_profile")
+    assert isinstance(hardware, Mapping)
+    platform_profile = hardware.get("platform")
+    assert isinstance(platform_profile, Mapping)
+    machine = platform_profile.get("machine")
+    if not isinstance(machine, str) or not machine:
+        raise ContractError("verified profile is missing platform_machine")
+    return identity
+
+
+def verified_profile_from_probe_result(
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build one portable verified-package profile from a successful probe."""
+
+    if result.get("outcome") != "success":
+        raise ContractError("automatic route publication requires a successful probe")
+    probe = result.get("probe")
+    if not isinstance(probe, Mapping):
+        raise ContractError("successful probe result is missing its probe payload")
+    if probe.get("device_operation_passed") is not True:
+        raise ContractError("probe device operation did not pass")
+    hardware_profile = probe.get("hardware_profile")
+    runtime_policy = probe.get("runtime_policy")
+    if not isinstance(hardware_profile, Mapping):
+        raise ContractError("probe result is missing hardware_profile")
+    if not isinstance(runtime_policy, Mapping):
+        raise ContractError("probe result is missing runtime_policy")
+
+    source_probe: dict[str, Any] = {}
+    for field in ("run_id", "created_at", "requested_device"):
+        value = result.get(field)
+        if not isinstance(value, str) or not value:
+            raise ContractError(f"probe result is missing {field}")
+        source_probe[field] = value
+    mode = probe.get("mode")
+    if isinstance(mode, str) and mode:
+        source_probe["mode"] = mode
+
+    document: dict[str, Any] = {
+        "schema_version": 1,
+        "source_probe": source_probe,
+        "device_operation_passed": True,
+        "runtime_policy": copy.deepcopy(dict(runtime_policy)),
+        "hardware_profile": copy.deepcopy(dict(hardware_profile)),
+    }
+    for field in ("performance_anchors", "sdpa"):
+        value = probe.get(field)
+        if isinstance(value, Mapping):
+            document[field] = copy.deepcopy(dict(value))
+    _verified_bundle_identity(document)
+    return document
+
+
+def find_matching_verified_route(
+    project_root: Path,
+    profile: Mapping[str, Any],
+) -> Path | None:
+    """Find the unique verified route table for one exact runtime identity."""
+
+    expected = _verified_bundle_identity(profile)
+    catalog_root = project_root.resolve() / "verified_hardware"
+    if not catalog_root.is_dir():
+        return None
+
+    matches: list[Path] = []
+    for profile_path in sorted(catalog_root.glob("*/profile.json")):
+        try:
+            candidate = load_json(profile_path)
+            identity = _verified_bundle_identity(candidate)
+        except (ContractError, OSError, ValueError):
+            if profile_path.with_name("routes.json").is_file():
+                raise ContractError(
+                    f"verified package has an invalid profile: {profile_path.parent.name}"
+                )
+            continue
+        if identity != expected:
+            continue
+        package_root = profile_path.parent
+        required_paths = (
+            package_root / "routes.json",
+            package_root / "README.md",
+            package_root / "run_verified.py",
+            package_root / "results" / ".gitignore",
+        )
+        missing = [path.name for path in required_paths if not path.is_file()]
+        if missing:
+            raise ContractError(
+                "matching verified package is incomplete: "
+                f"{package_root.name}: {', '.join(missing)}"
+            )
+        route_path = package_root / "routes.json"
+        try:
+            validate_route_table(load_json(route_path))
+        except (ContractError, TypeError, ValueError, OSError) as exc:
+            raise ContractError(
+                f"matching verified package has invalid routes: {package_root.name}"
+            ) from exc
+        matches.append(route_path)
+    if len(matches) > 1:
+        names = ", ".join(path.parent.name for path in matches)
+        raise ContractError(
+            f"multiple verified packages match the current runtime identity: {names}"
+        )
+    return matches[0] if matches else None
+
+
+def _safe_bundle_id(device_name: str) -> str:
+    normalized = unicodedata.normalize("NFKD", device_name)
+    ascii_name = normalized.encode("ascii", "ignore").decode("ascii").lower()
+    value = re.sub(r"[^a-z0-9]+", "_", ascii_name).strip("_")
+    if not value:
+        raise ContractError("GPU name cannot be converted to a safe package id")
+    return value[:80].rstrip("_")
+
+
+def _new_bundle_path(catalog_root: Path, profile: Mapping[str, Any]) -> Path:
+    identity = _verified_bundle_identity(profile)
+    base = _safe_bundle_id(identity["device_name"])
+    destination = catalog_root / base
+    if not destination.exists():
+        return destination
+    payload = json.dumps(
+        identity,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    suffix = hashlib.sha256(payload).hexdigest()[:12]
+    destination = catalog_root / f"{base}__{suffix}"
+    if destination.exists():
+        raise ContractError(
+            "verified package destination already exists but did not match the "
+            f"current runtime identity: {destination.name}"
+        )
+    return destination
+
+
+def _bundle_readme(device_name: str, bundle_id: str) -> str:
+    return f"""# {device_name} verified package
+
+This package was created by a complete Formal hardware calibration.
+
+- `profile.json` records the probed hardware and software identity.
+- `routes.json` contains only correctness-gated, formally measured exact routes.
+- `run_verified.py` runs the shared Transformer workload with this route table.
+- generated runs and summaries stay below `results/` and are ignored by Git.
+
+From the repository root:
+
+```powershell
+python verified_hardware/{bundle_id}/run_verified.py --preset formal
+```
+"""
+
+
+def _write_new_bundle_support_files(
+    bundle_root: Path,
+    profile: Mapping[str, Any],
+    *,
+    bundle_id: str,
+) -> None:
+    identity = _verified_bundle_identity(profile)
+    bundle_root.mkdir(parents=True, exist_ok=False)
+    results_root = bundle_root / "results"
+    results_root.mkdir()
+    (bundle_root / "README.md").write_text(
+        _bundle_readme(identity["device_name"], bundle_id),
+        encoding="utf-8",
+    )
+    (bundle_root / "run_verified.py").write_text(
+        '\"\"\"Launch the shared verifier for this hardware bundle.\"\"\"\n\n'
+        "from __future__ import annotations\n\n"
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "PROJECT_ROOT = Path(__file__).resolve().parents[2]\n"
+        "if str(PROJECT_ROOT) not in sys.path:\n"
+        "    sys.path.insert(0, str(PROJECT_ROOT))\n\n"
+        'if __name__ == "__main__":\n'
+        "    from runner.verified_hardware import main_for_bundle\n\n"
+        "    raise SystemExit(main_for_bundle(Path(__file__).resolve().parent))\n",
+        encoding="utf-8",
+    )
+    (results_root / ".gitignore").write_text(
+        "*\n!.gitignore\n!reference_formal.json\n",
+        encoding="utf-8",
+    )
+    _atomic_replace_json(
+        bundle_root / "profile.json",
+        profile,
+        validate_as_route_table=False,
+    )
+
+
+def validate_promotion_case_set(case_ids: Sequence[str]) -> None:
+    """Reject incomplete groups that share one runtime-visible route key."""
+
+    selected = set(case_ids)
+    for required_group in _SHARED_ROUTE_CASE_GROUPS:
+        if selected & required_group and not required_group <= selected:
+            missing = ", ".join(sorted(required_group - selected))
+            raise ContractError(
+                "shared runtime route requires formal calibration for: "
+                f"{', '.join(sorted(required_group))}; missing: {missing}"
+            )
+
+
+def auto_promote_calibration(
+    project_root: Path,
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    probe_result: Mapping[str, Any],
+    full_workload_case_ids: Sequence[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]], Path, bool]:
+    """Publish one Formal calibration to its exact verified device package."""
+
+    profile = verified_profile_from_probe_result(probe_result)
+    existing_route = find_matching_verified_route(project_root, profile)
+    case_ids = [_summary_case_id(summary) for summary in summaries]
+    if len(case_ids) != len(set(case_ids)):
+        raise ContractError("automatic promotion received duplicate workload cases")
+    validate_promotion_case_set(case_ids)
+
+    if existing_route is not None:
+        document, winners, destination = promote_tuning_summaries(
+            project_root,
+            summaries,
+            route_path=existing_route,
+        )
+        return document, winners, destination, False
+
+    if set(case_ids) != set(full_workload_case_ids):
+        raise ContractError(
+            "a new verified hardware package requires one complete Formal workload "
+            "calibration"
+        )
+
+    catalog_root = project_root.resolve() / "verified_hardware"
+    catalog_root.mkdir(parents=True, exist_ok=True)
+    destination_root = _new_bundle_path(catalog_root, profile)
+    staging_root = catalog_root / ".staging"
+    staging_root.mkdir(exist_ok=True)
+    staging_bundle = Path(
+        tempfile.mkdtemp(prefix=f"{destination_root.name}.", dir=staging_root)
+    )
+    try:
+        staging_bundle.rmdir()
+        _write_new_bundle_support_files(
+            staging_bundle,
+            profile,
+            bundle_id=destination_root.name,
+        )
+        document, winners, _ = promote_tuning_summaries(
+            project_root,
+            summaries,
+            route_path=staging_bundle / "routes.json",
+        )
+        if destination_root.exists():
+            raise ContractError(
+                f"verified package destination appeared concurrently: {destination_root}"
+            )
+        os.replace(staging_bundle, destination_root)
+    finally:
+        if staging_bundle.exists():
+            shutil.rmtree(staging_bundle)
+        try:
+            staging_root.rmdir()
+        except OSError:
+            pass
+    return document, winners, destination_root / "routes.json", True
 
 
 def _validate_verified_package_identity(
@@ -373,62 +706,49 @@ def build_promoted_route_document(
     if existing is None:
         existing_table = validate_route_table(document)
 
-    winner = select_deployable_winner(summary)
-    incumbent_policy = resolve_route(existing_table, match)
-    policy = winner["solution_policy"]
-    identity = _match_identity(match)
-    has_exact_route = any(
-        _match_identity(route["match"]) == identity for route in document["routes"]
+    measured_winner = select_deployable_winner(summary)
+    auto_observation = select_deployable_winner(
+        summary,
+        allowed_policies=frozenset({DEFAULT_ROUTE_POLICY}),
     )
-    if policy != incumbent_policy:
-        auto_winner = select_deployable_winner(
-            summary,
-            allowed_policies=frozenset({DEFAULT_ROUTE_POLICY}),
-        )
-        if (
-            policy != DEFAULT_ROUTE_POLICY
-            and float(winner["conservative_speedup"])
-            < float(auto_winner["conservative_speedup"]) * MINIMUM_ROUTE_GAIN
-        ):
-            raise ContractError(
-                "specialized winner does not exceed auto by the promotion margin"
+    incumbent_policy = resolve_route(existing_table, match)
+    if incumbent_policy == DEFAULT_ROUTE_POLICY:
+        incumbent_observation = auto_observation
+    else:
+        try:
+            incumbent_observation = select_deployable_winner(
+                summary,
+                allowed_policies=frozenset({incumbent_policy}),
             )
-        if incumbent_policy != DEFAULT_ROUTE_POLICY:
-            try:
-                incumbent = select_deployable_winner(
-                    summary,
-                    allowed_policies=frozenset({incumbent_policy}),
-                )
-            except ContractError as exc:
-                raise ContractError(
-                    "tuning summary is missing a correct incumbent observation; "
-                    "refusing to replace the existing route"
-                ) from exc
-            if float(winner["conservative_speedup"]) < (
-                float(incumbent["conservative_speedup"]) * MINIMUM_ROUTE_GAIN
+        except ContractError as exc:
+            raise ContractError(
+                "tuning summary is missing a correct incumbent observation; "
+                "refusing to replace the existing route"
+            ) from exc
+    measured_policy = str(measured_winner["solution_policy"])
+    deployment = measured_winner
+    if measured_policy != incumbent_policy:
+        measured_speedup = float(measured_winner["conservative_speedup"])
+        auto_speedup = float(auto_observation["conservative_speedup"])
+        incumbent_speedup = float(incumbent_observation["conservative_speedup"])
+        clears_auto_margin = (
+            measured_policy == DEFAULT_ROUTE_POLICY
+            or measured_speedup >= auto_speedup * MINIMUM_ROUTE_GAIN
+        )
+        clears_incumbent_margin = (
+            measured_speedup >= incumbent_speedup * MINIMUM_ROUTE_GAIN
+        )
+        if not (clears_auto_margin and clears_incumbent_margin):
+            if (
+                incumbent_policy != DEFAULT_ROUTE_POLICY
+                and auto_speedup >= incumbent_speedup * MINIMUM_ROUTE_GAIN
             ):
-                raise ContractError(
-                    "new winner does not exceed the incumbent by the promotion margin"
-                )
-    elif has_exact_route:
-        return document, winner
+                deployment = auto_observation
+            else:
+                deployment = incumbent_observation
 
-    routes = [
-        copy.deepcopy(dict(route))
-        for route in document["routes"]
-        if _match_identity(route["match"]) != identity
-    ]
-    # A verified decision remains explicit even when it agrees with a broad
-    # route or the default auto policy.
-    routes.insert(0, {"match": match, "policy": policy})
-    document["routes"] = routes
-    try:
-        table = validate_route_table(document)
-    except (TypeError, ValueError) as exc:
-        raise ContractError(f"promoted dispatch route is invalid: {exc}") from exc
-    if resolve_route(table, match) != policy:
-        raise ContractError("promoted dispatch route is shadowed by another route")
-    return document, winner
+    policy = str(deployment["solution_policy"])
+    return _upsert_exact_route(document, match, policy), deployment
 
 
 def promote_tuning_summary(
@@ -496,29 +816,52 @@ def promote_tuning_summaries(
     _validate_verified_package_identity(destination, existing, summaries)
     proposals: dict[
         tuple[tuple[str, Any], ...],
-        tuple[Mapping[str, Any], str],
+        list[tuple[int, Mapping[str, Any], dict[str, Any]]],
     ] = {}
-    winners: list[dict[str, Any]] = []
-    for summary in summaries:
-        _, winner = build_promoted_route_document(existing, summary)
+    for index, summary in enumerate(summaries):
+        _, deployment = build_promoted_route_document(existing, summary)
         identity = _match_identity(_route_match(summary))
-        policy = str(winner["solution_policy"])
-        prior = proposals.get(identity)
-        if prior is not None and prior[1] != policy:
-            raise ContractError(
-                "formal summaries sharing one runtime route selected different policies"
-            )
-        proposals.setdefault(identity, (summary, policy))
-        winners.append(winner)
+        proposals.setdefault(identity, []).append((index, summary, deployment))
 
-    document = existing
-    for summary, _ in proposals.values():
-        document, _ = build_promoted_route_document(document, summary)
-    _atomic_replace_json(destination, document)
+    document: dict[str, Any] = (
+        copy.deepcopy(dict(existing))
+        if existing is not None
+        else {
+            "schema_version": ROUTE_SCHEMA_VERSION,
+            "default_policy": DEFAULT_ROUTE_POLICY,
+            "routes": [],
+        }
+    )
+    existing_table = validate_route_table(document)
+    deployments_by_index: dict[int, dict[str, Any]] = {}
+    for grouped in proposals.values():
+        match = _route_match(grouped[0][1])
+        policies = {str(item[2]["solution_policy"]) for item in grouped}
+        if len(policies) == 1:
+            policy = next(iter(policies))
+            for index, _summary, deployment in grouped:
+                deployments_by_index[index] = deployment
+        else:
+            policy = resolve_route(existing_table, match)
+            for index, summary, _deployment in grouped:
+                deployments_by_index[index] = select_deployable_winner(
+                    summary,
+                    allowed_policies=frozenset({policy}),
+                )
+        document = _upsert_exact_route(document, match, policy)
+
+    winners = [deployments_by_index[index] for index in range(len(summaries))]
+    if existing is None or document != existing:
+        _atomic_replace_json(destination, document, validate_as_route_table=True)
     return document, winners, destination
 
 
-def _atomic_replace_json(path: Path, document: Mapping[str, Any]) -> None:
+def _atomic_replace_json(
+    path: Path,
+    document: Mapping[str, Any],
+    *,
+    validate_as_route_table: bool,
+) -> None:
     """Replace the mutable route table with a same-directory atomic rename."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -536,7 +879,9 @@ def _atomic_replace_json(path: Path, document: Mapping[str, Any]) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        validate_route_table(json.loads(temporary_path.read_text(encoding="utf-8")))
+        loaded = json.loads(temporary_path.read_text(encoding="utf-8"))
+        if validate_as_route_table:
+            validate_route_table(loaded)
         os.replace(temporary_path, path)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
@@ -549,8 +894,12 @@ __all__ = [
     "MINIMUM_ROUTE_GAIN",
     "ROUTE_SCHEMA_VERSION",
     "TUNING_SCHEMA_VERSION",
+    "auto_promote_calibration",
     "build_promoted_route_document",
+    "find_matching_verified_route",
     "promote_tuning_summaries",
     "promote_tuning_summary",
     "select_deployable_winner",
+    "validate_promotion_case_set",
+    "verified_profile_from_probe_result",
 ]

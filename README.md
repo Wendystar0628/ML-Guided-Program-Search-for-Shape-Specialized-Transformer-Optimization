@@ -23,7 +23,8 @@ workflow is:
 2. analyze each workload shape with the white-box hardware cost model;
 3. screen a small eligible candidate set with the full correctness comparator
    and end-to-end timer;
-4. promote a stable winner into an exact device route; and
+4. automatically publish a stable formal winner into an exact device route;
+   and
 5. use deterministic dispatch at runtime, with `auto` as the safe fallback.
 
 The workload and optimization code stay shared. Only an exact, measured route
@@ -54,13 +55,15 @@ than treated as repository-wide requirements.
 
 ## Quick start on any supported GPU
 
-Probe the default GPU in a fresh worker process:
+Run the full diagnostic probe, including the optional SDPA backend checks:
 
 ```powershell
 python -m runner probe --device cuda:0
 ```
 
-Inspect the cross-hardware candidate plan without running candidates:
+Inspect the cross-hardware candidate plan. This runs one routing probe with
+small launch, graph, copy, GEMM, and softmax anchors, but no full Transformer
+candidate benchmark:
 
 ```powershell
 python -m runner calibrate --plan-only --device cuda:0
@@ -70,6 +73,15 @@ Run bounded candidate calibration on the target device:
 
 ```powershell
 python -m runner calibrate --preset smoke --device cuda:0
+```
+
+Run the complete formal calibration to deploy measured routes. After every
+selected Workload passes the formal correctness and measurement gates, Runner
+locates or creates the matching verified-device package and atomically updates
+its `routes.json` in one transaction:
+
+```powershell
+python -m runner calibrate --preset formal --device cuda:0
 ```
 
 Run one case or the complete core workload:
@@ -87,12 +99,18 @@ python -m runner tune --case-id mask_s512_padding_fp16 `
   --candidate padding-packed --preset smoke
 ```
 
-Repeat finalists with the formal protocol, then promote the measured winner to
-the intended device package explicitly:
+Use `tune` for focused experiments. It records measurements but never deploys a
+route, even with the formal preset:
 
 ```powershell
 python -m runner tune --case-id launch_s64_fp16 `
   --candidate eager-auto --candidate launch-cudagraph --preset formal
+```
+
+Manual promotion is retained only to replay a compatible historical formal
+summary or recover from an interrupted deployment:
+
+```powershell
 python -m runner promote `
   --route-table verified_hardware/<device_id>/routes.json `
   --tuning-id <tuning-id>
@@ -131,21 +149,43 @@ device package.
   anchors.
 
 The result is a bounded candidate order with explicit eligibility and reasons.
-It is a white-box ordering prior, not a learned latency predictor. It does not
-use a decorative confidence score, benchmark inside `forward`, or copy a
-winner from an unmeasured GPU.
+It is a white-box ordering prior, not a learned latency predictor or a
+deployable route. It does not use a decorative confidence score, benchmark
+inside `forward`, or copy a winner from an unmeasured GPU.
+
+The timing is explicit:
+
+1. load and validate the selected Workload definitions;
+2. run one routing probe for the whole command;
+3. combine the shared hardware profile with each Workload shape to produce a
+   coarse Top-K candidate plan;
+4. run the complete Transformer comparator and paired end-to-end timing only
+   for those candidates; and
+5. use formal measured winners, never probe predictions, to atomically update
+   the matching verified device route table.
+
+The routing probe deliberately skips the broader SDPA backend diagnostic
+because that output is not consumed by the current cost model. The standalone
+`probe` command keeps diagnostic mode for investigations. Explicitly supplied
+`tune --candidate` lists also skip the routing probe because the user has
+already chosen the candidates, but they still run the complete correctness and
+performance measurement.
 
 Candidate measurement remains authoritative. `calibrate` and `tune` reuse the
-same fresh-worker comparator and full-forward timing protocol as `benchmark`;
-neither silently deploys a winner. `promote` is separate and fails closed
-unless a complete formal result still matches the implementation, the selected
-policy really executed, and the specialized route has a sufficient conservative
-gain over `auto` and any incumbent route.
+same fresh-worker comparator and full-forward timing protocol as `benchmark`.
+Only a complete formal `calibrate` run deploys: after all safety gates pass, it
+automatically resolves or creates the verified package and atomically publishes
+all route changes together. Smoke calibration, plan-only calibration, and
+`tune` never modify deployed routes. The manual `promote` command is a
+replay/recovery tool and applies the same fail-closed implementation, execution,
+correctness, conservative-gain, incumbent, and shared-route checks.
 
 At inference time, [`solution/dispatch.py`](solution/dispatch.py) loads the
 verified device-route catalog once, matches the exact hardware/software/shape
 key, and otherwise selects `auto`. There is no online benchmarking and no scan
-of historical result files in `forward`.
+of historical result files in `forward`. A verified route therefore needs only
+cheap identity matching during ordinary execution; performance anchors belong
+only to cold-start calibration on an unverified or changed device.
 
 ## Core workload
 
@@ -262,6 +302,7 @@ results/                     Generated cross-device development results, ignored
 environment/                 Local Windows runtime compatibility hook
 ```
 
-Performance work stays centered on the shared `solution/` mainline. A new GPU
-first uses the common probe, planner, comparator, and benchmark, then receives a
-small verified package only when its exact routes have been measured.
+Performance work stays centered on the shared `solution/` mainline. A complete
+formal calibration on a new GPU uses the common probe, planner, comparator, and
+benchmark, then automatically creates its small verified package and publishes
+only the exact routes that passed every gate.

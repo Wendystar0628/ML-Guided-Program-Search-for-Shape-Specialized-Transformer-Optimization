@@ -137,6 +137,7 @@ def test_execute_probe_cpu_includes_new_sections_without_gpu_work() -> None:
 
     assert result["outcome"] == "success"
     assert result["failure"] is None
+    assert result["probe"]["mode"] == "diagnostic"
     assert result["probe"]["device_operation_passed"] is True
     assert result["probe"]["runtime_policy"] == {
         "matmul_precision": "high",
@@ -151,6 +152,28 @@ def test_execute_probe_cpu_includes_new_sections_without_gpu_work() -> None:
         "available": False,
         "reason": "cuda_required",
     }
+
+
+def test_routing_probe_skips_unused_sdpa_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        probe,
+        "_sdpa_capabilities",
+        lambda _device: pytest.fail("routing probe must not execute SDPA diagnostics"),
+    )
+
+    result = probe.execute_probe({"device": "cpu", "probe_mode": "routing"})
+
+    assert result["outcome"] == "success"
+    assert result["probe"]["mode"] == "routing"
+    assert "sdpa" not in result["probe"]
+    assert result["probe"]["performance_anchors"]
+
+
+def test_execute_probe_rejects_an_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="unsupported probe mode"):
+        probe.execute_probe({"device": "cpu", "probe_mode": "unknown"})
 
 
 def test_safe_item_converts_unexpected_result_to_unavailable() -> None:

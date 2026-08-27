@@ -119,6 +119,8 @@ _DEVICE_PROFILE_FIELDS = (
 )
 _ROUTING_PLAN_FIELDS = (
     "source",
+    "decision_scope",
+    "requires_full_workload_measurement",
     "bottleneck_class",
     "routing_signals",
     "candidate_order",
@@ -249,6 +251,22 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
         ):
             candidates.extend((_WIDE_TRITON_INPLACE_CANDIDATE,))
     return tuple(candidates)
+
+
+def deployable_candidate_id_for_policy(
+    case: WorkloadCase,
+    policy: str,
+) -> str | None:
+    """Map one deployed policy back to its eager calibration candidate."""
+
+    for candidate in candidates_for_case(case):
+        if (
+            candidate.solution_policy == policy
+            and not candidate.compile_solution
+            and not candidate.cuda_graph_solution
+        ):
+            return candidate.candidate_id
+    return None
 
 
 def select_candidates(
@@ -584,6 +602,7 @@ def run_tuning_case(
         ),
         "implementation_consistent": implementation_consistent,
         "case_id": case.case_id,
+        "winner_basis": "full_transformer_correctness_and_paired_timing",
         "observations": observations,
         "winner": winner,
         "deployable_winner": deployable_winner,

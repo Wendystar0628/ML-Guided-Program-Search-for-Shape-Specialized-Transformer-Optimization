@@ -394,6 +394,7 @@ def test_cli_parses_probe_benchmark_profile_and_tune() -> None:
     probe = parser.parse_args(["probe"])
     assert probe.command == "probe"
     assert probe.device == "cuda:0"
+    assert probe.mode == "diagnostic"
 
     benchmark = parser.parse_args(["benchmark"])
     assert benchmark.command == "benchmark"
@@ -454,6 +455,10 @@ def test_cli_parses_probe_benchmark_profile_and_tune() -> None:
 
 def _routing_probe_result() -> dict[str, Any]:
     return {
+        "schema_version": 2,
+        "run_id": "fixture-routing-probe",
+        "created_at": "2026-08-27T00:00:00+00:00",
+        "requested_device": "cuda:0",
         "outcome": "success",
         "environment": {
             "device": "cuda:0",
@@ -466,11 +471,16 @@ def _routing_probe_result() -> dict[str, Any]:
             "cuda_runtime": "13.2",
         },
         "probe": {
+            "mode": "routing",
             "device_operation_passed": True,
+            "runtime_policy": {
+                "matmul_precision": "high",
+                "allow_tf32": True,
+            },
             "hardware_profile": {
                 "available": True,
                 "device_type": "cuda",
-                "platform": {"system": "Windows"},
+                "platform": {"system": "Windows", "machine": "AMD64"},
                 "software": {
                     "driver": "fixture-driver",
                     "torch": "fixture-torch",
@@ -627,6 +637,7 @@ def test_automatic_tune_probes_once_and_uses_ranked_candidates(
     assert probe_calls[0]["timeout_seconds"] == 30.0
     assert probe_calls[0]["matmul_precision"] == "highest"
     assert probe_calls[0]["allow_tf32"] is False
+    assert probe_calls[0]["probe_mode"] == "routing"
     assert len(plan_calls) == 1
     assert plan_calls[0]["limit"] == 2
     assert len(tuning_calls) == 1
@@ -635,6 +646,10 @@ def test_automatic_tune_probes_once_and_uses_ranked_candidates(
         "eager-auto",
     ]
     assert tuning_calls[0]["routing_plan"]["source"] == "hardware_cost_model"
+    assert tuning_calls[0]["routing_plan"]["decision_scope"] == (
+        "candidate_order_only"
+    )
+    assert tuning_calls[0]["routing_plan"]["requires_full_workload_measurement"]
     assert tuning_calls[0]["device_profile"]["device_name"] == "fixture-gpu"
     assert tuning_calls[0]["base_protocol"].matmul_precision == "highest"
     assert tuning_calls[0]["base_protocol"].allow_tf32 is False
@@ -682,6 +697,8 @@ def test_explicit_tune_preserves_order_without_a_probe(
     ]
     assert tuning_calls[0]["routing_plan"] == {
         "source": "explicit_candidates",
+        "decision_scope": "candidate_order_only",
+        "requires_full_workload_measurement": True,
         "candidate_order": ["eager-torch", "eager-auto"],
     }
     assert tuning_calls[0]["device_profile"] is None
@@ -691,10 +708,12 @@ def test_calibrate_plan_only_covers_the_full_workload_without_tuning(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    planned_cases: list[str] = []
+    events: list[str] = []
 
     def fake_probe(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], Path]:
-        del args, kwargs
+        del args
+        assert kwargs["probe_mode"] == "routing"
+        events.append("probe")
         return _routing_probe_result(), tmp_path / "probe.json"
 
     def fake_plan(
@@ -706,7 +725,7 @@ def test_calibrate_plan_only_covers_the_full_workload_without_tuning(
     ) -> dict[str, Any]:
         del hardware_profile, candidate_ids
         assert limit == 1
-        planned_cases.append(case.case_id)
+        events.append(f"plan:{case.case_id}")
         return {
             "source": "hardware_cost_model",
             "bottleneck_class": "balanced",
@@ -729,7 +748,347 @@ def test_calibrate_plan_only_covers_the_full_workload_without_tuning(
     exit_code = runner_cli.main(["calibrate", "--plan-only", "--candidate-limit", "1"])
 
     assert exit_code == 0
-    assert planned_cases == [case[0] for case in EXPECTED_CASES]
+    assert events == ["probe", *(f"plan:{case[0]}" for case in EXPECTED_CASES)]
+
+
+def test_formal_plan_only_allows_one_shared_case_on_a_new_device(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        runner_cli,
+        "run_managed_probe",
+        lambda *args, **kwargs: (_routing_probe_result(), tmp_path / "probe.json"),
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "find_matching_verified_route",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "build_routing_plan",
+        lambda *args, **kwargs: {
+            "source": "hardware_cost_model",
+            "candidate_order": ["eager-auto"],
+        },
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "run_tuning_case",
+        lambda *args, **kwargs: pytest.fail("plan-only must not run tuning"),
+    )
+    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_routing_plan", lambda *args: None)
+
+    exit_code = runner_cli.main(
+        [
+            "calibrate",
+            "--preset",
+            "formal",
+            "--plan-only",
+            "--case-id",
+            "mask_s512_padding_fp16",
+            "--candidate-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--matmul-precision", "highest"],
+        ["--matmul-precision", "medium"],
+        ["--no-allow-tf32"],
+    ],
+)
+def test_formal_calibration_rejects_non_deployable_precision_before_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+) -> None:
+    monkeypatch.setattr(
+        runner_cli,
+        "run_managed_probe",
+        lambda *args, **kwargs: pytest.fail(
+            "invalid Formal deployment settings must fail before probing"
+        ),
+    )
+
+    exit_code = runner_cli.main(["calibrate", "--preset", "formal", *arguments])
+
+    assert exit_code == 2
+
+
+def test_calibrate_probes_once_then_plans_then_runs_full_workloads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    profiles: list[dict[str, Any]] = []
+
+    def fake_probe(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], Path]:
+        del args
+        assert kwargs["probe_mode"] == "routing"
+        events.append("probe")
+        return _routing_probe_result(), tmp_path / "probe.json"
+
+    def fake_plan(
+        case: WorkloadCase,
+        hardware_profile: dict[str, Any],
+        candidate_ids: tuple[str, ...],
+        *,
+        limit: int,
+    ) -> dict[str, Any]:
+        del candidate_ids
+        assert limit == 1
+        events.append(f"plan:{case.case_id}")
+        profiles.append(hardware_profile)
+        return {
+            "source": "hardware_cost_model",
+            "candidate_order": ["eager-auto"],
+        }
+
+    def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args
+        case_id = kwargs["case"].case_id
+        events.append(f"tune:{case_id}")
+        assert kwargs["requested_candidates"] == ["eager-auto"]
+        assert kwargs["device_profile"] is profiles[0]
+        return _successful_tuning_summary(case_id, ["eager-auto"], tmp_path)
+
+    monkeypatch.setattr(runner_cli, "run_managed_probe", fake_probe)
+    monkeypatch.setattr(runner_cli, "build_routing_plan", fake_plan)
+    monkeypatch.setattr(runner_cli, "run_tuning_case", fake_tuning)
+    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_tuning_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_routing_plan", lambda *args: None)
+    monkeypatch.setattr(
+        runner_cli,
+        "auto_promote_calibration",
+        lambda *args, **kwargs: pytest.fail("smoke calibration must not publish routes"),
+    )
+
+    exit_code = runner_cli.main(
+        [
+            "calibrate",
+            "--case-id",
+            "launch_s64_fp16",
+            "--case-id",
+            "wide_s256_bf16",
+            "--candidate-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert events == [
+        "probe",
+        "plan:launch_s64_fp16",
+        "plan:wide_s256_bf16",
+        "tune:launch_s64_fp16",
+        "tune:wide_s256_bf16",
+    ]
+    assert len(profiles) == 2
+    assert profiles[0] is profiles[1]
+
+
+def test_formal_calibration_auto_promotes_after_all_selected_cases(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    route_path = tmp_path / "verified_hardware" / "fixture" / "routes.json"
+    routing_probe_result = _routing_probe_result()
+
+    def fake_probe(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], Path]:
+        del args
+        assert kwargs["probe_mode"] == "routing"
+        events.append("probe")
+        return routing_probe_result, tmp_path / "probe.json"
+
+    def fake_plan(
+        case: WorkloadCase,
+        hardware_profile: dict[str, Any],
+        candidate_ids: tuple[str, ...],
+        *,
+        limit: int,
+    ) -> dict[str, Any]:
+        del hardware_profile, candidate_ids
+        assert limit == 1
+        events.append(f"plan:{case.case_id}")
+        return {
+            "source": "hardware_cost_model",
+            "candidate_order": ["eager-auto"],
+        }
+
+    def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args
+        case_id = kwargs["case"].case_id
+        events.append(f"tune:{case_id}")
+        winner = {
+            "candidate_id": "eager-auto",
+            "solution_policy": "auto",
+        }
+        return {
+            **_successful_tuning_summary(case_id, ["eager-auto"], tmp_path),
+            "complete": True,
+            "winner": winner,
+            "deployable_winner": winner,
+        }
+
+    def fake_auto_promote(
+        project_root: Path,
+        summaries: list[dict[str, Any]],
+        *,
+        probe_result: dict[str, Any],
+        full_workload_case_ids: list[str],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], Path, bool]:
+        del project_root
+        events.append("auto-promote")
+        assert probe_result is routing_probe_result
+        assert full_workload_case_ids == [case[0] for case in EXPECTED_CASES]
+        assert [summary["case_id"] for summary in summaries] == [
+            "launch_s64_fp16",
+            "wide_s256_bf16",
+        ]
+        winners = [dict(summary["deployable_winner"]) for summary in summaries]
+        return {"schema_version": 2}, winners, route_path, False
+
+    monkeypatch.setattr(runner_cli, "run_managed_probe", fake_probe)
+    monkeypatch.setattr(runner_cli, "build_routing_plan", fake_plan)
+    monkeypatch.setattr(runner_cli, "run_tuning_case", fake_tuning)
+    monkeypatch.setattr(
+        runner_cli,
+        "find_matching_verified_route",
+        lambda *args, **kwargs: route_path,
+    )
+    monkeypatch.setattr(runner_cli, "auto_promote_calibration", fake_auto_promote)
+    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_tuning_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_routing_plan", lambda *args: None)
+
+    exit_code = runner_cli.main(
+        [
+            "calibrate",
+            "--preset",
+            "formal",
+            "--case-id",
+            "launch_s64_fp16",
+            "--case-id",
+            "wide_s256_bf16",
+            "--candidate-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert events == [
+        "probe",
+        "plan:launch_s64_fp16",
+        "plan:wide_s256_bf16",
+        "tune:launch_s64_fp16",
+        "tune:wide_s256_bf16",
+        "auto-promote",
+    ]
+
+
+def test_formal_calibration_does_not_publish_without_deployable_winner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    route_path = tmp_path / "verified_hardware" / "fixture" / "routes.json"
+    probe_result = _routing_probe_result()
+
+    monkeypatch.setattr(
+        runner_cli,
+        "run_managed_probe",
+        lambda *args, **kwargs: (probe_result, tmp_path / "probe.json"),
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "build_routing_plan",
+        lambda *args, **kwargs: {
+            "source": "hardware_cost_model",
+            "candidate_order": ["eager-auto"],
+        },
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "run_tuning_case",
+        lambda *args, **kwargs: {
+            **_successful_tuning_summary(
+                kwargs["case"].case_id,
+                ["eager-auto"],
+                tmp_path,
+            ),
+            "complete": True,
+            "deployable_winner": None,
+        },
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "find_matching_verified_route",
+        lambda *args, **kwargs: route_path,
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "auto_promote_calibration",
+        lambda *args, **kwargs: pytest.fail(
+            "an incomplete Formal result must not publish routes"
+        ),
+    )
+    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_tuning_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_routing_plan", lambda *args: None)
+
+    exit_code = runner_cli.main(
+        [
+            "calibrate",
+            "--preset",
+            "formal",
+            "--case-id",
+            "launch_s64_fp16",
+            "--candidate-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 1
+
+
+def test_calibrate_stops_before_planning_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    def fake_probe(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], Path]:
+        del args, kwargs
+        events.append("probe")
+        return {"outcome": "runtime_error"}, tmp_path / "probe.json"
+
+    monkeypatch.setattr(runner_cli, "run_managed_probe", fake_probe)
+    monkeypatch.setattr(
+        runner_cli,
+        "build_routing_plan",
+        lambda *args, **kwargs: pytest.fail("failed probe must not build a plan"),
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "run_tuning_case",
+        lambda *args, **kwargs: pytest.fail("failed probe must not run workloads"),
+    )
+    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
+
+    exit_code = runner_cli.main(
+        ["calibrate", "--case-id", "launch_s64_fp16"]
+    )
+
+    assert exit_code == 1
+    assert events == ["probe"]
 
 
 def test_compile_and_cuda_graph_candidates_are_mutually_exclusive() -> None:
@@ -1181,5 +1540,15 @@ def test_probe_rejects_invalid_timeout_before_start(
             tmp_path,
             device="cpu",
             timeout_seconds=timeout,
+        )
+    assert not (tmp_path / "results").exists()
+
+
+def test_probe_rejects_invalid_mode_before_start(tmp_path: Path) -> None:
+    with pytest.raises(ContractError, match="unsupported probe mode"):
+        supervisor.run_managed_probe(
+            tmp_path,
+            device="cpu",
+            probe_mode="unknown",
         )
     assert not (tmp_path / "results").exists()

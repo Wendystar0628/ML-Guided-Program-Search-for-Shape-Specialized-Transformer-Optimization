@@ -109,12 +109,16 @@ def test_launch_plan_prioritizes_graph_and_retains_auto() -> None:
     plan = build_routing_plan(case, _ada_profile(), candidates, limit=3)
 
     assert plan["source"] == "hardware_cost_model"
+    assert plan["decision_scope"] == "candidate_order_only"
+    assert plan["requires_full_workload_measurement"] is True
     assert plan["bottleneck_class"] == "launch_underfill"
     assert plan["candidate_order"][0] == "launch-cudagraph"
     assert "compile-reduce-overhead" in plan["candidate_order"]
     assert "eager-auto" in plan["candidate_order"]
     assert set(plan) == {
         "source",
+        "decision_scope",
+        "requires_full_workload_measurement",
         "bottleneck_class",
         "workload_analysis",
         "routing_signals",
@@ -179,6 +183,47 @@ def test_tight_launch_limit_keeps_deployable_graph_and_auto() -> None:
     )
 
     assert plan["candidate_order"] == ["launch-cudagraph", "eager-auto"]
+
+
+def test_plan_retains_a_low_ranked_incumbent_and_auto() -> None:
+    case = _case(
+        case_id="launch",
+        batch_size=1,
+        seq_len=64,
+        d_model=256,
+        ffn_dim=1024,
+        num_layers=4,
+    )
+
+    plan = build_routing_plan(
+        case,
+        _ada_profile(),
+        [
+            "launch-cudagraph",
+            "compile-reduce-overhead",
+            "eager-auto",
+            "eager-torch",
+        ],
+        limit=3,
+        required_candidate_ids=("eager-torch",),
+    )
+
+    assert plan["candidate_order"] == [
+        "launch-cudagraph",
+        "eager-auto",
+        "eager-torch",
+    ]
+
+
+def test_plan_rejects_a_limit_that_cannot_hold_auto_and_incumbent() -> None:
+    with pytest.raises(ValueError, match="auto and the current incumbent"):
+        build_routing_plan(
+            _case(),
+            _ada_profile(),
+            ["eager-auto", "eager-torch"],
+            limit=1,
+            required_candidate_ids=("eager-torch",),
+        )
 
 
 def test_wide_bf16_uses_ridge_signal_for_compute_candidate() -> None:

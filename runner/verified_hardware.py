@@ -29,7 +29,6 @@ _IDENTITY_FIELDS = (
     ("gpu", "name"),
     ("gpu", "compute_capability"),
     ("platform", "system"),
-    ("platform", "machine"),
     ("software", "torch"),
     ("software", "cuda_runtime"),
     ("software", "triton"),
@@ -119,7 +118,7 @@ def expected_runtime_identity(profile: Mapping[str, Any]) -> dict[str, dict[str,
 
 
 def collect_runtime_identity(device_name: str) -> dict[str, dict[str, str]]:
-    """Collect only facts that participate in an exact verified route key."""
+    """Collect route identity fields plus useful machine provenance."""
 
     try:
         import torch

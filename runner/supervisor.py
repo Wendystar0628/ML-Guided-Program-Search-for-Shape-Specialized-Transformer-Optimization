@@ -682,12 +682,15 @@ def run_managed_probe(
     timeout_seconds: float = 30.0,
     matmul_precision: str = "high",
     allow_tf32: bool = True,
+    probe_mode: str = "diagnostic",
 ) -> tuple[dict[str, Any], Path]:
     timeout_seconds = _validate_timeout_seconds(timeout_seconds)
     if matmul_precision not in {"highest", "high", "medium"}:
         raise ContractError(f"unsupported matmul precision: {matmul_precision}")
     if not isinstance(allow_tf32, bool):
         raise ContractError("allow_tf32 must be a boolean")
+    if probe_mode not in {"routing", "diagnostic"}:
+        raise ContractError(f"unsupported probe mode: {probe_mode}")
     project_root = project_root.resolve()
     run_id = new_run_id()
     created_at = utc_now()
@@ -696,6 +699,7 @@ def run_managed_probe(
         {
             "run_kind": "probe",
             "device": device,
+            "probe_mode": probe_mode,
             "matmul_precision": matmul_precision,
             "allow_tf32": allow_tf32,
         },

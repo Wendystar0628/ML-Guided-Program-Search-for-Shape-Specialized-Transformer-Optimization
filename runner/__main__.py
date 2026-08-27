@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import platform
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,13 @@ from runner.contracts import (
     select_workload_case,
 )
 from runner.hardware_router import build_routing_plan
-from runner.route_promotion import promote_tuning_summaries
+from runner.route_promotion import (
+    auto_promote_calibration,
+    find_matching_verified_route,
+    promote_tuning_summaries,
+    validate_promotion_case_set,
+    verified_profile_from_probe_result,
+)
 from runner.supervisor import (
     run_managed_benchmark,
     run_managed_probe,
@@ -28,13 +35,24 @@ from runner.sweep import summarize_sweep
 from runner.tuning import (
     SOLUTION_POLICIES,
     candidates_for_case,
+    deployable_candidate_id_for_policy,
     run_tuning_case,
     select_candidates,
     solution_policy,
 )
+from solution.dispatch import load_route_table, make_route_key, resolve_route_result
 
 DEFAULT_WORKLOAD_SET = "transformer_core_v1"
 DEFAULT_CANDIDATE_LIMIT = 4
+
+
+@dataclass(frozen=True)
+class RoutingProbeContext:
+    """One probe result reused by every case in a calibration command."""
+
+    hardware_profile: dict[str, Any]
+    raw_result: dict[str, Any]
+    result_path: Path
 
 
 def _positive_int(value: str) -> int:
@@ -87,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-tf32",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+    probe.add_argument(
+        "--mode",
+        choices=("routing", "diagnostic"),
+        default="diagnostic",
+        help="routing collects route-planning anchors; diagnostic also checks SDPA backends",
     )
 
     benchmark = subparsers.add_parser(
@@ -145,7 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     tune.add_argument(
         "--candidate",
         action="append",
-        help="candidate to run in the supplied order; omit for hardware routing",
+        help=(
+            "candidate to measure in the supplied order; omit to probe once and "
+            "build a coarse candidate plan"
+        ),
     )
     tune.add_argument(
         "--candidate-limit",
@@ -169,7 +196,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     calibrate = subparsers.add_parser(
         "calibrate",
-        help="probe one device and calibrate hardware-ranked routes",
+        help=(
+            "probe once, measure bounded candidates, and automatically publish "
+            "complete Formal routes"
+        ),
     )
     calibrate.add_argument("--workload-set", default=DEFAULT_WORKLOAD_SET)
     calibrate.add_argument(
@@ -189,7 +219,10 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument(
         "--plan-only",
         action="store_true",
-        help="show candidate plans without running candidate benchmarks",
+        help=(
+            "run the routing probe and show coarse candidate plans without "
+            "executing Transformer candidate benchmarks"
+        ),
     )
     calibrate.add_argument(
         "--matmul-precision",
@@ -369,6 +402,7 @@ def _run_probe(args: argparse.Namespace, project_root: Path) -> int:
         timeout_seconds=args.timeout,
         matmul_precision=args.matmul_precision,
         allow_tf32=args.allow_tf32,
+        probe_mode=args.mode,
     )
     _print_run_summary(result, result_path)
     return _exit_code(result["outcome"])
@@ -505,8 +539,8 @@ def _hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
 def _probe_for_routing(
     args: argparse.Namespace,
     project_root: Path,
-) -> tuple[dict[str, Any] | None, int]:
-    print("\n=== Hardware routing probe ===")
+) -> tuple[RoutingProbeContext | None, int]:
+    print("\n=== Routing probe (once per command) ===")
     timeout = args.timeout if args.timeout is not None else 30.0
     result, result_path = run_managed_probe(
         project_root,
@@ -514,26 +548,72 @@ def _probe_for_routing(
         timeout_seconds=timeout,
         matmul_precision=getattr(args, "matmul_precision", "high"),
         allow_tf32=getattr(args, "allow_tf32", True),
+        probe_mode="routing",
     )
     _print_run_summary(result, result_path)
     exit_code = _exit_code(result["outcome"])
     if exit_code != 0:
         return None, exit_code
-    return _hardware_profile_from_probe(result), 0
+    return (
+        RoutingProbeContext(
+            hardware_profile=_hardware_profile_from_probe(result),
+            raw_result=result,
+            result_path=result_path,
+        ),
+        0,
+    )
+
+
+def _incumbent_candidate_id(
+    case: WorkloadCase,
+    hardware_profile: Mapping[str, Any],
+    route_path: Path | None,
+) -> str | None:
+    if route_path is None or not route_path.is_file():
+        return None
+    table = load_route_table(route_path)
+    key = make_route_key(
+        case,
+        shape=(case.batch_size, case.seq_len, case.d_model),
+        dtype=case.dtype,
+        device_type=str(hardware_profile["device_type"]),
+        device_name=str(hardware_profile["device_name"]),
+        compute_capability=str(hardware_profile["compute_capability"]),
+        platform_system=str(hardware_profile["platform_system"]),
+        torch_version=str(hardware_profile["torch"]),
+        cuda_runtime=str(hardware_profile["cuda_runtime"]),
+        triton_version=str(hardware_profile["triton"]),
+    )
+    resolution = resolve_route_result(table, key)
+    if resolution.origin != "calibrated":
+        return None
+    candidate_id = deployable_candidate_id_for_policy(case, resolution.policy)
+    if candidate_id is None:
+        raise ContractError(
+            f"current route {resolution.policy!r} for {case.case_id} has no "
+            "deployable calibration candidate"
+        )
+    return candidate_id
 
 
 def _routing_plan_for_case(
     case: WorkloadCase,
     hardware_profile: Mapping[str, Any],
     candidate_limit: int,
+    *,
+    incumbent_candidate_id: str | None = None,
 ) -> dict[str, Any]:
     applicable = tuple(item.candidate_id for item in candidates_for_case(case))
     try:
+        options: dict[str, Any] = {}
+        if incumbent_candidate_id is not None:
+            options["required_candidate_ids"] = (incumbent_candidate_id,)
         raw_plan = build_routing_plan(
             case,
             hardware_profile,
             applicable,
             limit=candidate_limit,
+            **options,
         )
     except (TypeError, ValueError) as exc:
         raise ContractError(
@@ -556,15 +636,25 @@ def _routing_plan_for_case(
         raise ContractError(f"routing plan for {case.case_id} exceeds candidate-limit")
     if "eager-auto" in applicable and "eager-auto" not in candidate_order:
         raise ContractError(f"routing plan for {case.case_id} must retain eager-auto")
+    if (
+        incumbent_candidate_id is not None
+        and incumbent_candidate_id not in candidate_order
+    ):
+        raise ContractError(
+            f"routing plan for {case.case_id} must retain the current incumbent"
+        )
     select_candidates(case, candidate_order)
     plan = dict(raw_plan)
     plan["candidate_order"] = candidate_order
+    plan["decision_scope"] = "candidate_order_only"
+    plan["requires_full_workload_measurement"] = True
     return plan
 
 
 def _print_routing_plan(case_id: str, plan: Mapping[str, Any]) -> None:
-    print(f"\n=== Routing plan: {case_id} ===")
+    print(f"\n=== Coarse candidate plan: {case_id} ===")
     print(f"source: {plan.get('source', 'unknown')}")
+    print("scope: candidate ordering only; full-workload measurement decides the route")
     bottleneck = plan.get("bottleneck_class")
     if isinstance(bottleneck, str):
         print(f"bottleneck: {bottleneck}")
@@ -672,9 +762,10 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
     )
     hardware_profile: dict[str, Any] | None = None
     if args.candidate is None:
-        hardware_profile, probe_exit_code = _probe_for_routing(args, project_root)
-        if hardware_profile is None:
+        probe_context, probe_exit_code = _probe_for_routing(args, project_root)
+        if probe_context is None:
             return probe_exit_code
+        hardware_profile = probe_context.hardware_profile
 
     summaries: list[dict[str, Any]] = []
     for case_id in args.case_id:
@@ -690,6 +781,8 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
             requested_candidates = list(args.candidate)
             routing_plan: dict[str, Any] = {
                 "source": "explicit_candidates",
+                "decision_scope": "candidate_order_only",
+                "requires_full_workload_measurement": True,
                 "candidate_order": requested_candidates,
             }
         else:
@@ -701,6 +794,7 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
             )
             requested_candidates = routing_plan["candidate_order"]
             _print_routing_plan(case_id, routing_plan)
+        print(f"\n=== Full-workload candidate measurement: {case_id} ===")
         summary = run_tuning_case(
             project_root,
             workload_set_id=args.workload_set,
@@ -720,25 +814,62 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
+    if (
+        args.preset == "formal"
+        and not args.plan_only
+        and (args.matmul_precision != "high" or args.allow_tf32 is not True)
+    ):
+        raise ContractError(
+            "formal calibration deployment requires "
+            "--matmul-precision high and --allow-tf32"
+        )
     workload_set = load_workload_set(project_root, args.workload_set)
     cases = (
         [select_workload_case(workload_set, case_id) for case_id in args.case_id]
         if args.case_id
         else list(workload_set["cases"])
     )
-    hardware_profile, probe_exit_code = _probe_for_routing(args, project_root)
-    if hardware_profile is None:
+    probe_context, probe_exit_code = _probe_for_routing(args, project_root)
+    if probe_context is None:
         return probe_exit_code
+    hardware_profile = probe_context.hardware_profile
+
+    full_case_ids = [case.case_id for case in workload_set["cases"]]
+    selected_case_ids = [case.case_id for case in cases]
+    existing_route: Path | None = None
+    if args.preset == "formal":
+        verified_profile = verified_profile_from_probe_result(probe_context.raw_result)
+        existing_route = find_matching_verified_route(project_root, verified_profile)
 
     plans = [
-        _routing_plan_for_case(case, hardware_profile, args.candidate_limit)
+        _routing_plan_for_case(
+            case,
+            hardware_profile,
+            args.candidate_limit,
+            incumbent_candidate_id=_incumbent_candidate_id(
+                case,
+                hardware_profile,
+                existing_route,
+            ),
+        )
         for case in cases
     ]
     for case, plan in zip(cases, plans, strict=True):
         _print_routing_plan(case.case_id, plan)
     if args.plan_only:
-        print("\nplan-only: no candidate benchmarks were run")
+        print(
+            "\nplan-only: the routing probe and coarse candidate plans completed; "
+            "no full Transformer candidate benchmarks were run"
+        )
         return 0
+
+    if args.preset == "formal":
+        validate_promotion_case_set(selected_case_ids)
+        if existing_route is None and set(selected_case_ids) != set(full_case_ids):
+            raise ContractError(
+                "a new verified hardware package requires one complete Formal "
+                "workload calibration"
+            )
 
     protocol = MeasurementProtocol.for_preset(
         args.preset,
@@ -748,6 +879,7 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
     )
     summaries: list[dict[str, Any]] = []
     for case, plan in zip(cases, plans, strict=True):
+        print(f"\n=== Full-workload candidate measurement: {case.case_id} ===")
         summary = run_tuning_case(
             project_root,
             workload_set_id=args.workload_set,
@@ -771,27 +903,61 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
             f"summary={summary['summary_path']}"
         )
     if args.preset == "formal":
-        print(
-            "promotion remains explicit: python -m runner promote "
-            "--tuning-id <id> --route-table <verified routes.json>"
-        )
-    else:
-        print("smoke calibration is screening-only and cannot be promoted")
-        for summary in summaries:
-            compact_plan = summary.get("routing_plan")
-            order = (
-                compact_plan.get("candidate_order", [])
-                if isinstance(compact_plan, Mapping)
-                else []
-            )
-            candidate_args = " ".join(
-                f"--candidate {candidate_id}" for candidate_id in order
-            )
+        if any(
+            summary.get("complete") is not True
+            or summary.get("winner") is None
+            or summary.get("deployable_winner") is None
+            for summary in summaries
+        ):
             print(
-                "formal rerun: python -m runner tune "
-                f"--case-id {summary['case_id']} --preset formal {candidate_args}"
+                "automatic route update skipped: calibration has no complete "
+                "deployable winner"
             )
-    return 0 if all(summary["winner"] is not None for summary in summaries) else 1
+            return 1
+        print("\n=== Automatic route update ===")
+        try:
+            previous_route_bytes = (
+                existing_route.read_bytes()
+                if existing_route is not None and existing_route.is_file()
+                else None
+            )
+            _, winners, route_path, created = auto_promote_calibration(
+                project_root,
+                summaries,
+                probe_result=probe_context.raw_result,
+                full_workload_case_ids=full_case_ids,
+            )
+        except (ContractError, OSError) as exc:
+            print(f"automatic route update failed: {exc}")
+            return 1
+        for case, winner in zip(cases, winners, strict=True):
+            print(
+                f"{case.case_id}: deployed {winner['candidate_id']} -> "
+                f"{winner['solution_policy']}"
+            )
+        route_changed = (
+            previous_route_bytes is not None
+            and route_path.is_file()
+            and route_path.read_bytes() != previous_route_bytes
+        )
+        if created:
+            action = "created verified package"
+        elif route_changed:
+            action = "updated verified package"
+        else:
+            action = "verified package already has the selected routes"
+        print(f"{action}: {route_path.parent}")
+        print(f"dispatch routes: {route_path}")
+    else:
+        if any(summary.get("winner") is None for summary in summaries):
+            return 1
+        print("smoke calibration is screening-only and cannot be promoted")
+        case_arguments = " ".join(f"--case-id {case.case_id}" for case in cases)
+        print(
+            "formal calibration: python -m runner calibrate --preset formal "
+            f"{case_arguments}"
+        )
+    return 0
 
 
 def _run_promote(args: argparse.Namespace, project_root: Path) -> int:

@@ -26,6 +26,7 @@ _GEMM_REPEATS = 32
 _SOFTMAX_ROWS = 2048
 _SOFTMAX_COLUMNS = 1024
 _SOFTMAX_REPEATS = 16
+PROBE_MODES = ("routing", "diagnostic")
 
 
 def _driver_version(index: int) -> tuple[str | None, str | None]:
@@ -601,8 +602,11 @@ def _sdpa_capabilities(device: torch.device) -> dict[str, Any]:
 
 def execute_probe(request: dict[str, Any]) -> dict[str, Any]:
     requested_device = str(request["device"])
+    probe_mode = str(request.get("probe_mode", "diagnostic"))
     matmul_precision = str(request.get("matmul_precision", "high"))
     allow_tf32 = request.get("allow_tf32", True)
+    if probe_mode not in PROBE_MODES:
+        raise ValueError(f"unsupported probe mode: {probe_mode}")
     if matmul_precision not in {"highest", "high", "medium"}:
         raise ValueError(f"unsupported matmul precision: {matmul_precision}")
     if not isinstance(allow_tf32, bool):
@@ -617,18 +621,22 @@ def execute_probe(request: dict[str, Any]) -> dict[str, Any]:
     observed = float((value.square() + 1).sum().item())
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+    probe: dict[str, Any] = {
+        "mode": probe_mode,
+        "device_operation_passed": observed == 1256.0,
+        "runtime_policy": {
+            "matmul_precision": matmul_precision,
+            "allow_tf32": allow_tf32,
+        },
+        "hardware_profile": _safe_item(_hardware_profile, device),
+        "performance_anchors": _performance_anchors(device),
+    }
+    if probe_mode == "diagnostic":
+        probe["sdpa"] = _safe_item(_sdpa_capabilities, device)
+
     return {
         "outcome": "success",
         "environment": collect_environment(device),
-        "probe": {
-            "device_operation_passed": observed == 1256.0,
-            "runtime_policy": {
-                "matmul_precision": matmul_precision,
-                "allow_tf32": allow_tf32,
-            },
-            "hardware_profile": _safe_item(_hardware_profile, device),
-            "performance_anchors": _performance_anchors(device),
-            "sdpa": _safe_item(_sdpa_capabilities, device),
-        },
+        "probe": probe,
         "failure": None,
     }
