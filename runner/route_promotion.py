@@ -15,8 +15,27 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from runner.contracts import ContractError, load_json, solution_implementation_hash
-from solution.dispatch import ROUTE_FIELDS, resolve_route, validate_route_table
+from runner.candidates import candidate_spec, deployable_policy_ids
+from runner.contracts import (
+    ContractError,
+    load_json,
+    load_workload_set,
+    solution_implementation_hash,
+)
+from runner.routing_contracts import (
+    hardware_identity_from_verified_profile,
+    route_match_from_summary,
+    validate_selected_route_groups,
+)
+from solution.dispatch import (
+    HARDWARE_ROUTE_FIELDS,
+    ROUTE_FIELDS,
+    load_verified_bundle,
+    resolve_route,
+    validate_bundle_manifest,
+    validate_route_table,
+    validate_verified_route_table,
+)
 
 TUNING_SCHEMA_VERSION = 1
 ROUTE_SCHEMA_VERSION = 2
@@ -29,47 +48,7 @@ _FORMAL_MINIMUM_COUNTS = {
     "rounds": 3,
 }
 _FORMAL_MAXIMUM_TOLERANCES = {"rtol": 0.01, "atol": 0.001}
-_SHARED_ROUTE_CASE_GROUPS = (
-    frozenset({"mask_s512_full_fp16", "mask_s512_padding_fp16"}),
-)
-DEPLOYABLE_EAGER_POLICIES = frozenset(
-    {
-        "auto",
-        "reference",
-        "torch",
-        "triton",
-        "preprocess",
-        "padding",
-        "packed",
-        "s512-native-softmax",
-        "long-pv",
-        "long-tail-online",
-        "wide-epilogue",
-        "wide-triton-inplace",
-        "cuda-graph",
-        "balanced-cuda-graph",
-    }
-)
-
-_SHAPE_FIELD_MAP = {
-    "dtype": "dtype",
-    "batch_size": "B",
-    "seq_len": "S",
-    "d_model": "D",
-    "num_heads": "heads",
-    "ffn_dim": "ffn",
-    "num_layers": "layers",
-    "causal": "causal",
-}
-_DEVICE_ROUTE_FIELDS = (
-    "device_type",
-    "device_name",
-    "compute_capability",
-    "platform_system",
-    "torch",
-    "cuda_runtime",
-    "triton",
-)
+DEPLOYABLE_EAGER_POLICIES = deployable_policy_ids()
 
 
 def _positive_number(value: Any) -> float | None:
@@ -131,24 +110,24 @@ def select_deployable_winner(
         median = _positive_number(observation.get("target_median_ms"))
         p90 = _positive_number(observation.get("target_p90_ms"))
         execution_path = observation.get("execution_path")
+        spec = candidate_spec(candidate_id) if isinstance(candidate_id, str) else None
         if (
             policy not in allowed_policies
-            or not isinstance(candidate_id, str)
-            or not candidate_id
+            or spec is None
+            or not spec.deployable
+            or spec.solution_policy != policy
             or observation.get("compile_solution") is not False
             or observation.get("cuda_graph_solution", False) is not False
             or observation.get("outcome") != "success"
             or observation.get("correctness_passed") is not True
             or observation.get("failed_elements") != 0
-            or observation.get("policy_applied") is not True
             or speedup is None
             or measured_speedup is None
             or not math.isclose(speedup, measured_speedup, rel_tol=1e-12, abs_tol=1e-12)
             or median is None
             or p90 is None
             or not isinstance(execution_path, Mapping)
-            or not isinstance(execution_path.get("shape_route"), str)
-            or not execution_path["shape_route"]
+            or not spec.evidence_matches(execution_path)
         ):
             continue
         eligible.append(
@@ -168,34 +147,10 @@ def select_deployable_winner(
 
 
 def _route_match(summary: Mapping[str, Any]) -> dict[str, Any]:
-    workload = summary.get("workload")
-    case = workload.get("case") if isinstance(workload, Mapping) else None
-    if not isinstance(case, Mapping):
-        raise ContractError("tuning summary workload is missing its case object")
-
-    match: dict[str, Any] = {}
-    for source_name, route_name in _SHAPE_FIELD_MAP.items():
-        if source_name not in case:
-            raise ContractError(f"tuning workload case is missing {source_name}")
-        match[route_name] = copy.deepcopy(case[source_name])
-
-    profile = summary.get("device_profile")
-    if not isinstance(profile, Mapping):
-        raise ContractError("tuning summary is missing device_profile")
-    for profile_name, route_name in (
-        ("device_type", "device_type"),
-        ("device_name", "device_name"),
-        ("compute_capability", "compute_capability"),
-        ("platform_system", "platform_system"),
-        ("torch", "torch"),
-        ("cuda_runtime", "cuda_runtime"),
-        ("triton", "triton"),
-    ):
-        value = profile.get(profile_name)
-        if not isinstance(value, str) or not value:
-            raise ContractError(f"tuning device_profile is missing {profile_name}")
-        match[route_name] = value
-    return match
+    try:
+        return route_match_from_summary(summary)
+    except (TypeError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
 
 
 def _match_identity(match: Mapping[str, Any]) -> tuple[tuple[str, Any], ...]:
@@ -252,39 +207,10 @@ def _upsert_exact_route(
 def _verified_profile_identity(profile: Mapping[str, Any]) -> dict[str, str]:
     """Extract the exact route identity owned by one verified device package."""
 
-    if profile.get("schema_version") != 1:
-        raise ContractError("verified profile must use schema_version 1")
-    if profile.get("device_operation_passed") is not True:
-        raise ContractError("verified profile did not pass its device operation")
-    hardware = profile.get("hardware_profile")
-    if not isinstance(hardware, Mapping):
-        raise ContractError("verified profile is missing hardware_profile")
-    gpu = hardware.get("gpu")
-    platform_profile = hardware.get("platform")
-    software = hardware.get("software")
-    if not all(
-        isinstance(section, Mapping)
-        for section in (gpu, platform_profile, software)
-    ):
-        raise ContractError("verified profile has incomplete identity sections")
-    assert isinstance(gpu, Mapping)
-    assert isinstance(platform_profile, Mapping)
-    assert isinstance(software, Mapping)
-    raw_identity = {
-        "device_type": hardware.get("device_type"),
-        "device_name": gpu.get("name"),
-        "compute_capability": gpu.get("compute_capability"),
-        "platform_system": platform_profile.get("system"),
-        "torch": software.get("torch"),
-        "cuda_runtime": software.get("cuda_runtime"),
-        "triton": software.get("triton"),
-    }
-    identity: dict[str, str] = {}
-    for field, value in raw_identity.items():
-        if not isinstance(value, str) or not value:
-            raise ContractError(f"verified profile is missing {field}")
-        identity[field] = value
-    return identity
+    try:
+        return hardware_identity_from_verified_profile(profile).as_route_fields()
+    except (TypeError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
 
 
 def _verified_bundle_identity(profile: Mapping[str, Any]) -> dict[str, str]:
@@ -348,6 +274,9 @@ def verified_profile_from_probe_result(
 def find_matching_verified_route(
     project_root: Path,
     profile: Mapping[str, Any],
+    *,
+    workload_set_id: str | None = None,
+    workload_sha256: str | None = None,
 ) -> Path | None:
     """Find the unique verified route table for one exact runtime identity."""
 
@@ -371,6 +300,7 @@ def find_matching_verified_route(
             continue
         package_root = profile_path.parent
         required_paths = (
+            package_root / "manifest.json",
             package_root / "routes.json",
             package_root / "README.md",
             package_root / "run_verified.py",
@@ -378,22 +308,81 @@ def find_matching_verified_route(
         )
         missing = [path.name for path in required_paths if not path.is_file()]
         if missing:
-            raise ContractError(
-                "matching verified package is incomplete: "
-                f"{package_root.name}: {', '.join(missing)}"
-            )
+            continue
         route_path = package_root / "routes.json"
         try:
-            validate_route_table(load_json(route_path))
-        except (ContractError, TypeError, ValueError, OSError) as exc:
-            raise ContractError(
-                f"matching verified package has invalid routes: {package_root.name}"
-            ) from exc
+            _table, _digest, manifest = load_verified_bundle(
+                route_path,
+                project_root=project_root,
+            )
+            validate_verified_route_table(
+                load_json(route_path),
+                expected_identity=expected,
+            )
+        except (ContractError, TypeError, ValueError, OSError):
+            continue
+        if workload_set_id is not None and manifest.workload_set_id != workload_set_id:
+            continue
+        if (
+            workload_sha256 is not None
+            and manifest.workload_set_sha256 != workload_sha256
+        ):
+            continue
         matches.append(route_path)
     if len(matches) > 1:
         names = ", ".join(path.parent.name for path in matches)
         raise ContractError(
             f"multiple verified packages match the current runtime identity: {names}"
+        )
+    return matches[0] if matches else None
+
+
+def _find_recalibration_bundle(
+    project_root: Path,
+    profile: Mapping[str, Any],
+    *,
+    workload_set_id: str,
+    workload_sha256: str,
+) -> Path | None:
+    """Locate one profile-matching bundle whose provenance needs replacement."""
+
+    expected = _verified_bundle_identity(profile)
+    matches: list[Path] = []
+    catalog_root = project_root.resolve() / "verified_hardware"
+    for profile_path in sorted(catalog_root.glob("*/profile.json")):
+        try:
+            candidate = load_json(profile_path)
+            if _verified_bundle_identity(candidate) != expected:
+                continue
+        except (ContractError, OSError, ValueError):
+            continue
+        route_path = profile_path.with_name("routes.json")
+        required_support = (
+            profile_path.with_name("README.md"),
+            profile_path.with_name("run_verified.py"),
+            profile_path.parent / "results" / ".gitignore",
+        )
+        if not route_path.is_file() or any(
+            not path.is_file() for path in required_support
+        ):
+            continue
+        manifest_path = profile_path.with_name("manifest.json")
+        if manifest_path.is_file():
+            try:
+                manifest = validate_bundle_manifest(load_json(manifest_path))
+            except (ContractError, TypeError, ValueError):
+                matches.append(route_path)
+                continue
+            if (
+                manifest.workload_set_id != workload_set_id
+                or manifest.workload_set_sha256 != workload_sha256
+            ):
+                continue
+        matches.append(route_path)
+    if len(matches) > 1:
+        names = ", ".join(path.parent.name for path in matches)
+        raise ContractError(
+            "multiple stale verified packages match this calibration: " + names
         )
     return matches[0] if matches else None
 
@@ -435,6 +424,7 @@ def _bundle_readme(device_name: str, bundle_id: str) -> str:
 This package was created by a complete Formal hardware calibration.
 
 - `profile.json` records the probed hardware and software identity.
+- `manifest.json` binds routes to the Workload, Solution, and Formal evidence.
 - `routes.json` contains only correctness-gated, formally measured exact routes.
 - `run_verified.py` runs the shared Transformer workload with this route table.
 - generated runs and summaries stay below `results/` and are ignored by Git.
@@ -462,7 +452,7 @@ def _write_new_bundle_support_files(
         encoding="utf-8",
     )
     (bundle_root / "run_verified.py").write_text(
-        '\"\"\"Launch the shared verifier for this hardware bundle.\"\"\"\n\n'
+        '"""Launch the shared verifier for this hardware bundle."""\n\n'
         "from __future__ import annotations\n\n"
         "import sys\n"
         "from pathlib import Path\n\n"
@@ -485,17 +475,38 @@ def _write_new_bundle_support_files(
     )
 
 
-def validate_promotion_case_set(case_ids: Sequence[str]) -> None:
-    """Reject incomplete groups that share one runtime-visible route key."""
+def validate_promotion_case_set(
+    case_ids: Sequence[str],
+    all_cases: Sequence[object] | None = None,
+) -> None:
+    """Validate shared routes from workload shape fields, never case-id names."""
 
-    selected = set(case_ids)
-    for required_group in _SHARED_ROUTE_CASE_GROUPS:
-        if selected & required_group and not required_group <= selected:
-            missing = ", ".join(sorted(required_group - selected))
-            raise ContractError(
-                "shared runtime route requires formal calibration for: "
-                f"{', '.join(sorted(required_group))}; missing: {missing}"
-            )
+    if len(case_ids) != len(set(case_ids)):
+        raise ContractError("automatic promotion received duplicate workload cases")
+    if all_cases is None:
+        return
+    try:
+        validate_selected_route_groups(case_ids, all_cases)
+    except (TypeError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
+
+
+def _summary_workload_identity(
+    summaries: Sequence[Mapping[str, Any]],
+) -> tuple[str, str]:
+    identities: set[tuple[str, str]] = set()
+    for summary in summaries:
+        workload = summary.get("workload")
+        set_id = workload.get("set_id") if isinstance(workload, Mapping) else None
+        digest = workload.get("sha256") if isinstance(workload, Mapping) else None
+        if not isinstance(set_id, str) or not set_id:
+            raise ContractError("tuning summary workload is missing set_id")
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ContractError("tuning summary workload is missing its SHA-256")
+        identities.add((set_id, digest))
+    if len(identities) != 1:
+        raise ContractError("formal summaries do not share one workload set")
+    return next(iter(identities))
 
 
 def auto_promote_calibration(
@@ -508,11 +519,23 @@ def auto_promote_calibration(
     """Publish one Formal calibration to its exact verified device package."""
 
     profile = verified_profile_from_probe_result(probe_result)
-    existing_route = find_matching_verified_route(project_root, profile)
     case_ids = [_summary_case_id(summary) for summary in summaries]
-    if len(case_ids) != len(set(case_ids)):
-        raise ContractError("automatic promotion received duplicate workload cases")
-    validate_promotion_case_set(case_ids)
+    workload_set_id, workload_sha256 = _summary_workload_identity(summaries)
+    workload_set = load_workload_set(project_root, workload_set_id)
+    if workload_set.sha256 != workload_sha256:
+        raise ContractError("formal summary workload hash is stale; rerun calibration")
+    authoritative_case_ids = [case.case_id for case in workload_set.cases]
+    if set(authoritative_case_ids) != set(full_workload_case_ids):
+        raise ContractError(
+            "calibration workload case list does not match the persisted workload set"
+        )
+    validate_promotion_case_set(case_ids, workload_set.cases)
+    existing_route = find_matching_verified_route(
+        project_root,
+        profile,
+        workload_set_id=workload_set_id,
+        workload_sha256=workload_sha256,
+    )
 
     if existing_route is not None:
         document, winners, destination = promote_tuning_summaries(
@@ -527,6 +550,21 @@ def auto_promote_calibration(
             "a new verified hardware package requires one complete Formal workload "
             "calibration"
         )
+
+    recalibration_route = _find_recalibration_bundle(
+        project_root,
+        profile,
+        workload_set_id=workload_set_id,
+        workload_sha256=workload_sha256,
+    )
+    if recalibration_route is not None:
+        document, winners, destination = promote_tuning_summaries(
+            project_root,
+            summaries,
+            route_path=recalibration_route,
+            reset_verified_bundle=True,
+        )
+        return document, winners, destination, False
 
     catalog_root = project_root.resolve() / "verified_hardware"
     catalog_root.mkdir(parents=True, exist_ok=True)
@@ -582,15 +620,16 @@ def _validate_verified_package_identity(
     if not is_verified_target and not profile_path.is_file():
         return
     if not profile_path.is_file():
-        raise ContractError(
-            "verified route table requires a sibling profile.json"
-        )
+        raise ContractError("verified route table requires a sibling profile.json")
     expected = _verified_profile_identity(load_json(profile_path))
 
     matches = [_route_match(summary) for summary in summaries]
     if existing is not None:
         try:
-            existing_table = validate_route_table(existing)
+            existing_table = validate_verified_route_table(
+                existing,
+                expected_identity=expected,
+            )
         except (TypeError, ValueError) as exc:
             raise ContractError(f"invalid dispatch route document: {exc}") from exc
         matches.extend(match for match, _policy in existing_table.routes)
@@ -600,7 +639,7 @@ def _validate_verified_package_identity(
             raise ContractError("verified device packages require exact routes")
         mismatches = [
             field
-            for field in _DEVICE_ROUTE_FIELDS
+            for field in HARDWARE_ROUTE_FIELDS
             if match.get(field) != expected[field]
         ]
         if mismatches:
@@ -656,6 +695,10 @@ def build_promoted_route_document(
     expected_source = summary.get("source_solution_sha256")
     if not isinstance(expected_source, str) or not expected_source:
         raise ContractError("tuning summary is missing its Solution source hash")
+    if expected_source != expected_implementation:
+        raise ContractError(
+            "tuning summary Solution source and implementation hashes disagree"
+        )
     observations = summary.get("observations")
     if not isinstance(observations, Sequence) or isinstance(observations, (str, bytes)):
         raise ContractError("tuning summary observations must be a sequence")
@@ -776,11 +819,140 @@ def _summary_case_id(summary: Mapping[str, Any]) -> str:
     return case_id
 
 
+def _canonical_document_sha256(document: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _is_verified_route_destination(path: Path) -> bool:
+    resolved = path.resolve()
+    return (
+        resolved.name == "routes.json"
+        and any(part.lower() == "verified_hardware" for part in resolved.parts)
+        and resolved.with_name("profile.json").is_file()
+    )
+
+
+def _write_verified_bundle_manifest(
+    project_root: Path,
+    route_path: Path,
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    reset_previous: bool = False,
+) -> None:
+    """Bind a verified route table to the exact inputs that justified it."""
+
+    if not _is_verified_route_destination(route_path):
+        return
+    workload_set_id, workload_sha256 = _summary_workload_identity(summaries)
+    protocols = {
+        json.dumps(
+            summary.get("protocol"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        for summary in summaries
+    }
+    if len(protocols) != 1:
+        raise ContractError("formal summaries do not share one measurement protocol")
+    protocol = summaries[0].get("protocol")
+    if not isinstance(protocol, Mapping):
+        raise ContractError("formal summary is missing its measurement protocol")
+    protocol_digest = _canonical_document_sha256(protocol)
+    implementation_hash = solution_implementation_hash(
+        project_root.resolve() / "solution"
+    )
+    selected_case_ids = {_summary_case_id(summary) for summary in summaries}
+    source_summaries: list[dict[str, object]] = []
+    manifest_path = route_path.with_name("manifest.json")
+    if manifest_path.is_file() and not reset_previous:
+        try:
+            previous = validate_bundle_manifest(load_json(manifest_path))
+        except (ContractError, TypeError, ValueError) as exc:
+            raise ContractError(
+                "verified bundle manifest is invalid; rerun a complete calibration"
+            ) from exc
+        if (
+            previous.workload_set_id != workload_set_id
+            or previous.workload_set_sha256 != workload_sha256
+            or previous.solution_implementation_sha256 != implementation_hash
+            or _canonical_document_sha256(previous.formal_protocol) != protocol_digest
+        ):
+            raise ContractError(
+                "verified bundle manifest is stale; rerun a complete calibration"
+            )
+        for source in previous.source_summaries:
+            remaining_case_ids = [
+                case_id
+                for case_id in source.case_ids
+                if case_id not in selected_case_ids
+            ]
+            if remaining_case_ids:
+                source_summaries.append(
+                    {
+                        "summary_id": source.summary_id,
+                        "case_ids": remaining_case_ids,
+                    }
+                )
+    else:
+        workload_set = load_workload_set(project_root, workload_set_id)
+        full_case_ids = {case.case_id for case in workload_set.cases}
+        if selected_case_ids != full_case_ids:
+            raise ContractError(
+                "a verified bundle manifest requires one complete Formal workload "
+                "calibration"
+            )
+
+    for summary in summaries:
+        summary_id = summary.get("tuning_id")
+        if not isinstance(summary_id, str) or not summary_id:
+            raise ContractError("formal tuning summary is missing tuning_id")
+        source_summaries.append(
+            {
+                "summary_id": summary_id,
+                "case_ids": [_summary_case_id(summary)],
+            }
+        )
+
+    route_digest = hashlib.sha256(route_path.read_bytes()).hexdigest()
+    document: dict[str, Any] = {
+        "schema_version": 1,
+        "workload_set": {
+            "set_id": workload_set_id,
+            "sha256": workload_sha256,
+        },
+        "solution": {"implementation_sha256": implementation_hash},
+        "route_table": {"sha256": route_digest},
+        "formal": {
+            "protocol": copy.deepcopy(dict(protocol)),
+            "source_summaries": source_summaries,
+        },
+    }
+    try:
+        validate_bundle_manifest(document)
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"invalid verified bundle manifest: {exc}") from exc
+    _atomic_replace_json(
+        manifest_path,
+        document,
+        validate_as_route_table=False,
+    )
+
+
 def promote_tuning_summaries(
     project_root: Path,
     summaries: Sequence[Mapping[str, Any]],
     *,
     route_path: Path | None = None,
+    reset_verified_bundle: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Path]:
     """Atomically promote one or more formal summaries with shared-key guards."""
 
@@ -803,17 +975,41 @@ def promote_tuning_summaries(
                 "rerun tuning"
             )
 
-    case_ids = {_summary_case_id(summary) for summary in summaries}
-    for required_group in _SHARED_ROUTE_CASE_GROUPS:
-        if case_ids & required_group and not required_group <= case_ids:
-            missing = ", ".join(sorted(required_group - case_ids))
-            raise ContractError(
-                "shared runtime route requires formal summaries for: "
-                f"{', '.join(sorted(required_group))}; missing: {missing}"
-            )
+    case_ids = [_summary_case_id(summary) for summary in summaries]
+    workload_set_id, workload_sha256 = _summary_workload_identity(summaries)
+    workload_set = load_workload_set(project_root, workload_set_id)
+    if workload_set.sha256 != workload_sha256:
+        raise ContractError("formal summary workload hash is stale; rerun calibration")
+    validate_promotion_case_set(case_ids, workload_set.cases)
 
-    existing = load_json(destination) if destination.is_file() else None
+    if reset_verified_bundle and not _is_verified_route_destination(destination):
+        raise ContractError("only a verified hardware bundle can be reset")
+    existing = (
+        None
+        if reset_verified_bundle
+        else load_json(destination)
+        if destination.is_file()
+        else None
+    )
     _validate_verified_package_identity(destination, existing, summaries)
+    manifest_path = destination.with_name("manifest.json")
+    if (
+        _is_verified_route_destination(destination)
+        and manifest_path.is_file()
+        and not reset_verified_bundle
+    ):
+        try:
+            manifest = validate_bundle_manifest(load_json(manifest_path))
+        except (ContractError, TypeError, ValueError) as exc:
+            raise ContractError("verified bundle manifest is invalid") from exc
+        if (
+            manifest.workload_set_id != workload_set_id
+            or manifest.workload_set_sha256 != workload_sha256
+            or manifest.solution_implementation_sha256 != current_implementation
+        ):
+            raise ContractError(
+                "verified bundle manifest is stale; rerun a complete calibration"
+            )
     proposals: dict[
         tuple[tuple[str, Any], ...],
         list[tuple[int, Mapping[str, Any], dict[str, Any]]],
@@ -851,8 +1047,23 @@ def promote_tuning_summaries(
         document = _upsert_exact_route(document, match, policy)
 
     winners = [deployments_by_index[index] for index in range(len(summaries))]
+    if _is_verified_route_destination(destination) and (
+        reset_verified_bundle or not destination.with_name("manifest.json").is_file()
+    ):
+        full_case_ids = {case.case_id for case in workload_set.cases}
+        if set(case_ids) != full_case_ids:
+            raise ContractError(
+                "a verified bundle manifest requires one complete Formal workload "
+                "calibration"
+            )
     if existing is None or document != existing:
         _atomic_replace_json(destination, document, validate_as_route_table=True)
+    _write_verified_bundle_manifest(
+        project_root,
+        destination,
+        summaries,
+        reset_previous=reset_verified_bundle,
+    )
     return document, winners, destination
 
 

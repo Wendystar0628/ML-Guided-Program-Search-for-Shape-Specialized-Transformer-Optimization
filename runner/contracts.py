@@ -34,14 +34,18 @@ class WorkloadCase:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> WorkloadCase:
-        required = set(cls.__dataclass_fields__)
-        if set(value) != required:
+        # ``input_scale`` is an actual optional field, not merely a constructor
+        # default.  Persisted workloads may omit it and receive the documented
+        # neutral value of 1.0.
+        allowed = set(cls.__dataclass_fields__)
+        required = allowed - {"input_scale"}
+        if not required.issubset(value) or not set(value).issubset(allowed):
             missing = sorted(required - set(value))
-            extra = sorted(set(value) - required)
+            extra = sorted(set(value) - allowed)
             raise ContractError(
                 f"invalid workload fields; missing={missing}, extra={extra}"
             )
-        case = cls(**value)
+        case = cls(**{"input_scale": 1.0, **value})
         case.validate()
         return case
 
@@ -142,6 +146,18 @@ class WorkloadGroup:
             "weight": self.weight,
             "case_ids": list(self.case_ids),
         }
+
+
+@dataclass(frozen=True)
+class WorkloadSet:
+    """Immutable, typed workload document used by runner services."""
+
+    schema_version: int
+    workload_set_id: str
+    cases: tuple[WorkloadCase, ...]
+    groups: tuple[WorkloadGroup, ...]
+    sha256: str
+    path: Path
 
 
 @dataclass(frozen=True)
@@ -333,7 +349,7 @@ def validate_official_snapshot(project_root: Path) -> dict[str, Any]:
     return metadata
 
 
-def load_workload_set(project_root: Path, workload_set_id: str) -> dict[str, Any]:
+def load_workload_set(project_root: Path, workload_set_id: str) -> WorkloadSet:
     path = project_root / "runner" / "workloads" / f"{workload_set_id}.json"
     document = load_json(path)
     required = {"schema_version", "workload_set_id", "groups", "ordered_cases"}
@@ -395,21 +411,21 @@ def load_workload_set(project_root: Path, workload_set_id: str) -> dict[str, Any
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    return {
-        "schema_version": schema_version,
-        "workload_set_id": workload_set_id,
-        "cases": cases,
-        "groups": groups,
-        "sha256": hashlib.sha256(canonical).hexdigest(),
-        "path": path,
-    }
+    return WorkloadSet(
+        schema_version=schema_version,
+        workload_set_id=workload_set_id,
+        cases=tuple(cases),
+        groups=tuple(groups),
+        sha256=hashlib.sha256(canonical).hexdigest(),
+        path=path,
+    )
 
 
-def select_workload_case(workload_set: dict[str, Any], case_id: str) -> WorkloadCase:
-    for case in workload_set["cases"]:
+def select_workload_case(workload_set: WorkloadSet, case_id: str) -> WorkloadCase:
+    for case in workload_set.cases:
         if case.case_id == case_id:
             return case
-    available = ", ".join(case.case_id for case in workload_set["cases"])
+    available = ", ".join(case.case_id for case in workload_set.cases)
     raise ContractError(f"unknown case_id {case_id!r}; available: {available}")
 
 

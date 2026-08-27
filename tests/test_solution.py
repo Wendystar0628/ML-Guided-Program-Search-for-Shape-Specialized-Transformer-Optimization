@@ -261,21 +261,18 @@ def test_causal_solution_accepts_a_sequence_shorter_than_config() -> None:
     [
         "preprocess",
         "s512-native-softmax",
-        "long-pv",
         "long-tail-online",
-        "wide-epilogue",
         "wide-triton-inplace",
         "cuda-graph",
         "balanced-cuda-graph",
     ],
 )
 def test_specialized_gpu_policy_reports_cpu_fallback(
-    monkeypatch: pytest.MonkeyPatch,
     policy: str,
 ) -> None:
-    monkeypatch.setenv("TRANSFORMER_OPT_POLICY", policy)
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+    solution.configure_runtime_policy(policy=policy)
 
     execution_path = solution.describe_execution_path()
 
@@ -296,24 +293,26 @@ def test_module_transform_invalidates_cuda_graph_state() -> None:
     assert solution._dispatch_signature is None
 
 
-def test_balanced_cuda_graph_reuses_auto_compute_and_invalidates_capture() -> None:
+def test_balanced_cuda_graph_uses_one_plan_and_invalidates_capture() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
     solution._cuda_graph_replay = object()
 
-    solution._configure_named_policy("balanced-cuda-graph")
+    solution.configure_runtime_policy(policy="balanced-cuda-graph")
 
-    assert solution.use_cuda_graph
     assert solution._cuda_graph_replay is None
-    assert all(layer.attention.attention_policy == "auto" for layer in solution.layers)
+    execution_path = solution.describe_execution_path()
+    assert execution_path["requested_policy"] == "balanced-cuda-graph"
+    assert execution_path["requested_attention"] == "auto"
+    assert not any(
+        hasattr(layer.attention, "attention_policy") for layer in solution.layers
+    )
 
 
-def test_reference_policy_is_an_isolated_attention_control(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TRANSFORMER_OPT_POLICY", "reference")
+def test_reference_policy_is_an_isolated_attention_control() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
+    solution.configure_runtime_policy(policy="reference")
 
     execution_path = solution.describe_execution_path()
 
@@ -322,10 +321,7 @@ def test_reference_policy_is_an_isolated_attention_control(
     assert execution_path["resolved_attention"] == "explicit_reference_order"
 
 
-def test_long_tail_online_changes_only_the_final_layer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TRANSFORMER_OPT_POLICY", "long-tail-online")
+def test_long_tail_online_does_not_install_mutable_layer_policies() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     config = official.TransformerConfig(
         batch_size=1,
@@ -337,17 +333,18 @@ def test_long_tail_online_changes_only_the_final_layer(
         causal=False,
     )
     solution = solution_module.UserOptimizedTransformer(config).eval()
+    solution.configure_runtime_policy(policy="long-tail-online")
 
-    attention_policies = [layer.attention.attention_policy for layer in solution.layers]
+    execution_path = solution.describe_execution_path()
 
-    assert attention_policies == ["auto", "auto", "auto", "triton_online"]
-    assert not solution.use_cuda_graph
+    assert execution_path["requested_policy"] == "long-tail-online"
+    assert execution_path["selected_policy"] == "torch_fallback"
+    assert all(
+        not hasattr(layer.attention, "attention_policy") for layer in solution.layers
+    )
 
 
-def test_dispatch_is_the_default_and_falls_back_to_auto(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("TRANSFORMER_OPT_POLICY", raising=False)
+def test_dispatch_is_the_default_and_falls_back_to_auto() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config(causal=False)).eval()
 
@@ -357,7 +354,3 @@ def test_dispatch_is_the_default_and_falls_back_to_auto(
     assert execution_path["selected_policy"] == "auto"
     assert execution_path["dispatch_policy"] == "auto"
     assert execution_path["route_origin"] == "fallback"
-    assert execution_path["dispatch_source"] == (
-        "verified_hardware/nvidia_geforce_rtx_4080/routes.json"
-    )
-    assert len(execution_path["dispatch_table_sha256"]) == 64

@@ -3,9 +3,9 @@
   "reference_type": "verified_hardware_formal_sweep",
   "hardware_id": "nvidia_geforce_rtx_4080",
   "sweep": {
-    "sweep_id": "20260826T233620.219336Z-e0617b9c",
-    "started_at": "2026-08-26T23:36:20.219840+00:00",
-    "completed_at": "2026-08-26T23:37:04.124486+00:00",
+    "sweep_id": "20260827T114237.158071Z-73cfcc94",
+    "started_at": "2026-08-27T11:42:37.158571+00:00",
+    "completed_at": "2026-08-27T11:43:36.591079+00:00",
     "preset": "formal"
   },
   "workload_set": {
@@ -44,11 +44,11 @@
   },
   "source_hashes": {
     "official_sha256": "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b",
-    "solution_sha256": "24fd330e06a2e56b2fbbe33165e160a77f06a85f801d73674d93ad7811a9186b"
+    "solution_sha256": "52e450fddb9a0f31d46a22b60f1c15ca89bbff59379f688b66f81bef3f20a971"
   },
   "route_table": {
     "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
-    "sha256": "30bb007460d08fe2ba8d46185eaed04d45dcb12d0e0c0c66dd798d8f082ffd8e"
+    "sha256": "53e384279734fbf38de1667a752027f5935b9ad0fa858f7a06b9fe1faefade04"
   },
   "correctness": {
     "all_cases_passed": true,
@@ -76,11 +76,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 1.7760480046272278,
-        "baseline_p90_ms": 3.7437278985977174,
+        "baseline_median_ms": 1.9075679779052734,
+        "baseline_p90_ms": 2.3370591163635255,
         "target_median_ms": 0.13414399325847626,
-        "target_p90_ms": 0.13427519500255586,
-        "speedup": 13.239862341096687
+        "target_p90_ms": 0.13516800105571747,
+        "speedup": 14.220301122463704
       },
       "actual_policy": "cuda-graph",
       "route_origin": "calibrated"
@@ -101,11 +101,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 2.2348800897598267,
-        "baseline_p90_ms": 3.656495952606201,
-        "target_median_ms": 1.4551039934158325,
-        "target_p90_ms": 1.5126496195793167,
-        "speedup": 1.535890286792137
+        "baseline_median_ms": 2.5297919511795044,
+        "baseline_p90_ms": 3.0465792894363406,
+        "target_median_ms": 1.4510079622268677,
+        "target_p90_ms": 1.9425280094146729,
+        "speedup": 1.7434721359468095
       },
       "actual_policy": "auto",
       "route_origin": "calibrated"
@@ -126,11 +126,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 2.3741599321365356,
-        "baseline_p90_ms": 2.765312075614929,
+        "baseline_median_ms": 2.6449921131134033,
+        "baseline_p90_ms": 3.1584639549255376,
         "target_median_ms": 0.8785920143127441,
-        "target_p90_ms": 0.8806399703025818,
-        "speedup": 2.7022325419081583
+        "target_p90_ms": 1.3379584431648255,
+        "speedup": 3.010489590190937
       },
       "actual_policy": "balanced-cuda-graph",
       "route_origin": "calibrated"
@@ -151,11 +151,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 8.936448097229004,
-        "baseline_p90_ms": 9.137254142761229,
-        "target_median_ms": 5.090319871902466,
-        "target_p90_ms": 5.234246444702149,
-        "speedup": 1.7555769228877711
+        "baseline_median_ms": 10.09772777557373,
+        "baseline_p90_ms": 11.057808017730713,
+        "target_median_ms": 5.758576154708862,
+        "target_p90_ms": 6.763008213043213,
+        "speedup": 1.7535111986522376
       },
       "actual_policy": "long-tail-online",
       "route_origin": "calibrated"
@@ -176,11 +176,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 10.706944465637207,
-        "baseline_p90_ms": 10.915020751953124,
-        "target_median_ms": 5.096447944641113,
-        "target_p90_ms": 5.255475187301635,
-        "speedup": 2.100864088466851
+        "baseline_median_ms": 12.164095878601074,
+        "baseline_p90_ms": 13.218304061889649,
+        "target_median_ms": 5.753920078277588,
+        "target_p90_ms": 6.76689920425415,
+        "speedup": 2.114053673516151
       },
       "actual_policy": "long-tail-online",
       "route_origin": "calibrated"
@@ -201,11 +201,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 4.940288066864014,
-        "baseline_p90_ms": 5.056204700469971,
-        "target_median_ms": 2.7504639625549316,
-        "target_p90_ms": 2.7637760639190674,
-        "speedup": 1.7961653503269077
+        "baseline_median_ms": 5.5731201171875,
+        "baseline_p90_ms": 6.619340658187866,
+        "target_median_ms": 3.1319040060043335,
+        "target_p90_ms": 3.4860032558441167,
+        "speedup": 1.7794670930216847
       },
       "actual_policy": "s512-native-softmax",
       "route_origin": "calibrated"
@@ -226,11 +226,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 4.932608127593994,
-        "baseline_p90_ms": 5.065420770645142,
-        "target_median_ms": 2.7494399547576904,
-        "target_p90_ms": 2.76582407951355,
-        "speedup": 1.794041044271035
+        "baseline_median_ms": 5.601792097091675,
+        "baseline_p90_ms": 6.628044748306275,
+        "target_median_ms": 3.159551978111267,
+        "target_p90_ms": 3.608166432380677,
+        "speedup": 1.7729703881752066
       },
       "actual_policy": "s512-native-softmax",
       "route_origin": "calibrated"
@@ -251,11 +251,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 5.2111358642578125,
-        "baseline_p90_ms": 5.333513402938844,
-        "target_median_ms": 2.7494399547576904,
-        "target_p90_ms": 2.770944118499756,
-        "speedup": 1.8953444883349244
+        "baseline_median_ms": 5.871615886688232,
+        "baseline_p90_ms": 6.802640056610107,
+        "target_median_ms": 3.1452159881591797,
+        "target_p90_ms": 3.44217598438263,
+        "speedup": 1.8668402770407988
       },
       "actual_policy": "s512-native-softmax",
       "route_origin": "calibrated"
@@ -276,11 +276,11 @@
         "input_scale": 1.0
       },
       "performance": {
-        "baseline_median_ms": 10.2225923538208,
-        "baseline_p90_ms": 10.434662246704102,
-        "target_median_ms": 9.688063621520996,
-        "target_p90_ms": 9.90228443145752,
-        "speedup": 1.055173949427046
+        "baseline_median_ms": 11.834367752075195,
+        "baseline_p90_ms": 12.675072383880615,
+        "target_median_ms": 10.764800071716309,
+        "target_p90_ms": 11.795762920379637,
+        "speedup": 1.0993578768981593
       },
       "actual_policy": "wide-triton-inplace",
       "route_origin": "calibrated"
@@ -288,16 +288,16 @@
   ],
   "aggregate": {
     "group_geomean_speedups": {
-      "launch_graph": 13.239862341096687,
-      "balanced_precision": 2.0372365384928592,
-      "long_attention": 1.9204761159243966,
-      "padding_mask": 1.8279133941488905,
-      "wide_gemm_ffn": 1.055173949427046
+      "launch_graph": 14.220301122463704,
+      "balanced_precision": 2.2910051759120553,
+      "long_attention": 1.9253614702342186,
+      "padding_mask": 1.805924272560301,
+      "wide_gemm_ffn": 1.0993578768981593
     },
-    "group_balanced_geomean_speedup": 2.5114393956793846,
+    "group_balanced_geomean_speedup": 2.624563915391093,
     "worst_case": {
       "case_id": "wide_s256_bf16",
-      "speedup": 1.055173949427046
+      "speedup": 1.0993578768981593
     }
   }
 }

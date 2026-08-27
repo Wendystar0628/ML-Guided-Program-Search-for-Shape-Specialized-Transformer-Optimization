@@ -33,6 +33,7 @@ nvidia_geforce_rtx_4080/
   README.md
   profile.json
   routes.json
+  manifest.json
   run_verified.py
   results/
     reference_formal.json
@@ -41,6 +42,8 @@ nvidia_geforce_rtx_4080/
 ```
 
 - `routes.json` is the only deployed RTX 4080 route table.
+- `manifest.json` binds that table to the measured Workload, current Solution
+  implementation, Formal protocol, and compact Summary/Case IDs.
 - `run_verified.py` calls the shared project Runner; it does not copy kernels or
   Transformer code.
 - `results/reference_formal.json` is the compact tracked nine-case evidence.
@@ -61,18 +64,21 @@ For the complete formal protocol:
 python verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --preset formal
 ```
 
-The launcher performs four bounded actions:
+The launcher performs five bounded actions:
 
-1. reads the sibling profile and route table;
-2. checks that the selected CUDA device and relevant software stack match this
+1. reads the sibling profile, route table, and manifest;
+2. rejects the package if its route, Workload, or Solution hash is stale;
+3. checks that the selected CUDA device and relevant software stack match this
    package;
-3. invokes `python -m runner benchmark` with the shared
-   `transformer_core_v1` workload and `dispatch` policy; and
-4. writes per-case results and a compact sweep summary below this directory.
+4. invokes `python -m runner benchmark` with the Workload named by the
+   manifest and the `dispatch` policy; and
+5. writes per-case results and a compact sweep summary below this directory.
 
-A mismatch stops before performance claims are produced. To investigate a new
-GPU or a changed stack, use the cross-hardware probe/calibration workflow from
-the [root README](../../README.md) instead of weakening this guard.
+A hardware mismatch or stale manifest stops before performance claims are
+produced. To investigate a new GPU, changed software stack, modified Workload,
+or new Solution implementation, use the cross-hardware probe/calibration
+workflow from the [root README](../../README.md) instead of weakening this
+guard.
 
 ## Exact route decisions
 
@@ -107,24 +113,24 @@ comparator, and all nine case decisions came from calibrated RTX 4080 routes.
 
 | Case | Baseline median | Baseline p90 | Target median | Target p90 | Speedup | Route |
 |---|---:|---:|---:|---:|---:|---|
-| `launch_s64_fp16` | 1.7760 ms | 3.7437 ms | 0.1341 ms | 0.1343 ms | `13.2399x` | `cuda-graph` |
-| `balanced_s128_fp32` | 2.2349 ms | 3.6565 ms | 1.4551 ms | 1.5126 ms | `1.5359x` | `auto` |
-| `balanced_s128_fp16` | 2.3742 ms | 2.7653 ms | 0.8786 ms | 0.8806 ms | `2.7022x` | `balanced-cuda-graph` |
-| `attention_s2048_fp16` | 8.9364 ms | 9.1373 ms | 5.0903 ms | 5.2342 ms | `1.7556x` | `long-tail-online` |
-| `attention_s2048_causal_fp16` | 10.7069 ms | 10.9150 ms | 5.0964 ms | 5.2555 ms | `2.1009x` | `long-tail-online` |
-| `mask_s512_full_fp16` | 4.9403 ms | 5.0562 ms | 2.7505 ms | 2.7638 ms | `1.7962x` | `s512-native-softmax` |
-| `mask_s512_padding_fp16` | 4.9326 ms | 5.0654 ms | 2.7494 ms | 2.7658 ms | `1.7940x` | `s512-native-softmax` |
-| `mask_s512_causal_padding_fp16` | 5.2111 ms | 5.3335 ms | 2.7494 ms | 2.7709 ms | `1.8953x` | `s512-native-softmax` |
-| `wide_s256_bf16` | 10.2226 ms | 10.4347 ms | 9.6881 ms | 9.9023 ms | `1.0552x` | `wide-triton-inplace` |
+| `launch_s64_fp16` | 1.9076 ms | 2.3371 ms | 0.1341 ms | 0.1352 ms | `14.2203x` | `cuda-graph` |
+| `balanced_s128_fp32` | 2.5298 ms | 3.0466 ms | 1.4510 ms | 1.9425 ms | `1.7435x` | `auto` |
+| `balanced_s128_fp16` | 2.6450 ms | 3.1585 ms | 0.8786 ms | 1.3380 ms | `3.0105x` | `balanced-cuda-graph` |
+| `attention_s2048_fp16` | 10.0977 ms | 11.0578 ms | 5.7586 ms | 6.7630 ms | `1.7535x` | `long-tail-online` |
+| `attention_s2048_causal_fp16` | 12.1641 ms | 13.2183 ms | 5.7539 ms | 6.7669 ms | `2.1141x` | `long-tail-online` |
+| `mask_s512_full_fp16` | 5.5731 ms | 6.6193 ms | 3.1319 ms | 3.4860 ms | `1.7795x` | `s512-native-softmax` |
+| `mask_s512_padding_fp16` | 5.6018 ms | 6.6280 ms | 3.1596 ms | 3.6082 ms | `1.7730x` | `s512-native-softmax` |
+| `mask_s512_causal_padding_fp16` | 5.8716 ms | 6.8026 ms | 3.1452 ms | 3.4422 ms | `1.8668x` | `s512-native-softmax` |
+| `wide_s256_bf16` | 11.8344 ms | 12.6751 ms | 10.7648 ms | 11.7958 ms | `1.0994x` | `wide-triton-inplace` |
 
 | Performance group | Geometric-mean speedup |
 |---|---:|
-| Launch / Graph | `13.2399x` |
-| Balanced / Precision | `2.0372x` |
-| Long Attention | `1.9205x` |
-| Padding / Mask | `1.8279x` |
-| Wide GEMM / FFN | `1.0552x` |
-| Equal-weight group-balanced score | `2.5114x` |
+| Launch / Graph | `14.2203x` |
+| Balanced / Precision | `2.2910x` |
+| Long Attention | `1.9254x` |
+| Padding / Mask | `1.8059x` |
+| Wide GEMM / FFN | `1.0994x` |
+| Equal-weight group-balanced score | `2.6246x` |
 
 The compact machine-readable evidence is
 [`results/reference_formal.json`](results/reference_formal.json). Same-run
@@ -140,10 +146,10 @@ It does not establish that:
 
 - these route choices are best on another GPU, another architecture, or another
   PyTorch/CUDA/Triton stack;
-- `13.2399x` CUDA Graph acceleration generalizes beyond the small launch-bound
+- `14.2203x` CUDA Graph acceleration generalizes beyond the small launch-bound
   fixed-shape case;
 - the Wide BF16 path has large remaining headroom—the measured result is only
-  `1.0552x` because tuned library GEMMs already dominate that case; or
+  `1.0994x` because tuned library GEMMs already dominate that case; or
 - a route remains valid after shape, dtype, causal behavior, or numerical
   tolerance changes.
 

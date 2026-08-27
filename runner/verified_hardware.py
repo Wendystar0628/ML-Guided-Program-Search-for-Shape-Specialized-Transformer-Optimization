@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
-import os
 import platform
 import subprocess
 import sys
@@ -16,15 +15,27 @@ from typing import Any
 
 from runner.contracts import (
     ContractError,
+    WorkloadSet,
     atomic_write_json,
     load_json,
     load_workload_set,
 )
+from runner.routing_contracts import (
+    exact_route_key,
+    hardware_identity_from_runtime,
+    hardware_identity_from_verified_profile,
+)
 from runner.sweep import summarize_sweep
-from solution.dispatch import ROUTE_FIELDS, validate_route_table
+from solution.dispatch import (
+    HARDWARE_ROUTE_FIELDS,
+    VerifiedBundleManifest,
+    load_verified_bundle,
+    resolve_route_result,
+    validate_bundle_manifest,
+    validate_verified_route_table,
+)
 
 WORKLOAD_SET_ID = "transformer_core_v1"
-ROUTE_TABLE_ENV = "TRANSFORMER_ROUTE_TABLE"
 _IDENTITY_FIELDS = (
     ("gpu", "name"),
     ("gpu", "compute_capability"),
@@ -49,6 +60,10 @@ class BundlePaths:
     routes: Path
     runs: Path
     summaries: Path
+
+    @property
+    def manifest(self) -> Path:
+        return self.bundle_root / "manifest.json"
 
     @classmethod
     def from_bundle(cls, bundle_root: Path) -> BundlePaths:
@@ -87,22 +102,19 @@ def _nested_string(
     section = document.get(path[0])
     value = section.get(path[1]) if isinstance(section, Mapping) else None
     if not isinstance(value, str) or not value:
-        raise VerifiedHardwareError(
-            f"verified profile is missing {path[0]}.{path[1]}"
-        )
+        raise VerifiedHardwareError(f"verified profile is missing {path[0]}.{path[1]}")
     return value
 
 
 def expected_runtime_identity(profile: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     """Extract the strict route identity from a persisted probe profile."""
 
-    if profile.get("schema_version") != 1:
-        raise VerifiedHardwareError("verified profile must use schema_version 1")
-    if profile.get("device_operation_passed") is not True:
-        raise VerifiedHardwareError("verified profile did not pass its device operation")
-    hardware_profile = profile.get("hardware_profile")
-    if not isinstance(hardware_profile, Mapping):
-        raise VerifiedHardwareError("verified profile is missing hardware_profile")
+    try:
+        hardware_identity_from_verified_profile(profile)
+    except (TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(str(exc)) from exc
+    hardware_profile = profile["hardware_profile"]
+    assert isinstance(hardware_profile, Mapping)
 
     identity: dict[str, dict[str, str]] = {
         "gpu": {},
@@ -171,14 +183,25 @@ def validate_runtime_identity(
 ) -> None:
     """Fail closed when any route-defining hardware or software fact differs."""
 
-    mismatches: list[str] = []
-    for section, field in _IDENTITY_FIELDS:
-        expected_value = _nested_string(expected, (section, field))
-        actual_value = _nested_string(actual, (section, field))
-        if actual_value != expected_value:
-            mismatches.append(
-                f"{section}.{field}: expected {expected_value!r}, got {actual_value!r}"
-            )
+    try:
+        expected_route = hardware_identity_from_runtime(expected).as_route_fields()
+        actual_route = hardware_identity_from_runtime(actual).as_route_fields()
+    except (TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(str(exc)) from exc
+    labels = {
+        "device_name": "gpu.name",
+        "compute_capability": "gpu.compute_capability",
+        "platform_system": "platform.system",
+        "torch": "software.torch",
+        "cuda_runtime": "software.cuda_runtime",
+        "triton": "software.triton",
+    }
+    mismatches = [
+        f"{labels[field]}: expected {expected_route[field]!r}, "
+        f"got {actual_route[field]!r}"
+        for field in HARDWARE_ROUTE_FIELDS - {"device_type"}
+        if actual_route[field] != expected_route[field]
+    ]
     if mismatches:
         raise VerifiedHardwareError(
             "runtime does not match the verified hardware profile: "
@@ -195,9 +218,19 @@ def route_table_sha256(path: Path) -> str:
         raise VerifiedHardwareError(f"cannot read route table {path}: {exc}") from exc
 
 
+def bundle_manifest(paths: BundlePaths) -> VerifiedBundleManifest:
+    """Load the bundle-owned workload and provenance contract."""
+
+    try:
+        return validate_bundle_manifest(load_json(paths.manifest))
+    except (ContractError, TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(f"invalid verified bundle manifest: {exc}") from exc
+
+
 def build_benchmark_command(config: LaunchConfig, paths: BundlePaths) -> list[str]:
     """Build the single shared-runner command used by this bundle."""
 
+    manifest = bundle_manifest(paths)
     command = [
         sys.executable,
         "-m",
@@ -208,7 +241,7 @@ def build_benchmark_command(config: LaunchConfig, paths: BundlePaths) -> list[st
         "--solution-policy",
         "dispatch",
         "--workload-set",
-        WORKLOAD_SET_ID,
+        manifest.workload_set_id,
         "--device",
         config.device,
         "--preset",
@@ -251,26 +284,10 @@ def _route_key(
     case: Mapping[str, Any],
     identity: Mapping[str, Any],
 ) -> dict[str, object]:
-    return {
-        "device_type": "cuda",
-        "device_name": _nested_string(identity, ("gpu", "name")),
-        "compute_capability": _nested_string(
-            identity,
-            ("gpu", "compute_capability"),
-        ),
-        "platform_system": _nested_string(identity, ("platform", "system")),
-        "torch": _nested_string(identity, ("software", "torch")),
-        "cuda_runtime": _nested_string(identity, ("software", "cuda_runtime")),
-        "triton": _nested_string(identity, ("software", "triton")),
-        "dtype": case.get("dtype"),
-        "B": case.get("batch_size"),
-        "S": case.get("seq_len"),
-        "D": case.get("d_model"),
-        "heads": case.get("num_heads"),
-        "ffn": case.get("ffn_dim"),
-        "layers": case.get("num_layers"),
-        "causal": case.get("causal"),
-    }
+    try:
+        return exact_route_key(case, hardware_identity_from_runtime(identity))
+    except (TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(str(exc)) from exc
 
 
 def _expected_route(
@@ -278,29 +295,12 @@ def _expected_route(
     case: Mapping[str, Any],
     identity: Mapping[str, Any],
 ) -> tuple[str, str]:
-    raw_routes = routes.get("routes")
-    default_policy = routes.get("default_policy")
-    if routes.get("schema_version") != 2 or not isinstance(raw_routes, list):
-        raise VerifiedHardwareError("route table must use schema_version 2")
-    if not isinstance(default_policy, str) or not default_policy:
-        raise VerifiedHardwareError("route table is missing default_policy")
-
-    key = _route_key(case, identity)
-    matches: list[str] = []
-    for index, entry in enumerate(raw_routes):
-        if not isinstance(entry, Mapping):
-            raise VerifiedHardwareError(f"routes[{index}] must be an object")
-        match = entry.get("match")
-        policy = entry.get("policy")
-        if not isinstance(match, Mapping) or not isinstance(policy, str) or not policy:
-            raise VerifiedHardwareError(f"routes[{index}] is malformed")
-        if all(key.get(field) == value for field, value in match.items()):
-            matches.append(policy)
-    if len(matches) > 1:
-        raise VerifiedHardwareError("route table contains an ambiguous workload match")
-    if matches:
-        return matches[0], "calibrated"
-    return default_policy, "fallback"
+    try:
+        table = validate_verified_route_table(routes)
+    except (TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(f"invalid verified route table: {exc}") from exc
+    resolution = resolve_route_result(table, _route_key(case, identity))
+    return resolution.policy, resolution.origin
 
 
 def _case_id(run: Mapping[str, Any]) -> str | None:
@@ -311,7 +311,7 @@ def _case_id(run: Mapping[str, Any]) -> str | None:
 
 
 def validate_workload_route_coverage(
-    workload_set: Mapping[str, Any],
+    workload_set: WorkloadSet,
     *,
     routes: Mapping[str, Any],
     identity: Mapping[str, Any],
@@ -319,40 +319,17 @@ def validate_workload_route_coverage(
     """Require an explicit verified decision for every package workload."""
 
     try:
-        table = validate_route_table(routes)
+        route_identity = hardware_identity_from_runtime(identity)
+        validate_verified_route_table(
+            routes,
+            expected_identity=route_identity.as_route_fields(),
+        )
     except (TypeError, ValueError) as exc:
         raise VerifiedHardwareError(f"invalid verified route table: {exc}") from exc
-    expected_device = {
-        "device_type": "cuda",
-        "device_name": _nested_string(identity, ("gpu", "name")),
-        "compute_capability": _nested_string(
-            identity,
-            ("gpu", "compute_capability"),
-        ),
-        "platform_system": _nested_string(identity, ("platform", "system")),
-        "torch": _nested_string(identity, ("software", "torch")),
-        "cuda_runtime": _nested_string(identity, ("software", "cuda_runtime")),
-        "triton": _nested_string(identity, ("software", "triton")),
-    }
-    for index, (match, _policy) in enumerate(table.routes):
-        if set(match) != ROUTE_FIELDS:
-            raise VerifiedHardwareError(
-                f"routes[{index}] is not an exact hardware/software/shape route"
-            )
-        if any(match.get(field) != value for field, value in expected_device.items()):
-            raise VerifiedHardwareError(
-                f"routes[{index}] does not belong to the verified hardware profile"
-            )
 
-    cases = workload_set.get("cases")
-    if not isinstance(cases, Sequence):
-        raise VerifiedHardwareError("workload set is missing cases")
     missing: list[str] = []
-    for case in cases:
-        as_dict = getattr(case, "as_dict", None)
-        if not callable(as_dict):
-            raise VerifiedHardwareError("workload set contains an invalid case")
-        case_document = as_dict()
+    for case in workload_set.cases:
+        case_document = case.as_dict()
         _, origin = _expected_route(routes, case_document, identity)
         if origin != "calibrated":
             missing.append(str(case_document.get("case_id", "<unknown>")))
@@ -444,7 +421,7 @@ def _compact_case_result(run: Mapping[str, Any], run_path: Path) -> dict[str, An
 
 
 def build_verified_summary(
-    workload_set: dict[str, Any],
+    workload_set: WorkloadSet,
     runs: list[dict[str, Any]],
     run_paths: Sequence[Path],
     *,
@@ -472,7 +449,7 @@ def build_verified_summary(
     }
     ordered_runs = sorted(
         runs,
-        key=lambda run: [case.case_id for case in workload_set["cases"]].index(
+        key=lambda run: [case.case_id for case in workload_set.cases].index(
             _case_id(run)
         ),
     )
@@ -482,7 +459,7 @@ def build_verified_summary(
     return {
         "schema_version": 1,
         "hardware_id": hardware_id,
-        "workload_set_id": WORKLOAD_SET_ID,
+        "workload_set_id": workload_set.workload_set_id,
         "sweep_id": sweep_id,
         "created_at": min(str(run.get("created_at")) for run in runs),
         "preset": preset,
@@ -493,9 +470,7 @@ def build_verified_summary(
         },
         "case_results": case_results,
         "groups": sweep["groups"],
-        "group_balanced_geomean_speedup": sweep[
-            "group_balanced_geomean_speedup"
-        ],
+        "group_balanced_geomean_speedup": sweep["group_balanced_geomean_speedup"],
         "worst_case_speedup": sweep["worst_case_speedup"],
     }
 
@@ -513,28 +488,36 @@ def run_verified(
 
     profile = load_json(paths.profile)
     routes = load_json(paths.routes)
+    try:
+        _table, route_sha256, manifest = load_verified_bundle(
+            paths.routes,
+            project_root=paths.project_root,
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(
+            f"verified bundle provenance is stale or invalid: {exc}"
+        ) from exc
     expected_identity = expected_runtime_identity(profile)
     actual_identity = identity_collector(config.device)
     validate_runtime_identity(expected_identity, actual_identity)
 
-    workload_set = load_workload_set(paths.project_root, WORKLOAD_SET_ID)
+    workload_set = load_workload_set(
+        paths.project_root,
+        manifest.workload_set_id,
+    )
     validate_workload_route_coverage(
         workload_set,
         routes=routes,
         identity=actual_identity,
     )
-    route_sha256 = route_table_sha256(paths.routes)
     route_source = _portable_source(paths.routes, paths.project_root)
     paths.runs.mkdir(parents=True, exist_ok=True)
     paths.summaries.mkdir(parents=True, exist_ok=True)
     before = {path.resolve() for path in paths.runs.glob("*.json")}
 
-    environment = os.environ.copy()
-    environment[ROUTE_TABLE_ENV] = str(paths.routes.resolve())
     completed = command_runner(
         build_benchmark_command(config, paths),
         cwd=paths.project_root,
-        env=environment,
         check=False,
     )
     if completed.returncode != 0:
@@ -544,7 +527,7 @@ def run_verified(
 
     run_paths = _new_result_paths(paths.runs, before)
     runs = [load_json(path) for path in run_paths]
-    expected_count = len(workload_set["cases"])
+    expected_count = len(workload_set.cases)
     if len(runs) != expected_count:
         raise VerifiedHardwareError(
             f"expected {expected_count} new result files, found {len(runs)}"

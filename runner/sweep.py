@@ -5,7 +5,11 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from runner.contracts import ContractError, WorkloadGroup
+from runner.contracts import ContractError, WorkloadGroup, WorkloadSet
+from runner.result_contracts import (
+    validate_benchmark_performance,
+    validate_correctness,
+)
 
 
 def _geometric_mean(values: list[float], weights: list[float] | None = None) -> float:
@@ -29,38 +33,6 @@ def _outcome(run: dict[str, Any]) -> str:
     return value if isinstance(value, str) else "runtime_error"
 
 
-def _finite_positive(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    normalized = float(value)
-    if not math.isfinite(normalized) or normalized <= 0:
-        return None
-    return normalized
-
-
-def _validated_timing_side(
-    record: Any,
-    side: str,
-    expected_rounds: int,
-) -> tuple[float | None, str | None]:
-    if not isinstance(record, dict):
-        return None, f"missing_{side}_timing"
-    median = _finite_positive(record.get("median_ms"))
-    if median is None:
-        return None, f"invalid_{side}_median"
-    p90 = _finite_positive(record.get("p90_ms"))
-    if p90 is None:
-        return None, f"invalid_{side}_p90"
-    if p90 < median and not math.isclose(p90, median, rel_tol=1e-12, abs_tol=1e-12):
-        return None, f"{side}_p90_below_median"
-    round_medians = record.get("round_medians_ms")
-    if not isinstance(round_medians, list) or len(round_medians) != expected_rounds:
-        return None, f"{side}_round_count_mismatch"
-    if any(_finite_positive(value) is None for value in round_medians):
-        return None, f"invalid_{side}_round_medians"
-    return median, None
-
-
 def _validated_performance(
     run: dict[str, Any],
     target: str,
@@ -68,56 +40,17 @@ def _validated_performance(
     protocol = run.get("protocol")
     if not isinstance(protocol, dict):
         return None, "missing_protocol"
-    repeats = protocol.get("repeats")
-    rounds = protocol.get("rounds")
-    if (
-        isinstance(repeats, bool)
-        or not isinstance(repeats, int)
-        or repeats <= 0
-        or isinstance(rounds, bool)
-        or not isinstance(rounds, int)
-        or rounds <= 0
-    ):
-        return None, "invalid_protocol_counts"
-    performance = run.get("performance")
-    if not isinstance(performance, dict):
-        return None, "missing_performance"
-    if performance.get("timer") != "cuda_event":
-        return None, "non_cuda_timing"
-    expected_count = repeats * rounds
-    sample_count = performance.get("sample_count")
-    if (
-        isinstance(sample_count, bool)
-        or not isinstance(sample_count, int)
-        or sample_count != expected_count
-    ):
-        return None, "sample_count_mismatch"
-    baseline_median, error = _validated_timing_side(
-        performance.get("baseline"), "baseline", rounds
+    performance, error = validate_benchmark_performance(
+        run.get("performance"),
+        target=target,
+        repeats=protocol.get("repeats"),
+        rounds=protocol.get("rounds"),
+        expected_timer="cuda_event",
     )
-    if error is not None:
+    if error is not None or target == "baseline":
         return None, error
-    if target == "baseline":
-        return None, None
-
-    target_median, error = _validated_timing_side(
-        performance.get("target"), "target", rounds
-    )
-    if error is not None:
-        return None, error
-    assert baseline_median is not None and target_median is not None
-    recomputed_speedup = baseline_median / target_median
-    stored_speedup = _finite_positive(performance.get("speedup"))
-    if stored_speedup is None:
-        return None, "invalid_speedup"
-    if not math.isclose(
-        stored_speedup,
-        recomputed_speedup,
-        rel_tol=1e-12,
-        abs_tol=1e-12,
-    ):
-        return None, "speedup_mismatch"
-    return recomputed_speedup, None
+    assert performance is not None
+    return performance.speedup, None
 
 
 def _validated_correctness(
@@ -126,39 +59,12 @@ def _validated_correctness(
 ) -> str | None:
     if target == "baseline":
         return None
-    correctness = run.get("correctness")
     protocol = run.get("protocol")
-    if not isinstance(correctness, dict) or not isinstance(protocol, dict):
+    if not isinstance(protocol, dict):
         return "invalid_correctness"
-    trial_count = correctness.get("trial_count")
-    expected_trials = protocol.get("accuracy_trials")
-    failed_elements = correctness.get("failed_elements")
-    max_abs_error = correctness.get("max_abs_error")
-    if correctness.get("passed") is not True:
-        return "invalid_correctness"
-    if (
-        isinstance(trial_count, bool)
-        or not isinstance(trial_count, int)
-        or isinstance(expected_trials, bool)
-        or not isinstance(expected_trials, int)
-        or expected_trials <= 0
-        or trial_count != expected_trials
-    ):
-        return "invalid_correctness_summary"
-    if (
-        isinstance(failed_elements, bool)
-        or not isinstance(failed_elements, int)
-        or failed_elements != 0
-    ):
-        return "invalid_correctness_summary"
-    if (
-        isinstance(max_abs_error, bool)
-        or not isinstance(max_abs_error, (int, float))
-        or not math.isfinite(float(max_abs_error))
-        or float(max_abs_error) < 0
-    ):
-        return "invalid_correctness_summary"
-    return None
+    return validate_correctness(
+        run.get("correctness"), expected_trials=protocol.get("accuracy_trials")
+    )
 
 
 def _run_context(
@@ -222,7 +128,7 @@ def _context_mismatch(
 
 
 def summarize_sweep(
-    workload_set: dict[str, Any],
+    workload_set: WorkloadSet,
     runs: list[dict[str, Any]],
     *,
     target: str,
@@ -232,7 +138,7 @@ def summarize_sweep(
     if target not in {"baseline", "solution"}:
         raise ContractError(f"unsupported sweep target: {target}")
 
-    expected_cases = workload_set["cases"]
+    expected_cases = workload_set.cases
     expected_ids = [case.case_id for case in expected_cases]
     indexed: dict[str, dict[str, Any]] = {}
     duplicates: list[str] = []
@@ -274,8 +180,8 @@ def summarize_sweep(
         workload = run.get("workload")
         if reason is None and (
             not isinstance(workload, dict)
-            or workload.get("set_id") != workload_set["workload_set_id"]
-            or workload.get("sha256") != workload_set["sha256"]
+            or workload.get("set_id") != workload_set.workload_set_id
+            or workload.get("sha256") != workload_set.sha256
             or workload.get("case") != case.as_dict()
         ):
             reason = "workload_mismatch"
@@ -311,8 +217,8 @@ def summarize_sweep(
 
     complete = not failed_cases and len(indexed) == len(expected_ids)
     summary: dict[str, Any] = {
-        "workload_set_id": workload_set["workload_set_id"],
-        "workload_sha256": workload_set["sha256"],
+        "workload_set_id": workload_set.workload_set_id,
+        "workload_sha256": workload_set.sha256,
         "target": target,
         "sweep_outcome": "complete" if complete else "incomplete",
         "case_results": case_results,
@@ -327,7 +233,7 @@ def summarize_sweep(
     group_results: list[dict[str, Any]] = []
     group_values: list[float] = []
     group_weights: list[float] = []
-    for group in workload_set["groups"]:
+    for group in workload_set.groups:
         if not isinstance(group, WorkloadGroup):
             raise ContractError("workload_set groups must contain WorkloadGroup values")
         value = _geometric_mean([speedups[case_id] for case_id in group.case_ids])

@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from runner import verified_hardware as verified
+from runner.contracts import solution_implementation_hash
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,7 +38,7 @@ def _profile() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "device_operation_passed": True,
-        "hardware_profile": IDENTITY,
+        "hardware_profile": {"device_type": "cuda", **IDENTITY},
     }
 
 
@@ -85,9 +86,7 @@ def _routes() -> dict[str, Any]:
                 "match": {
                     "device_type": "cuda",
                     "device_name": IDENTITY["gpu"]["name"],
-                    "compute_capability": IDENTITY["gpu"][
-                        "compute_capability"
-                    ],
+                    "compute_capability": IDENTITY["gpu"]["compute_capability"],
                     "platform_system": IDENTITY["platform"]["system"],
                     "torch": IDENTITY["software"]["torch"],
                     "cuda_runtime": IDENTITY["software"]["cuda_runtime"],
@@ -107,9 +106,7 @@ def _routes() -> dict[str, Any]:
                 "match": {
                     "device_type": "cuda",
                     "device_name": IDENTITY["gpu"]["name"],
-                    "compute_capability": IDENTITY["gpu"][
-                        "compute_capability"
-                    ],
+                    "compute_capability": IDENTITY["gpu"]["compute_capability"],
                     "platform_system": IDENTITY["platform"]["system"],
                     "torch": IDENTITY["software"]["torch"],
                     "cuda_runtime": IDENTITY["software"]["cuda_runtime"],
@@ -131,9 +128,7 @@ def _routes() -> dict[str, Any]:
 
 def _bundle_paths(tmp_path: Path) -> verified.BundlePaths:
     project_root = tmp_path / "project"
-    bundle_root = (
-        project_root / "verified_hardware" / "nvidia_geforce_rtx_4080"
-    )
+    bundle_root = project_root / "verified_hardware" / "nvidia_geforce_rtx_4080"
     return verified.BundlePaths(
         project_root=project_root,
         bundle_root=bundle_root,
@@ -141,6 +136,55 @@ def _bundle_paths(tmp_path: Path) -> verified.BundlePaths:
         routes=bundle_root / "routes.json",
         runs=bundle_root / "results" / "runs",
         summaries=bundle_root / "results" / "summaries",
+    )
+
+
+def _write_manifest(
+    paths: verified.BundlePaths,
+    *,
+    workload_document: dict[str, Any] | None = None,
+    routes: dict[str, Any] | None = None,
+) -> None:
+    workload_document = workload_document or _workload_document()
+    routes = routes or _routes()
+    solution_root = paths.project_root / "solution"
+    solution_root.mkdir(parents=True, exist_ok=True)
+    transformer = solution_root / "transformer.py"
+    if not transformer.exists():
+        transformer.write_text("VALUE = 1\n", encoding="utf-8")
+    workload_path = (
+        paths.project_root / "runner" / "workloads" / f"{verified.WORKLOAD_SET_ID}.json"
+    )
+    _write_json(workload_path, workload_document)
+    _write_json(paths.routes, routes)
+    workload_set = verified.load_workload_set(
+        paths.project_root,
+        verified.WORKLOAD_SET_ID,
+    )
+    implementation_hash = solution_implementation_hash(solution_root)
+    protocol = {"preset": "formal"}
+    _write_json(
+        paths.manifest,
+        {
+            "schema_version": 1,
+            "workload_set": {
+                "set_id": verified.WORKLOAD_SET_ID,
+                "sha256": workload_set.sha256,
+            },
+            "solution": {"implementation_sha256": implementation_hash},
+            "route_table": {
+                "sha256": hashlib.sha256(paths.routes.read_bytes()).hexdigest()
+            },
+            "formal": {
+                "protocol": protocol,
+                "source_summaries": [
+                    {
+                        "summary_id": "fixture-summary",
+                        "case_ids": ["calibrated", "fallback"],
+                    }
+                ],
+            },
+        },
     )
 
 
@@ -239,6 +283,7 @@ def test_build_benchmark_command_uses_the_shared_runner_and_local_results(
     tmp_path: Path,
 ) -> None:
     paths = _bundle_paths(tmp_path)
+    _write_manifest(paths)
     command = verified.build_benchmark_command(
         verified.LaunchConfig(device="cuda:1", preset="smoke", timeout=45.0),
         paths,
@@ -254,7 +299,6 @@ def test_build_benchmark_command_uses_the_shared_runner_and_local_results(
 
 def test_run_verified_attributes_routes_and_writes_compact_summary(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = _bundle_paths(tmp_path)
     workload_document = _workload_document()
@@ -266,14 +310,12 @@ def test_run_verified_attributes_routes_and_writes_compact_summary(
         workload_document,
     )
     _write_json(paths.profile, _profile())
-    _write_json(paths.routes, _routes())
-    monkeypatch.delenv(verified.ROUTE_TABLE_ENV, raising=False)
+    _write_manifest(paths, workload_document=workload_document)
 
     def fake_command_runner(
         command: list[str],
         *,
         cwd: Path,
-        env: dict[str, str],
         check: bool,
     ) -> subprocess.CompletedProcess[str]:
         assert command == verified.build_benchmark_command(
@@ -282,8 +324,6 @@ def test_run_verified_attributes_routes_and_writes_compact_summary(
         )
         assert cwd == paths.project_root
         assert check is False
-        assert env[verified.ROUTE_TABLE_ENV] == str(paths.routes.resolve())
-        assert verified.ROUTE_TABLE_ENV not in verified.os.environ
 
         workload_set = verified.load_workload_set(
             paths.project_root,
@@ -295,7 +335,7 @@ def test_run_verified_attributes_routes_and_writes_compact_summary(
             policy, origin = verified._expected_route(_routes(), case, IDENTITY)
             run = _benchmark_result(
                 case=case,
-                workload_sha256=workload_set["sha256"],
+                workload_sha256=workload_set.sha256,
                 route_source=source,
                 route_sha256=digest,
                 policy=policy,
@@ -395,7 +435,7 @@ def test_verified_workload_rejects_a_broad_route(tmp_path: Path) -> None:
         "routes": [{"match": {"device_type": "cuda"}, "policy": "auto"}],
     }
 
-    with pytest.raises(verified.VerifiedHardwareError, match="not an exact"):
+    with pytest.raises(verified.VerifiedHardwareError, match="must be exact"):
         verified.validate_workload_route_coverage(
             workload_set,
             routes=routes,
@@ -417,13 +457,14 @@ def test_checked_formal_reference_matches_the_current_bundle() -> None:
 
     assert reference["schema_version"] == 2
     assert reference["workload_set"]["set_id"] == verified.WORKLOAD_SET_ID
-    assert reference["workload_set"]["sha256"] == workload_set["sha256"]
+    assert reference["workload_set"]["sha256"] == workload_set.sha256
     assert reference["route_table"]["source"] == (
         "verified_hardware/nvidia_geforce_rtx_4080/routes.json"
     )
-    assert reference["route_table"]["sha256"] == hashlib.sha256(
-        (bundle / "routes.json").read_bytes()
-    ).hexdigest()
+    assert (
+        reference["route_table"]["sha256"]
+        == hashlib.sha256((bundle / "routes.json").read_bytes()).hexdigest()
+    )
     assert reference["correctness"] == {
         "all_cases_passed": True,
         "passed_cases": 9,
@@ -435,9 +476,9 @@ def test_checked_formal_reference_matches_the_current_bundle() -> None:
     }
 
     cases = {item["workload"]["case_id"]: item for item in reference["cases"]}
-    assert list(cases) == [case.case_id for case in workload_set["cases"]]
+    assert list(cases) == [case.case_id for case in workload_set.cases]
     identity = verified.expected_runtime_identity(profile)
-    for case in workload_set["cases"]:
+    for case in workload_set.cases:
         record = cases[case.case_id]
         expected_policy, expected_origin = verified._expected_route(
             routes,
@@ -450,8 +491,10 @@ def test_checked_formal_reference_matches_the_current_bundle() -> None:
         assert record["performance"]["speedup"] > 0
 
     group_speedups: list[float] = []
-    for group in workload_set["groups"]:
-        values = [cases[case_id]["performance"]["speedup"] for case_id in group.case_ids]
+    for group in workload_set.groups:
+        values = [
+            cases[case_id]["performance"]["speedup"] for case_id in group.case_ids
+        ]
         geomean = math.exp(sum(math.log(value) for value in values) / len(values))
         assert reference["aggregate"]["group_geomean_speedups"][
             group.group_id
@@ -460,6 +503,6 @@ def test_checked_formal_reference_matches_the_current_bundle() -> None:
     overall = math.exp(
         sum(math.log(value) for value in group_speedups) / len(group_speedups)
     )
-    assert reference["aggregate"][
-        "group_balanced_geomean_speedup"
-    ] == pytest.approx(overall)
+    assert reference["aggregate"]["group_balanced_geomean_speedup"] == pytest.approx(
+        overall
+    )

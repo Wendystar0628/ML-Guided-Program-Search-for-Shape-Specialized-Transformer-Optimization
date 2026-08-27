@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +59,23 @@ def _smoke_observation(
         for item in tuning.candidates_for_case(case)
         if item.candidate_id == candidate_id
     )
+    execution_path: dict[str, Any] = {
+        "requested_policy": candidate.solution_policy,
+        "selected_policy": candidate.solution_policy,
+    }
+    for expectation in candidate.evidence.path_expectations:
+        execution_path[expectation.field] = next(iter(expectation.accepted_values))
+    if (
+        candidate.evidence.requires_observed_execution
+        or candidate.evidence.observed_expectations
+    ):
+        observed: dict[str, Any] = {"complete": True}
+        for expectation in candidate.evidence.observed_expectations:
+            values = expectation.required_values or frozenset(
+                {next(iter(expectation.accepted_values))}
+            )
+            observed[expectation.field] = sorted(values)
+        execution_path["observed_execution"] = observed
     return {
         "candidate_id": candidate.candidate_id,
         "solution_policy": candidate.solution_policy,
@@ -74,7 +90,7 @@ def _smoke_observation(
         "target_round_medians_ms": [1.0, 1.0],
         "target_median_ms": 1.0,
         "target_p90_ms": 1.1,
-        "execution_path": {"shape_route": candidate.solution_policy},
+        "execution_path": execution_path,
     }
 
 
@@ -101,7 +117,7 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
         item.candidate_id
         for item in tuning.candidates_for_case(_case(padding_ratio=0.5))
     }
-    full_mask = {
+    misleading_case_id = {
         item.candidate_id
         for item in tuning.candidates_for_case(_case(case_id="mask_s512_full_fp16"))
     }
@@ -197,8 +213,8 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
     assert "compile-max-autotune" not in common
     assert "padding-packed" in padded
     assert "padding-fused" in padded
-    assert "padding-packed" in full_mask
-    assert "padding-fused" in full_mask
+    assert "padding-packed" not in misleading_case_id
+    assert "padding-fused" not in misleading_case_id
     assert "compile-max-autotune" in wide
     assert "attention-preprocess" in launch
     assert "padding-fused" in launch
@@ -207,11 +223,8 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
     assert "balanced-cudagraph" in balanced
     assert "s512-native-softmax" in s512_mask
     assert "s512-native-softmax" not in common
-    assert "long-pv" not in long_attention
     assert "long-tail-online" in long_attention
     assert "attention-preprocess" in long_attention
-    assert "wide-gelu-epilogue" not in wide
-    assert "wide-gelu-epilogue" not in exact_wide
     assert "wide-triton-inplace" in exact_wide
 
 
@@ -247,8 +260,7 @@ def test_shared_smoke_plans_keep_one_common_deployable_shortlist() -> None:
         ["eager-auto", "s512-native-softmax"],
     ]
     assert all(
-        plan["decision_scope"] == "shared_route_smoke_shortlist"
-        for plan in aligned
+        plan["decision_scope"] == "shared_route_smoke_shortlist" for plan in aligned
     )
 
 
@@ -385,35 +397,13 @@ def test_deployed_policy_maps_back_to_an_available_retest_candidate() -> None:
         tuning.deployable_candidate_id_for_policy(launch, "cuda-graph")
         == "launch-cudagraph"
     )
-    assert tuning.deployable_candidate_id_for_policy(
-        launch,
-        "balanced-cuda-graph",
-    ) is None
-
-
-def test_solution_policy_restores_the_parent_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(tuning.SOLUTION_POLICY_ENV, "previous")
-
-    with tuning.solution_policy("triton"):
-        assert os.environ[tuning.SOLUTION_POLICY_ENV] == "triton"
-
-    assert os.environ[tuning.SOLUTION_POLICY_ENV] == "previous"
-    with (
-        pytest.raises(ContractError, match="unsupported solution policy"),
-        tuning.solution_policy("unknown"),
-    ):
-        pass
-
-    monkeypatch.delenv(tuning.SOLUTION_POLICY_ENV, raising=False)
-    with (
-        pytest.raises(RuntimeError, match="fixture failure"),
-        tuning.solution_policy("packed"),
-    ):
-        assert os.environ[tuning.SOLUTION_POLICY_ENV] == "packed"
-        raise RuntimeError("fixture failure")
-    assert tuning.SOLUTION_POLICY_ENV not in os.environ
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            launch,
+            "balanced-cuda-graph",
+        )
+        is None
+    )
 
 
 def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
@@ -428,7 +418,7 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
     ) -> tuple[dict[str, Any], Path]:
         del project_root
         protocol = kwargs["protocol"]
-        policy = os.environ[tuning.SOLUTION_POLICY_ENV]
+        policy = kwargs["solution_policy"]
         calls.append(
             {
                 "policy": policy,
@@ -498,9 +488,7 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
     ]
     assert summary["tuning_id"] == calls[0]["sweep_id"]
     assert summary["winner"]["candidate_id"] == "compile-default"
-    assert summary["winner_basis"] == (
-        "full_transformer_correctness_and_paired_timing"
-    )
+    assert summary["winner_basis"] == ("full_transformer_correctness_and_paired_timing")
     assert len(summary["observations"]) == 2
     assert summary["routing_plan"] == {
         key: value for key, value in routing_plan.items() if key != "workload_analysis"
@@ -542,8 +530,8 @@ def test_fallback_candidate_is_reported_but_not_ranked(
         project_root: Path,
         **kwargs: Any,
     ) -> tuple[dict[str, Any], Path]:
-        del project_root, kwargs
-        policy = os.environ[tuning.SOLUTION_POLICY_ENV]
+        del project_root
+        policy = kwargs["solution_policy"]
         selected = "torch_fallback" if policy == "triton" else policy
         speedup = 2.0 if policy == "triton" else 1.1
         return (
@@ -592,8 +580,8 @@ def test_padding_candidate_requires_the_triton_fusion_route(
         project_root: Path,
         **kwargs: Any,
     ) -> tuple[dict[str, Any], Path]:
-        del project_root, kwargs
-        policy = os.environ[tuning.SOLUTION_POLICY_ENV]
+        del project_root
+        policy = kwargs["solution_policy"]
         return (
             {
                 "outcome": "success",

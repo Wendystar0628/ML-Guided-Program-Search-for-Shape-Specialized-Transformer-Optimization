@@ -3,30 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import platform
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from runner.calibration import (
+    CalibrationEvent,
+    CalibrationRequest,
+    CalibrationService,
+)
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
     load_json,
     load_workload_set,
     new_run_id,
     select_workload_case,
-    solution_implementation_hash,
 )
-from runner.hardware_router import build_routing_plan
-from runner.route_promotion import (
-    auto_promote_calibration,
-    find_matching_verified_route,
-    promote_tuning_summaries,
-    validate_promotion_case_set,
-    verified_profile_from_probe_result,
-)
+from runner.route_promotion import promote_tuning_summaries
 from runner.supervisor import (
     run_managed_benchmark,
     run_managed_probe,
@@ -34,29 +28,13 @@ from runner.supervisor import (
 )
 from runner.sweep import summarize_sweep
 from runner.tuning import (
-    SOLUTION_POLICIES,
-    align_shared_smoke_plans,
-    build_formal_candidate_plans,
     candidates_for_case,
-    deployable_candidate_id_for_policy,
-    is_deployable_candidate,
     run_tuning_case,
-    select_candidates,
-    solution_policy,
 )
-from solution.dispatch import load_route_table, make_route_key, resolve_route_result
+from solution.policies import POLICY_SELECTORS, policy_ids
 
 DEFAULT_WORKLOAD_SET = "transformer_core_v1"
 DEFAULT_CALIBRATION_SMOKE_LIMIT = 3
-
-
-@dataclass(frozen=True)
-class RoutingProbeContext:
-    """One probe result reused by every case in a calibration command."""
-
-    hardware_profile: dict[str, Any]
-    raw_result: dict[str, Any]
-    result_path: Path
 
 
 def _positive_int(value: str) -> int:
@@ -136,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark.add_argument(
         "--solution-policy",
-        choices=SOLUTION_POLICIES,
+        choices=tuple(sorted(POLICY_SELECTORS | policy_ids())),
         default="dispatch",
         help="select the project-specific Solution path",
     )
@@ -153,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--device", default="cuda:0")
     profile.add_argument(
         "--solution-policy",
-        choices=SOLUTION_POLICIES,
+        choices=tuple(sorted(POLICY_SELECTORS | policy_ids())),
         default="dispatch",
         help="select the project-specific Solution path",
     )
@@ -343,40 +321,40 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
     protocol = _protocol_from_args(args)
     if args.case_id is not None:
         case = select_workload_case(workload_set, args.case_id)
-        with solution_policy(args.solution_policy):
-            result, result_path = run_managed_benchmark(
-                project_root,
-                workload_set_id=args.workload_set,
-                case=case,
-                protocol=protocol,
-                device=args.device,
-                target=args.target,
-                workload_sha256=workload_set["sha256"],
-                result_dir=args.result_dir,
-            )
+        result, result_path = run_managed_benchmark(
+            project_root,
+            workload_set_id=args.workload_set,
+            case=case,
+            protocol=protocol,
+            device=args.device,
+            target=args.target,
+            workload_sha256=workload_set.sha256,
+            result_dir=args.result_dir,
+            solution_policy=args.solution_policy,
+        )
         _print_run_summary(result, result_path)
         return _exit_code(result["outcome"])
 
     runs: list[dict[str, Any]] = []
     sweep_id = new_run_id()
-    with solution_policy(args.solution_policy):
-        for index, case in enumerate(workload_set["cases"], start=1):
-            print(f"\n[{index}/{len(workload_set['cases'])}] {case.case_id}")
-            result, result_path = run_managed_benchmark(
-                project_root,
-                workload_set_id=args.workload_set,
-                case=case,
-                protocol=protocol,
-                device=args.device,
-                target=args.target,
-                workload_sha256=workload_set["sha256"],
-                sweep_id=sweep_id,
-                result_dir=args.result_dir,
-            )
-            runs.append(result)
-            _print_run_summary(result, result_path)
-            if result["outcome"] == "cancelled":
-                break
+    for index, case in enumerate(workload_set.cases, start=1):
+        print(f"\n[{index}/{len(workload_set.cases)}] {case.case_id}")
+        result, result_path = run_managed_benchmark(
+            project_root,
+            workload_set_id=args.workload_set,
+            case=case,
+            protocol=protocol,
+            device=args.device,
+            target=args.target,
+            workload_sha256=workload_set.sha256,
+            sweep_id=sweep_id,
+            result_dir=args.result_dir,
+            solution_policy=args.solution_policy,
+        )
+        runs.append(result)
+        _print_run_summary(result, result_path)
+        if result["outcome"] == "cancelled":
+            break
     summary = summarize_sweep(workload_set, runs, target=args.target)
     _print_sweep_summary(summary)
     if any(run["outcome"] == "cancelled" for run in runs):
@@ -387,16 +365,16 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
 def _run_profile(args: argparse.Namespace, project_root: Path) -> int:
     workload_set = load_workload_set(project_root, args.workload_set)
     case = select_workload_case(workload_set, args.case_id)
-    with solution_policy(args.solution_policy):
-        result, result_path = run_managed_profile(
-            project_root,
-            workload_set_id=args.workload_set,
-            case=case,
-            protocol=_protocol_from_args(args),
-            device=args.device,
-            target=args.target,
-            workload_sha256=workload_set["sha256"],
-        )
+    result, result_path = run_managed_profile(
+        project_root,
+        workload_set_id=args.workload_set,
+        case=case,
+        protocol=_protocol_from_args(args),
+        device=args.device,
+        target=args.target,
+        workload_sha256=workload_set.sha256,
+        solution_policy=args.solution_policy,
+    )
     _print_run_summary(result, result_path)
     return _exit_code(result["outcome"])
 
@@ -412,254 +390,6 @@ def _run_probe(args: argparse.Namespace, project_root: Path) -> int:
     )
     _print_run_summary(result, result_path)
     return _exit_code(result["outcome"])
-
-
-def _hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the compact flat profile consumed by the routing prior."""
-
-    environment = result.get("environment")
-    probe = result.get("probe")
-    if not isinstance(environment, Mapping) or not isinstance(probe, Mapping):
-        raise ContractError("successful routing probe is missing device details")
-
-    profile: dict[str, Any] = {}
-    for candidate in (
-        result.get("hardware_profile"),
-        probe.get("hardware_profile"),
-    ):
-        if not isinstance(candidate, Mapping):
-            continue
-        device_type = candidate.get("device_type")
-        if isinstance(device_type, str):
-            profile["device_type"] = device_type
-        gpu = candidate.get("gpu")
-        if isinstance(gpu, Mapping):
-            gpu_fields = {
-                "name": "device_name",
-                "compute_capability": "compute_capability",
-                "architecture_family": "architecture_family",
-                "bf16_supported": "bf16_supported",
-                "cuda_graph_available": "cuda_graph_available",
-                "total_memory_bytes": "total_memory_bytes",
-                "sm_count": "sm_count",
-                "l2_cache_bytes": "l2_cache_bytes",
-                "shared_memory_per_sm_bytes": "shared_memory_per_sm_bytes",
-                "registers_per_sm": "registers_per_sm",
-                "memory_bus_width_bits": "memory_bus_width_bits",
-                "memory_clock_rate_khz": "memory_clock_khz",
-                "theoretical_memory_bandwidth_gbps": (
-                    "theoretical_memory_bandwidth_gbps"
-                ),
-            }
-            for source_name, profile_name in gpu_fields.items():
-                value = gpu.get(source_name)
-                if value is not None:
-                    profile[profile_name] = value
-        software = candidate.get("software")
-        if isinstance(software, Mapping):
-            for field in (
-                "driver",
-                "torch",
-                "cuda_runtime",
-                "triton",
-                "triton_available",
-            ):
-                value = software.get(field)
-                if value is not None:
-                    profile[field] = value
-        platform_profile = candidate.get("platform")
-        if isinstance(platform_profile, Mapping):
-            for source_name, profile_name in (("system", "platform_system"),):
-                value = platform_profile.get(source_name)
-                if value is not None:
-                    profile[profile_name] = value
-
-    resolved_device = environment.get("device")
-    if isinstance(resolved_device, str) and resolved_device:
-        profile.setdefault("device_type", resolved_device.split(":", maxsplit=1)[0])
-    environment_fields = {
-        "gpu": "device_name",
-        "compute_capability": "compute_capability",
-        "total_memory_bytes": "total_memory_bytes",
-        "driver": "driver",
-        "torch": "torch",
-        "cuda_runtime": "cuda_runtime",
-    }
-    for source_name, profile_name in environment_fields.items():
-        value = environment.get(source_name)
-        if value is not None:
-            profile.setdefault(profile_name, value)
-    profile.setdefault("platform_system", platform.system())
-
-    raw_anchors = probe.get("performance_anchors")
-    if isinstance(raw_anchors, Mapping):
-        anchors: dict[str, Any] = {}
-        launch = raw_anchors.get("eager_launch")
-        if isinstance(launch, Mapping):
-            value = launch.get("effective_latency_us")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                anchors["launch_latency_us"] = value
-        graph = raw_anchors.get("cuda_graph_replay")
-        if isinstance(graph, Mapping):
-            value = graph.get("effective_latency_per_node_us")
-            if value is None:
-                value = graph.get("replay_latency_us")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                anchors["graph_replay_per_node_us"] = value
-        device_copy = raw_anchors.get("device_copy")
-        if isinstance(device_copy, Mapping):
-            value = device_copy.get("effective_bandwidth_gbps")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                anchors["memory_bandwidth_gbps"] = value
-        gemm_tflops: dict[str, Any] = {}
-        for source_name, dtype_name in (
-            ("gemm_float16", "float16"),
-            ("gemm_bfloat16", "bfloat16"),
-            ("gemm_float32", "float32"),
-        ):
-            gemm = raw_anchors.get(source_name)
-            if isinstance(gemm, Mapping):
-                value = gemm.get("tflops")
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    gemm_tflops[dtype_name] = value
-        if gemm_tflops:
-            anchors["gemm_tflops"] = gemm_tflops
-        softmax = raw_anchors.get("softmax_fp32")
-        if isinstance(softmax, Mapping):
-            value = softmax.get("throughput_gigaelements_per_second")
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                anchors["softmax_giga_elements_per_s"] = value
-        if anchors:
-            profile["performance_anchors"] = anchors
-
-    for field in ("device_type",):
-        if not isinstance(profile.get(field), str) or not profile[field]:
-            raise ContractError(f"routing hardware profile is missing {field}")
-    if profile["device_type"].lower() == "cuda":
-        for field in ("device_name", "compute_capability"):
-            if not isinstance(profile.get(field), str) or not profile[field]:
-                raise ContractError(f"routing hardware profile is missing {field}")
-    return profile
-
-
-def _probe_for_routing(
-    args: argparse.Namespace,
-    project_root: Path,
-) -> tuple[RoutingProbeContext | None, int]:
-    print("\n=== Routing probe (once per command) ===")
-    timeout = args.timeout if args.timeout is not None else 30.0
-    result, result_path = run_managed_probe(
-        project_root,
-        device=args.device,
-        timeout_seconds=timeout,
-        matmul_precision=getattr(args, "matmul_precision", "high"),
-        allow_tf32=getattr(args, "allow_tf32", True),
-        probe_mode="routing",
-    )
-    _print_run_summary(result, result_path)
-    exit_code = _exit_code(result["outcome"])
-    if exit_code != 0:
-        return None, exit_code
-    return (
-        RoutingProbeContext(
-            hardware_profile=_hardware_profile_from_probe(result),
-            raw_result=result,
-            result_path=result_path,
-        ),
-        0,
-    )
-
-
-def _incumbent_candidate_id(
-    case: WorkloadCase,
-    hardware_profile: Mapping[str, Any],
-    route_path: Path | None,
-) -> str | None:
-    if route_path is None or not route_path.is_file():
-        return None
-    table = load_route_table(route_path)
-    key = make_route_key(
-        case,
-        shape=(case.batch_size, case.seq_len, case.d_model),
-        dtype=case.dtype,
-        device_type=str(hardware_profile["device_type"]),
-        device_name=str(hardware_profile["device_name"]),
-        compute_capability=str(hardware_profile["compute_capability"]),
-        platform_system=str(hardware_profile["platform_system"]),
-        torch_version=str(hardware_profile["torch"]),
-        cuda_runtime=str(hardware_profile["cuda_runtime"]),
-        triton_version=str(hardware_profile["triton"]),
-    )
-    resolution = resolve_route_result(table, key)
-    if resolution.origin != "calibrated":
-        return None
-    candidate_id = deployable_candidate_id_for_policy(case, resolution.policy)
-    if candidate_id is None:
-        raise ContractError(
-            f"current route {resolution.policy!r} for {case.case_id} has no "
-            "deployable calibration candidate"
-        )
-    return candidate_id
-
-
-def _routing_plan_for_case(
-    case: WorkloadCase,
-    hardware_profile: Mapping[str, Any],
-    candidate_limit: int,
-    *,
-    incumbent_candidate_id: str | None = None,
-    deployable_only: bool = False,
-) -> dict[str, Any]:
-    applicable = tuple(
-        item.candidate_id
-        for item in candidates_for_case(case)
-        if not deployable_only or is_deployable_candidate(item)
-    )
-    try:
-        options: dict[str, Any] = {}
-        if incumbent_candidate_id is not None:
-            options["required_candidate_ids"] = (incumbent_candidate_id,)
-        raw_plan = build_routing_plan(
-            case,
-            hardware_profile,
-            applicable,
-            limit=candidate_limit,
-            **options,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ContractError(
-            f"unable to build routing plan for {case.case_id}: {exc}"
-        ) from exc
-    if not isinstance(raw_plan, Mapping):
-        raise ContractError(f"routing plan for {case.case_id} must be an object")
-    raw_order = raw_plan.get("candidate_order")
-    if (
-        not isinstance(raw_order, Sequence)
-        or isinstance(raw_order, (str, bytes))
-        or not raw_order
-        or any(not isinstance(value, str) for value in raw_order)
-    ):
-        raise ContractError(
-            f"routing plan for {case.case_id} has no valid candidate order"
-        )
-    candidate_order = list(raw_order)
-    if len(candidate_order) > candidate_limit:
-        raise ContractError(f"routing plan for {case.case_id} exceeds candidate-limit")
-    if "eager-auto" in applicable and "eager-auto" not in candidate_order:
-        raise ContractError(f"routing plan for {case.case_id} must retain eager-auto")
-    if (
-        incumbent_candidate_id is not None
-        and incumbent_candidate_id not in candidate_order
-    ):
-        raise ContractError(
-            f"routing plan for {case.case_id} must retain the current incumbent"
-        )
-    select_candidates(case, candidate_order)
-    plan = dict(raw_plan)
-    plan["candidate_order"] = candidate_order
-    plan["decision_scope"] = "candidate_order_only"
-    plan["requires_full_workload_measurement"] = True
-    return plan
 
 
 def _print_routing_plan(case_id: str, plan: Mapping[str, Any]) -> None:
@@ -795,7 +525,7 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
         summary = run_tuning_case(
             project_root,
             workload_set_id=args.workload_set,
-            workload_sha256=workload_set["sha256"],
+            workload_sha256=workload_set.sha256,
             case=case,
             base_protocol=protocol,
             device=args.device,
@@ -810,228 +540,100 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
     return 0 if all(summary["winner"] is not None for summary in summaries) else 1
 
 
-def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
-    if (
-        args.preset == "formal"
-        and not args.plan_only
-        and (args.matmul_precision != "high" or args.allow_tf32 is not True)
-    ):
-        raise ContractError(
-            "formal calibration deployment requires "
-            "--matmul-precision high and --allow-tf32"
-        )
-    workload_set = load_workload_set(project_root, args.workload_set)
-    cases = (
-        [select_workload_case(workload_set, case_id) for case_id in args.case_id]
-        if args.case_id
-        else list(workload_set["cases"])
-    )
-    probe_context, probe_exit_code = _probe_for_routing(args, project_root)
-    if probe_context is None:
-        return probe_exit_code
-    hardware_profile = probe_context.hardware_profile
-
-    full_case_ids = [case.case_id for case in workload_set["cases"]]
-    selected_case_ids = [case.case_id for case in cases]
-    existing_route: Path | None = None
-    if str(hardware_profile["device_type"]).lower() == "cuda":
-        verified_profile = verified_profile_from_probe_result(probe_context.raw_result)
-        existing_route = find_matching_verified_route(project_root, verified_profile)
-    elif args.preset == "formal" and not args.plan_only:
-        raise ContractError("formal calibration deployment requires a CUDA device")
-    incumbent_candidate_ids = [
-        _incumbent_candidate_id(
-            case,
-            hardware_profile,
-            existing_route,
-        )
-        for case in cases
-    ]
-    smoke_plans = [
-        _routing_plan_for_case(
-            case,
-            hardware_profile,
-            args.candidate_limit,
-            incumbent_candidate_id=incumbent_candidate_id,
-            deployable_only=True,
-        )
-        for case, incumbent_candidate_id in zip(
-            cases,
-            incumbent_candidate_ids,
-            strict=True,
-        )
-    ]
-    smoke_plans = align_shared_smoke_plans(
-        cases,
-        smoke_plans,
-        incumbent_candidate_ids,
-        candidate_limit=args.candidate_limit,
-    )
-    for case, plan in zip(cases, smoke_plans, strict=True):
-        _print_routing_plan(case.case_id, plan)
-    if args.plan_only:
+def _print_calibration_event(event: CalibrationEvent) -> None:
+    if event.kind == "probe_started":
+        print("\n=== Routing probe (once per command) ===")
+    elif event.kind == "probe_completed":
+        _print_run_summary(event.data["result"], event.data["result_path"])
+    elif event.kind == "routing_plan_ready":
+        _print_routing_plan(str(event.case_id), event.data["plan"])
+    elif event.kind == "plan_only_completed":
         print(
             "\nplan-only: the routing probe and coarse candidate plans completed; "
             "candidate-limit describes the future Smoke pool, and no full "
             "Transformer candidate benchmarks were run"
         )
-        return 0
-
-    if args.preset == "formal":
-        validate_promotion_case_set(selected_case_ids)
-        if existing_route is None and set(selected_case_ids) != set(full_case_ids):
-            raise ContractError(
-                "a new verified hardware package requires one complete Formal "
-                "workload calibration"
+    elif event.kind == "stage_started":
+        title = (
+            "Smoke screening stage"
+            if event.stage == "smoke"
+            else "Formal finalist verification stage"
+        )
+        print(f"\n=== {title} ===")
+    elif event.kind == "tuning_completed":
+        _print_tuning_summary(event.data["summary"])
+    elif event.kind == "stage_outputs":
+        title = (
+            "Screening outputs"
+            if event.stage == "smoke"
+            else "Formal calibration outputs"
+        )
+        print(f"\n=== {title} ===")
+        for summary in event.data["summaries"]:
+            print(
+                f"{summary['case_id']}: tuning-id={summary['tuning_id']} | "
+                f"summary={summary['summary_path']}"
             )
-
-    smoke_protocol = MeasurementProtocol.for_preset(
-        "smoke",
-        matmul_precision=args.matmul_precision,
-        allow_tf32=args.allow_tf32,
-        timeout_seconds=args.timeout,
-    )
-    smoke_summaries: list[dict[str, Any]] = []
-    print("\n=== Smoke screening stage ===")
-    for case, plan in zip(cases, smoke_plans, strict=True):
-        summary = run_tuning_case(
-            project_root,
-            workload_set_id=args.workload_set,
-            workload_sha256=workload_set["sha256"],
-            case=case,
-            base_protocol=smoke_protocol,
-            device=args.device,
-            requested_candidates=plan["candidate_order"],
-            routing_plan=plan,
-            device_profile=hardware_profile,
-        )
-        smoke_summaries.append(summary)
-        _print_tuning_summary(summary)
-        if any(item["outcome"] == "cancelled" for item in summary["observations"]):
-            return 130
-
-    print("\n=== Screening outputs ===")
-    for summary in smoke_summaries:
-        print(
-            f"{summary['case_id']}: tuning-id={summary['tuning_id']} | "
-            f"summary={summary['summary_path']}"
-        )
-    if args.preset == "smoke":
-        if any(
-            summary.get("complete") is not True or summary.get("winner") is None
-            for summary in smoke_summaries
-        ):
-            return 1
+    elif event.kind == "smoke_screening_only":
         print("smoke calibration is screening-only and cannot be promoted")
-        case_arguments = " ".join(f"--case-id {case.case_id}" for case in cases)
+        case_arguments = " ".join(
+            f"--case-id {case_id}" for case_id in event.data["case_ids"]
+        )
         print(
             "formal calibration: python -m runner calibrate --preset formal "
             f"{case_arguments}"
         )
-        return 0
+    elif event.kind == "formal_selection_skipped":
+        print(f"Formal finalist selection skipped: {event.data['message']}")
+    elif event.kind == "implementation_changed":
+        print(f"Formal finalist verification skipped: {event.data['message']}")
+    elif event.kind == "formal_plans_ready":
+        print("\n=== Formal finalists selected from Smoke measurements ===")
+        for case, plan in zip(
+            event.data["cases"],
+            event.data["plans"],
+            strict=True,
+        ):
+            print(f"{case.case_id}: {', '.join(plan['candidate_order'])}")
+    elif event.kind == "promotion_skipped":
+        print(f"automatic route update skipped: {event.data['message']}")
+    elif event.kind == "promotion_started":
+        print("\n=== Automatic route update ===")
+    elif event.kind == "promotion_failed":
+        print(f"automatic route update failed: {event.data['message']}")
+    elif event.kind == "promotion_completed":
+        for case, winner in zip(
+            event.data["cases"],
+            event.data["winners"],
+            strict=True,
+        ):
+            print(
+                f"{case.case_id}: deployed {winner['candidate_id']} -> "
+                f"{winner['solution_policy']}"
+            )
+        route_path = event.data["route_path"]
+        print(f"{event.data['route_action']}: {route_path.parent}")
+        print(f"dispatch routes: {route_path}")
 
-    try:
-        formal_plans = build_formal_candidate_plans(
-            cases,
-            smoke_summaries,
-            incumbent_candidate_ids,
-        )
-    except ContractError as exc:
-        print(f"Formal finalist selection skipped: {exc}")
-        return 1
-    expected_implementation = smoke_summaries[0][
-        "source_implementation_sha256"
-    ]
-    if solution_implementation_hash(project_root / "solution") != expected_implementation:
-        print(
-            "Formal finalist verification skipped: Solution implementation "
-            "changed after Smoke screening"
-        )
-        return 1
 
-    print("\n=== Formal finalists selected from Smoke measurements ===")
-    for case, plan in zip(cases, formal_plans, strict=True):
-        candidates = ", ".join(plan["candidate_order"])
-        print(f"{case.case_id}: {candidates}")
-
-    formal_protocol = MeasurementProtocol.for_preset(
-        "formal",
+def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
+    request = CalibrationRequest(
+        project_root=project_root,
+        workload_set_id=args.workload_set,
+        case_ids=tuple(args.case_id or ()),
+        device=args.device,
+        preset=args.preset,
+        timeout_seconds=args.timeout,
+        candidate_limit=args.candidate_limit,
+        plan_only=args.plan_only,
         matmul_precision=args.matmul_precision,
         allow_tf32=args.allow_tf32,
-        timeout_seconds=args.timeout,
     )
-    formal_summaries: list[dict[str, Any]] = []
-    print("\n=== Formal finalist verification stage ===")
-    for case, plan in zip(cases, formal_plans, strict=True):
-        summary = run_tuning_case(
-            project_root,
-            workload_set_id=args.workload_set,
-            workload_sha256=workload_set["sha256"],
-            case=case,
-            base_protocol=formal_protocol,
-            device=args.device,
-            requested_candidates=plan["candidate_order"],
-            routing_plan=plan,
-            device_profile=hardware_profile,
-        )
-        formal_summaries.append(summary)
-        _print_tuning_summary(summary)
-        if any(item["outcome"] == "cancelled" for item in summary["observations"]):
-            return 130
-
-    print("\n=== Formal calibration outputs ===")
-    for summary in formal_summaries:
-        print(
-            f"{summary['case_id']}: tuning-id={summary['tuning_id']} | "
-            f"summary={summary['summary_path']}"
-        )
-    if any(
-        summary.get("complete") is not True
-        or summary.get("winner") is None
-        or summary.get("deployable_winner") is None
-        for summary in formal_summaries
-    ):
-        print(
-            "automatic route update skipped: Formal calibration has no complete "
-            "deployable winner"
-        )
-        return 1
-
-    print("\n=== Automatic route update ===")
-    try:
-        previous_route_bytes = (
-            existing_route.read_bytes()
-            if existing_route is not None and existing_route.is_file()
-            else None
-        )
-        _, winners, route_path, created = auto_promote_calibration(
-            project_root,
-            formal_summaries,
-            probe_result=probe_context.raw_result,
-            full_workload_case_ids=full_case_ids,
-        )
-    except (ContractError, OSError) as exc:
-        print(f"automatic route update failed: {exc}")
-        return 1
-    for case, winner in zip(cases, winners, strict=True):
-        print(
-            f"{case.case_id}: deployed {winner['candidate_id']} -> "
-            f"{winner['solution_policy']}"
-        )
-    route_changed = (
-        previous_route_bytes is not None
-        and route_path.is_file()
-        and route_path.read_bytes() != previous_route_bytes
+    result = CalibrationService().run(
+        request,
+        on_event=_print_calibration_event,
     )
-    if created:
-        action = "created verified package"
-    elif route_changed:
-        action = "updated verified package"
-    else:
-        action = "verified package already has the selected routes"
-    print(f"{action}: {route_path.parent}")
-    print(f"dispatch routes: {route_path}")
-    return 0
+    return result.exit_code
 
 
 def _run_promote(args: argparse.Namespace, project_root: Path) -> int:

@@ -11,6 +11,7 @@ import torch
 from runner.contracts import ContractError, atomic_write_json, load_json
 from runner.execution import execute_benchmark, execute_profile
 from runner.probe import execute_probe
+from runner.result_contracts import WorkerRequest
 
 
 def _failure(exc: BaseException, run_kind: str) -> dict[str, Any]:
@@ -45,14 +46,19 @@ def _failure(exc: BaseException, run_kind: str) -> dict[str, Any]:
 
 
 def execute_request(request: dict[str, Any]) -> dict[str, Any]:
-    run_kind = str(request.get("run_kind", "benchmark"))
+    try:
+        parsed_request = WorkerRequest.from_dict(request)
+    except BaseException as exc:  # noqa: BLE001 - this is the IPC boundary.
+        return _failure(exc, "request")
+
+    run_kind = parsed_request.run_kind
     try:
         if run_kind == "benchmark":
-            return execute_benchmark(request)
+            return execute_benchmark(parsed_request)
         if run_kind == "profile":
-            return execute_profile(request)
+            return execute_profile(parsed_request)
         if run_kind == "probe":
-            return execute_probe(request)
+            return execute_probe(parsed_request.as_dict())
         raise ContractError(f"unsupported run_kind: {run_kind}")
     except BaseException as exc:  # noqa: BLE001 - this is the worker boundary.
         return _failure(exc, run_kind)

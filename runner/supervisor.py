@@ -23,17 +23,13 @@ from runner.contracts import (
     utc_now,
     validate_official_snapshot,
 )
-
-_ALLOWED_OUTCOMES = {
-    "success",
-    "invalid_output",
-    "unsupported",
-    "build_error",
-    "oom",
-    "timeout",
-    "cancelled",
-    "runtime_error",
-}
+from runner.result_contracts import (
+    compact_correctness,
+    compact_performance,
+    parse_worker_response,
+    validate_benchmark_performance,
+    validate_correctness,
+)
 
 
 def _validate_timeout_seconds(value: Any) -> float:
@@ -108,35 +104,6 @@ def _stop_process_tree(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=5)
     except subprocess.TimeoutExpired:
         pass
-
-
-def _worker_response_error(
-    response: dict[str, Any],
-    run_kind: str,
-) -> str | None:
-    outcome = response.get("outcome")
-    if outcome not in _ALLOWED_OUTCOMES:
-        return f"worker returned unsupported outcome: {outcome!r}"
-    if outcome != "success":
-        if not isinstance(response.get("failure"), dict):
-            return "failed worker response is missing failure details"
-        return None
-    if response.get("failure") is not None:
-        return "successful worker response contains failure details"
-    if not isinstance(response.get("environment"), dict):
-        return "successful worker response is missing environment details"
-    required_payload = {
-        "benchmark": "performance",
-        "profile": "profile",
-        "probe": "probe",
-    }.get(run_kind)
-    if required_payload is None:
-        return f"unsupported worker run_kind: {run_kind!r}"
-    if not isinstance(response.get(required_payload), dict):
-        return f"successful {run_kind} response is missing {required_payload}"
-    if run_kind == "benchmark" and not isinstance(response.get("correctness"), dict):
-        return "successful benchmark response is missing correctness"
-    return None
 
 
 def _run_worker_inner(
@@ -219,15 +186,17 @@ def _run_worker_inner(
             failure = response.get("failure")
             if isinstance(failure, dict):
                 failure["exit_code"] = process.returncode
-            response_error = _worker_response_error(
-                response, str(request.get("run_kind", "benchmark"))
-            )
-            if response_error is not None:
+            try:
+                response = parse_worker_response(
+                    response,
+                    run_kind=str(request.get("run_kind", "benchmark")),
+                )
+            except ContractError as exc:
                 return _failure_response(
                     "runtime_error",
                     stage="worker_response",
                     failure_type="InvalidWorkerResponse",
-                    message=response_error,
+                    message=str(exc),
                     exit_code=process.returncode,
                 )
             if outcome == "success" and process.returncode != 0:
@@ -290,65 +259,6 @@ def _persist_result(
     return result, result_path
 
 
-def _compact_correctness(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    compact = {
-        key: value[key]
-        for key in (
-            "passed",
-            "trial_count",
-            "failed_elements",
-            "max_abs_error",
-            "max_relative_error",
-            "diagnostic",
-            "skipped",
-        )
-        if value.get(key) is not None
-    }
-    if value.get("passed") is False and "diagnostic" not in compact:
-        trials = value.get("trials")
-        if isinstance(trials, list):
-            for trial in trials:
-                if isinstance(trial, dict) and trial.get("error") is not None:
-                    compact["diagnostic"] = str(trial["error"])[-500:]
-                    break
-    return compact or None
-
-
-def _compact_timing_side(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    compact: dict[str, Any] = {}
-    for key in ("median_ms", "p90_ms", "round_medians_ms"):
-        if value.get(key) is not None:
-            compact[key] = value[key]
-    return compact or None
-
-
-def _compact_performance(value: Any, target: str) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    baseline_source = value.get("baseline")
-    baseline = _compact_timing_side(baseline_source)
-    if baseline is None:
-        return None
-    compact: dict[str, Any] = {
-        "timer": value.get("timer"),
-        "sample_count": baseline_source.get("sample_count")
-        if isinstance(baseline_source, dict)
-        else None,
-        "baseline": baseline,
-    }
-    if target == "solution":
-        measured = _compact_timing_side(value.get("target"))
-        if measured is not None:
-            compact["target"] = measured
-        if value.get("speedup") is not None:
-            compact["speedup"] = value["speedup"]
-    return compact
-
-
 def _compact_failure(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -360,58 +270,6 @@ def _compact_failure(value: Any) -> dict[str, Any] | None:
     if value.get("exit_code") is not None:
         compact["exit_code"] = value["exit_code"]
     return compact
-
-
-def _complete_correctness(value: Any, expected_trials: Any) -> bool:
-    if not isinstance(value, dict) or value.get("passed") is not True:
-        return False
-    trial_count = value.get("trial_count")
-    failed_elements = value.get("failed_elements")
-    max_abs_error = value.get("max_abs_error")
-    return (
-        isinstance(expected_trials, int)
-        and not isinstance(expected_trials, bool)
-        and expected_trials > 0
-        and isinstance(trial_count, int)
-        and not isinstance(trial_count, bool)
-        and trial_count == expected_trials
-        and isinstance(failed_elements, int)
-        and not isinstance(failed_elements, bool)
-        and failed_elements == 0
-        and isinstance(max_abs_error, (int, float))
-        and not isinstance(max_abs_error, bool)
-        and math.isfinite(float(max_abs_error))
-        and float(max_abs_error) >= 0
-    )
-
-
-def _complete_timing_side(value: Any, expected_rounds: int) -> bool:
-    if not isinstance(value, dict):
-        return False
-    median = value.get("median_ms")
-    p90 = value.get("p90_ms")
-    round_medians = value.get("round_medians_ms")
-    if any(
-        isinstance(number, bool)
-        or not isinstance(number, (int, float))
-        or not math.isfinite(float(number))
-        or float(number) <= 0
-        for number in (median, p90)
-    ):
-        return False
-    if float(p90) < float(median):
-        return False
-    return (
-        isinstance(round_medians, list)
-        and len(round_medians) == expected_rounds
-        and all(
-            not isinstance(number, bool)
-            and isinstance(number, (int, float))
-            and math.isfinite(float(number))
-            and float(number) > 0
-            for number in round_medians
-        )
-    )
 
 
 def _success_contract_error(result: dict[str, Any]) -> str | None:
@@ -446,53 +304,27 @@ def _success_contract_error(result: dict[str, Any]) -> str | None:
         protocol = result["protocol"]
         repeats = protocol.get("repeats")
         rounds = protocol.get("rounds")
-        if (
-            not isinstance(performance, dict)
-            or isinstance(repeats, bool)
-            or not isinstance(repeats, int)
-            or repeats <= 0
-            or isinstance(rounds, bool)
-            or not isinstance(rounds, int)
-            or rounds <= 0
-            or not isinstance(performance.get("sample_count"), int)
-            or isinstance(performance.get("sample_count"), bool)
-            or performance["sample_count"] != repeats * rounds
-            or not _complete_timing_side(performance.get("baseline"), rounds)
-        ):
-            return "missing compact benchmark performance"
         expected_timer = (
             "cuda_event"
             if result["environment"]["device"].startswith("cuda")
             else "perf_counter_ns"
         )
-        if performance.get("timer") != expected_timer:
-            return "timer does not match resolved device"
+        _parsed_performance, performance_error = validate_benchmark_performance(
+            performance,
+            target=str(result.get("target")),
+            repeats=repeats,
+            rounds=rounds,
+            expected_timer=expected_timer,
+        )
+        if performance_error is not None:
+            return f"invalid compact benchmark performance: {performance_error}"
         if result.get("target") == "solution":
             correctness = result.get("correctness")
-            if not _complete_correctness(
-                correctness,
-                protocol.get("accuracy_trials"),
-            ):
-                return "invalid compact correctness"
-            if not _complete_timing_side(performance.get("target"), rounds):
-                return "missing target performance"
-            speedup = performance.get("speedup")
-            if (
-                isinstance(speedup, bool)
-                or not isinstance(speedup, (int, float))
-                or not math.isfinite(float(speedup))
-                or float(speedup) <= 0
-            ):
-                return "missing speedup"
-            baseline_median = performance["baseline"]["median_ms"]
-            target_median = performance["target"]["median_ms"]
-            if not math.isclose(
-                float(speedup),
-                float(baseline_median) / float(target_median),
-                rel_tol=1e-12,
-                abs_tol=1e-12,
-            ):
-                return "speedup does not match compact medians"
+            correctness_error = validate_correctness(
+                correctness, expected_trials=protocol.get("accuracy_trials")
+            )
+            if correctness_error is not None:
+                return f"invalid compact correctness: {correctness_error}"
     elif run_kind == "profile":
         profile = result.get("profile")
         if not isinstance(profile, dict) or not profile.get("operator_hotspots"):
@@ -500,11 +332,11 @@ def _success_contract_error(result: dict[str, Any]) -> str | None:
         if result.get("target") == "solution":
             correctness = result.get("correctness")
             protocol = result["protocol"]
-            if not _complete_correctness(
-                correctness,
-                protocol.get("accuracy_trials"),
-            ):
-                return "invalid compact correctness"
+            correctness_error = validate_correctness(
+                correctness, expected_trials=protocol.get("accuracy_trials")
+            )
+            if correctness_error is not None:
+                return f"invalid compact correctness: {correctness_error}"
     elif run_kind == "probe":
         probe = result.get("probe")
         if not isinstance(probe, dict):
@@ -555,6 +387,7 @@ def run_managed_benchmark(
     tuning_id: str | None = None,
     candidate_id: str | None = None,
     result_dir: Path | None = None,
+    solution_policy: str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
     run_id = new_run_id()
@@ -568,6 +401,8 @@ def run_managed_benchmark(
         "device": device,
         "target": target,
     }
+    if solution_policy is not None and target == "solution":
+        request["solution_policy"] = solution_policy
     response = _run_worker(project_root, request, protocol.timeout_seconds)
     source = {"official_sha256": snapshot["sha256"]}
     if response.get("solution_source_sha256") is not None:
@@ -596,11 +431,11 @@ def run_managed_benchmark(
             "source": source,
         }
     )
-    correctness = _compact_correctness(response.get("correctness"))
+    correctness = compact_correctness(response.get("correctness"))
     if target == "solution" and correctness is not None:
         result["correctness"] = correctness
     if response["outcome"] == "success":
-        performance = _compact_performance(response.get("performance"), target)
+        performance = compact_performance(response.get("performance"), target)
         if performance is not None:
             result["performance"] = performance
     execution_path = response.get("execution_path")
@@ -626,6 +461,7 @@ def run_managed_profile(
     device: str,
     target: str,
     workload_sha256: str | None = None,
+    solution_policy: str | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
     run_id = new_run_id()
@@ -639,6 +475,8 @@ def run_managed_profile(
         "device": device,
         "target": target,
     }
+    if solution_policy is not None and target == "solution":
+        request["solution_policy"] = solution_policy
     response = _run_worker(project_root, request, protocol.timeout_seconds)
     source = {"official_sha256": snapshot["sha256"]}
     if response.get("solution_source_sha256") is not None:
@@ -654,7 +492,7 @@ def run_managed_profile(
         "workload": _workload_record(workload_set_id, case, workload_sha256),
         "source": source,
     }
-    correctness = _compact_correctness(response.get("correctness"))
+    correctness = compact_correctness(response.get("correctness"))
     if correctness is not None:
         result["correctness"] = correctness
     if response["outcome"] == "success":

@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "workload_set": {
+    "set_id": "transformer_core_v1",
+    "sha256": "f6a9d6265d53f198a041da687a928aedf524da9eb481b1e9a269242cd2cdec5f"
+  },
+  "solution": {
+    "implementation_sha256": "52e450fddb9a0f31d46a22b60f1c15ca89bbff59379f688b66f81bef3f20a971"
+  },
+  "route_table": {
+    "sha256": "53e384279734fbf38de1667a752027f5935b9ad0fa858f7a06b9fe1faefade04"
+  },
+  "formal": {
+    "protocol": {
+      "preset": "formal",
+      "seed": 1234,
+      "accuracy_trials": 5,
+      "rtol": 0.01,
+      "atol": 0.001,
+      "warmup": 20,
+      "repeats": 100,
+      "rounds": 3,
+      "compile_baseline": false,
+      "compile_solution": false,
+      "cuda_graph_solution": false,
+      "compile_mode": "default",
+      "matmul_precision": "high",
+      "allow_tf32": true,
+      "timeout_seconds": 900.0
+    },
+    "source_summaries": [
+      {
+        "summary_id": "20260827T114011.888071Z-63100568",
+        "case_ids": [
+          "launch_s64_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114019.556178Z-29c6c171",
+        "case_ids": [
+          "balanced_s128_fp32"
+        ]
+      },
+      {
+        "summary_id": "20260827T114028.290725Z-002e746f",
+        "case_ids": [
+          "balanced_s128_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114037.115349Z-ae050b9c",
+        "case_ids": [
+          "attention_s2048_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114054.338821Z-e1ad739b",
+        "case_ids": [
+          "attention_s2048_causal_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114112.955164Z-de08ab6f",
+        "case_ids": [
+          "mask_s512_full_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114125.240006Z-18e7b334",
+        "case_ids": [
+          "mask_s512_padding_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114137.504537Z-69320c78",
+        "case_ids": [
+          "mask_s512_causal_padding_fp16"
+        ]
+      },
+      {
+        "summary_id": "20260827T114150.026708Z-309e026e",
+        "case_ids": [
+          "wide_s256_bf16"
+        ]
+      }
+    ]
+  }
+}

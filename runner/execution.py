@@ -9,6 +9,7 @@ import sys
 import tempfile
 import types
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -24,6 +25,7 @@ from runner.contracts import (
     solution_source_hash,
 )
 from runner.probe import collect_environment
+from runner.result_contracts import WorkerRequest
 
 
 def load_solution_module(project_root: Path) -> ModuleType:
@@ -455,6 +457,24 @@ def _load_solution_source(project_root: Path) -> tuple[ModuleType, str]:
     return solution_module, measured_source_hash
 
 
+def _build_solution(
+    solution_module: ModuleType,
+    config: official.TransformerConfig,
+    solution_policy: str | None,
+) -> nn.Module:
+    solution = solution_module.UserOptimizedTransformer(config)
+    if solution_policy is None:
+        return solution
+    configure = getattr(solution, "configure_runtime_policy", None)
+    if not callable(configure):
+        raise ContractError(
+            "Solution does not expose configure_runtime_policy() for an explicit "
+            "solution_policy request"
+        )
+    configure(policy=solution_policy)
+    return solution
+
+
 def _exception_outcome(exc: BaseException, stage: str) -> str:
     if isinstance(exc, torch.cuda.OutOfMemoryError):
         return "oom"
@@ -500,26 +520,43 @@ def _failure_response(
     }
 
 
-def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
+def execute_benchmark(
+    request: WorkerRequest | Mapping[str, Any],
+) -> dict[str, Any]:
     stage = "request"
     environment: dict[str, Any] | None = None
     correctness: dict[str, Any] | None = None
     performance: dict[str, Any] | None = None
     measured_source_hash: str | None = None
     execution_path: dict[str, Any] | None = None
-    target = str(request.get("target", "solution"))
+    target = (
+        str(request.target or "solution")
+        if isinstance(request, WorkerRequest)
+        else str(request.get("target", "solution"))
+    )
     try:
-        if target not in {"baseline", "solution"}:
-            raise ContractError(f"unsupported benchmark target: {target}")
-        project_root = Path(request["project_root"]).resolve()
-        case = WorkloadCase.from_dict(request["case"])
-        protocol = MeasurementProtocol(**request["protocol"])
-        protocol.validate()
+        parsed_request = (
+            request
+            if isinstance(request, WorkerRequest)
+            else WorkerRequest.from_dict(request)
+        )
+        if parsed_request.run_kind != "benchmark":
+            raise ContractError(
+                f"execute_benchmark received {parsed_request.run_kind!r} request"
+            )
+        assert parsed_request.project_root is not None
+        assert parsed_request.case is not None
+        assert parsed_request.protocol is not None
+        assert parsed_request.target is not None
+        project_root = parsed_request.project_root
+        case = parsed_request.case
+        protocol = parsed_request.protocol
+        target = parsed_request.target
         if target == "baseline" and protocol.cuda_graph_solution:
             raise ContractError("CUDA Graph wrapping applies only to the Solution")
 
         stage = "device"
-        requested_device = str(request["device"])
+        requested_device = parsed_request.device
         device = official.resolve_device(requested_device)
         if device.type == "cuda":
             torch.cuda.set_device(device)
@@ -539,7 +576,11 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
             stage = "load_solution"
             solution_module, measured_source_hash = _load_solution_source(project_root)
             stage = "build_model"
-            solution = solution_module.UserOptimizedTransformer(config)
+            solution = _build_solution(
+                solution_module,
+                config,
+                parsed_request.solution_policy,
+            )
             stage = "copy_weights"
             weight_loader = getattr(solution_module, "copy_model_weights", None)
             if weight_loader is None:
@@ -551,6 +592,7 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
         baseline = baseline.to(device=device, dtype=dtype).eval()
         if solution is not None:
             solution = solution.to(device=device, dtype=dtype).eval()
+        reporting_solution = solution
 
         execution_path = _describe_execution_path(
             solution if solution is not None else baseline,
@@ -575,9 +617,24 @@ def execute_benchmark(request: dict[str, Any]) -> dict[str, Any]:
 
         if solution is not None:
             stage = "correctness"
-            correctness = run_correctness(
-                baseline, solution, config, case, protocol, device, dtype
+            observe_execution = (
+                reporting_solution is not None
+                and not protocol.compile_solution
+                and not protocol.cuda_graph_solution
+                and _set_execution_observation(reporting_solution, True)
             )
+            try:
+                correctness = run_correctness(
+                    baseline, solution, config, case, protocol, device, dtype
+                )
+            finally:
+                if observe_execution:
+                    _set_execution_observation(reporting_solution, False)
+            if observe_execution:
+                execution_path = _describe_execution_path(
+                    reporting_solution,
+                    case=case,
+                )
             if not correctness["passed"]:
                 if measured_source_hash is not None:
                     stage = "source_integrity"
@@ -683,6 +740,16 @@ def _describe_execution_path(
     return description
 
 
+def _set_execution_observation(model: nn.Module, enabled: bool) -> bool:
+    """Toggle optional eager branch observation without requiring the API."""
+
+    setter = getattr(model, "set_execution_observation", None)
+    if not callable(setter):
+        return False
+    setter(enabled)
+    return True
+
+
 def _validate_cuda_graph_composition(
     execution_path: dict[str, Any],
     protocol: MeasurementProtocol,
@@ -725,27 +792,44 @@ def _observed_attention_backend(events: list[Any]) -> str | None:
     return None
 
 
-def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
+def execute_profile(
+    request: WorkerRequest | Mapping[str, Any],
+) -> dict[str, Any]:
     stage = "request"
     environment: dict[str, Any] | None = None
     correctness: dict[str, Any] | None = None
     measured_source_hash: str | None = None
     execution_path: dict[str, Any] | None = None
-    target = str(request.get("target", "solution"))
+    target = (
+        str(request.target or "solution")
+        if isinstance(request, WorkerRequest)
+        else str(request.get("target", "solution"))
+    )
     try:
-        if target not in {"baseline", "solution"}:
-            raise ContractError(f"unsupported profile target: {target}")
-        project_root = Path(request["project_root"]).resolve()
-        case = WorkloadCase.from_dict(request["case"])
-        protocol = MeasurementProtocol(**request["protocol"])
-        protocol.validate()
+        parsed_request = (
+            request
+            if isinstance(request, WorkerRequest)
+            else WorkerRequest.from_dict(request)
+        )
+        if parsed_request.run_kind != "profile":
+            raise ContractError(
+                f"execute_profile received {parsed_request.run_kind!r} request"
+            )
+        assert parsed_request.project_root is not None
+        assert parsed_request.case is not None
+        assert parsed_request.protocol is not None
+        assert parsed_request.target is not None
+        project_root = parsed_request.project_root
+        case = parsed_request.case
+        protocol = parsed_request.protocol
+        target = parsed_request.target
         if protocol.cuda_graph_solution:
             raise ContractError(
                 "the eager CUDA Graph candidate is supported only by benchmark runs"
             )
 
         stage = "device"
-        requested_device = str(request["device"])
+        requested_device = parsed_request.device
         device = official.resolve_device(requested_device)
         if device.type == "cuda":
             torch.cuda.set_device(device)
@@ -763,7 +847,11 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
             stage = "load_solution"
             solution_module, measured_source_hash = _load_solution_source(project_root)
             stage = "build_model"
-            solution = solution_module.UserOptimizedTransformer(config)
+            solution = _build_solution(
+                solution_module,
+                config,
+                parsed_request.solution_policy,
+            )
             stage = "copy_weights"
             weight_loader = getattr(solution_module, "copy_model_weights", None)
             if weight_loader is None:
@@ -775,6 +863,7 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
         baseline = baseline.to(device=device, dtype=dtype).eval()
         if solution is not None:
             solution = solution.to(device=device, dtype=dtype).eval()
+        reporting_solution = solution
 
         execution_path = _describe_execution_path(
             solution if solution is not None else baseline,
@@ -799,9 +888,23 @@ def execute_profile(request: dict[str, Any]) -> dict[str, Any]:
 
         if target == "solution":
             stage = "correctness"
-            correctness = run_correctness(
-                baseline, model, config, case, protocol, device, dtype
+            observe_execution = (
+                reporting_solution is not None
+                and not protocol.compile_solution
+                and _set_execution_observation(reporting_solution, True)
             )
+            try:
+                correctness = run_correctness(
+                    baseline, model, config, case, protocol, device, dtype
+                )
+            finally:
+                if observe_execution:
+                    _set_execution_observation(reporting_solution, False)
+            if observe_execution:
+                execution_path = _describe_execution_path(
+                    reporting_solution,
+                    case=case,
+                )
             if not correctness["passed"]:
                 if measured_source_hash is not None:
                     stage = "source_integrity"

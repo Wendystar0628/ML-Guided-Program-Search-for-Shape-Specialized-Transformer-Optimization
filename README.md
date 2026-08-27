@@ -24,17 +24,48 @@ workflow is:
 3. Smoke-screen at most three eligible candidates per workload with the full
    correctness comparator and end-to-end timer;
 4. formally remeasure only the dynamically selected controls and finalist;
-5. apply the correctness, execution-path, incumbent, gain, and shared-route
+5. apply the correctness, observed-execution, incumbent, gain, and shared-route
    gates before publishing every accepted route atomically; and
-6. use deterministic dispatch at runtime, with `auto` as the safe fallback.
+6. bind the published routes to the measured Workload and Solution version in
+   a small verified-bundle manifest;
+7. use deterministic dispatch at runtime, with `auto` as the safe fallback.
 
 The workload and optimization code stay shared. Only an exact, measured route
 table and its evidence belong to a device package.
 
 The currently verified device is the
 [`NVIDIA GeForce RTX 4080`](verified_hardware/nvidia_geforce_rtx_4080/README.md).
-Its profile, eight exact routes, formal nine-case result, and one-command
-reproduction entry are kept together there.
+Its profile, manifest, eight exact routes, formal nine-case result, and
+one-command reproduction entry are kept together there.
+
+## Architecture boundaries
+
+The control plane has a small set of explicit sources of truth:
+
+- [`solution/policies.py`](solution/policies.py) defines every concrete
+  `PolicySpec`, while [`runner/candidates.py`](runner/candidates.py) defines
+  every measurable `CandidateSpec`, including applicability, capabilities,
+  deployment eligibility, and the execution evidence required to count it;
+- [`solution/execution_plan.py`](solution/execution_plan.py) resolves runtime
+  facts and policy intent into one immutable `ExecutionPlan` with per-layer
+  plans. Forward consumes it for QKV layout, mask, attention, FFN, residual,
+  and graph decisions; the correctness run
+  also records the branches that actually execute if a final tensor guard
+  falls back. Path reporting is read-only and includes that observed evidence;
+- [`runner/result_contracts.py`](runner/result_contracts.py) validates typed
+  worker requests, correctness summaries, timings, and benchmark responses at
+  the process boundary, while persisted files remain compact JSON;
+- [`runner/routing_contracts.py`](runner/routing_contracts.py) owns
+  `HardwareIdentity`, exact route-key construction, and route-sharing groups;
+  and
+- [`runner/calibration.py`](runner/calibration.py) exposes the complete
+  cold-start workflow as a reusable `CalibrationService`. The CLI presents the
+  service today, and a future project-specific Agent can call the same service
+  and consume its structured progress events without parsing terminal text.
+
+The CUDA kernels remain independent implementation modules. These control-plane
+contracts select and verify them without adding a plugin framework or moving
+benchmark logic into `forward`.
 
 ## Environment
 
@@ -83,7 +114,9 @@ remeasurement, and promotion gates. A new device formally compares at most
 `eager-auto` and its best Smoke challenger. A device with a specialized current
 route also retains that incumbent, so Formal measures at most three distinct
 candidates. Runner then locates or creates the exact verified-device package
-and publishes all accepted routes with one atomic `routes.json` update:
+and publishes all accepted routes with one atomic `routes.json` update. A
+companion `manifest.json` binds that table to the exact Workload definition,
+Solution implementation, Formal protocol, and compact Summary/Case IDs:
 
 ```powershell
 python -m runner calibrate --preset formal --device cuda:0
@@ -145,8 +178,9 @@ For a known device, prefer its checked launcher. For example:
 python verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --preset smoke
 ```
 
-The launcher validates the device profile, activates that package's route
-table, runs the shared Runner, and writes generated measurements below the same
+The launcher validates the device profile and package, runs the shared Runner
+through the normal verified-device catalog, confirms that every result came
+from the sibling route table, and writes generated measurements below the same
 device package.
 
 ## Cross-hardware design
@@ -189,6 +223,9 @@ through `calibrate`.
 
 Candidate measurement remains authoritative. `calibrate` and `tune` reuse the
 same fresh-worker comparator and full-forward timing protocol as `benchmark`.
+The selected `solution_policy` is carried explicitly in the worker request;
+Runner does not rely on a parent-process environment variable to identify the
+candidate under test.
 Only a complete formal `calibrate` run deploys. Smoke calibration only exposes
 the quick screening results; plan-only calibration stops after the white-box
 plan; and `tune` remains a focused, non-deploying experiment even with a Formal
@@ -201,11 +238,14 @@ manual `promote` command is retained only for compatible history replay or
 deployment recovery and applies the same gates.
 
 At inference time, [`solution/dispatch.py`](solution/dispatch.py) loads the
-verified device-route catalog once, matches the exact hardware/software/shape
-key, and otherwise selects `auto`. There is no online benchmarking and no scan
-of historical result files in `forward`. A verified route therefore needs only
-cheap identity matching during ordinary execution; performance anchors belong
-only to cold-start calibration on an unverified or changed device.
+verified device-route catalog once, accepts only bundles whose manifest still
+matches the route table, Workload definition, and current Solution
+implementation, then matches the exact hardware/software/shape key. A missing,
+invalid, or stale bundle is skipped closed and the unmatched input uses `auto`.
+There is no online benchmarking and no scan of historical result files in
+`forward`. A verified route therefore needs only cheap identity matching during
+ordinary execution; performance anchors belong only to cold-start calibration
+on an unverified or changed device.
 
 ## Core workload
 
@@ -245,12 +285,14 @@ does not justify them.
 
 Every benchmark case runs in a fresh worker process. The worker:
 
-1. loads the requested target and an independent baseline;
-2. copies identical weights and derives packed tensors before device transfer;
-3. runs the complete correctness comparator;
-4. measures alternating baseline and target rounds with the full-forward CUDA
+1. validates one typed request, including the explicit Solution policy when a
+   candidate is being measured;
+2. loads the requested target and an independent baseline;
+3. copies identical weights and derives packed tensors before device transfer;
+4. runs the complete correctness comparator;
+5. measures alternating baseline and target rounds with the full-forward CUDA
    timer; and
-5. returns one compact schema-v2 result to the parent.
+6. returns one validated, compact schema-v2 result to the parent.
 
 The default development paths are:
 
@@ -298,26 +340,42 @@ Use this entry for direct single-configuration compatibility checks. Use
 
 ```powershell
 python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q -m architecture tests\architecture
+.\.venv\Scripts\python.exe -m pytest -q -m gpu tests\gpu
 python -m ruff check runner solution tests verified_hardware `
   torch_transformer_benchmark.py environment_check.py
 ```
 
-The tests cover the immutable benchmark snapshot, workload contract, weight
-packing, masks, timing order, isolated result persistence, aggregation,
-hardware-profile extraction, hardware-cost-model routing, exact dispatch and
-fallback, device-package loading, and the compatibility entry. Source-code
+The default suite covers the immutable benchmark snapshot, workload contract,
+policy/candidate registry consistency, execution planning and mask fallbacks,
+typed worker boundaries, timing order, isolated result persistence,
+aggregation, hardware-profile extraction, hardware-cost-model routing, exact
+dispatch, stale-bundle fallback, and the compatibility entry. Source-code
 comments are written in English so the implementation remains easy to review.
+The focused `architecture` suite protects registry and module boundaries. The
+focused `gpu` suite runs real CUDA kernel/policy smoke checks with the official
+Comparator and CUDA Events; it skips cleanly when CUDA is unavailable. These
+smoke checks establish execution and correctness, not a fixed performance
+threshold or a substitute for Formal calibration.
 
 ## Repository map
 
 ```text
 official/                    Immutable supplied benchmark snapshot
 solution/                    Shared optimized Transformer and kernel candidates
+solution/policies.py         Single registry of concrete runtime policies
+solution/execution_plan.py   Pure runtime eligibility and execution-plan resolver
 runner/                      Probe, analysis, benchmark, profile, tune, and promotion
+runner/candidates.py         Candidate applicability, capability, and evidence registry
+runner/calibration.py        Reusable cold-start service for CLI and future Agent callers
+runner/result_contracts.py   Typed worker and compact benchmark-result boundaries
+runner/routing_contracts.py  Shared hardware identity and exact route-key adapters
 runner/verified_hardware.py  Shared verified-device validation and run orchestration
 runner/workloads/            Hardware-neutral transformer_core_v1 workload
-verified_hardware/           Measured device profiles, exact routes, and evidence
-tests/                       Correctness and runner regressions
+verified_hardware/           Measured profiles, exact routes, manifests, and evidence
+tests/architecture/          Fast structural and registry contract guards
+tests/gpu/                   Real-CUDA policy and kernel smoke checks
+tests/                       Remaining correctness and runner regressions
 results/                     Generated cross-device development results, ignored
 environment/                 Local Windows runtime compatibility hook
 ```

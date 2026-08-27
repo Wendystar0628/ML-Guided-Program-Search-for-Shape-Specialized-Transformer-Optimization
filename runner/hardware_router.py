@@ -13,6 +13,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from runner.candidates import (
+    CapabilityTag,
+    RoutingTag,
+    candidate_spec,
+)
 from runner.contracts import WorkloadCase
 
 _DTYPE_BYTES = {
@@ -21,40 +26,6 @@ _DTYPE_BYTES = {
     "float32": 4,
 }
 
-_CUDA_CANDIDATES = frozenset(
-    {
-        "eager-triton",
-        "compile-default",
-        "compile-reduce-overhead",
-        "compile-max-autotune",
-        "eager-cudagraph",
-        "launch-cudagraph",
-        "balanced-cudagraph",
-        "padding-fused",
-        "padding-packed",
-        "attention-preprocess",
-        "s512-native-softmax",
-        "long-tail-online",
-        "wide-triton-inplace",
-    }
-)
-_TRITON_CANDIDATES = frozenset(
-    {
-        "eager-triton",
-        "padding-fused",
-        "attention-preprocess",
-        "s512-native-softmax",
-        "long-tail-online",
-        "wide-triton-inplace",
-    }
-)
-_GRAPH_CANDIDATES = frozenset(
-    {"eager-cudagraph", "launch-cudagraph", "balanced-cudagraph"}
-)
-_COMPILE_CANDIDATES = frozenset(
-    {"compile-default", "compile-reduce-overhead", "compile-max-autotune"}
-)
-_AUTO_CANDIDATES = frozenset({"auto", "eager-auto"})
 _SOFTMAX_REDUCTION_MIN_SHARE = 0.15
 
 
@@ -240,15 +211,15 @@ def _capability_rejection(
     case: WorkloadCase,
     hardware_profile: Mapping[str, Any],
 ) -> str | None:
-    if candidate_id not in _CUDA_CANDIDATES:
+    spec = candidate_spec(candidate_id)
+    if spec is None:
         return None
-
-    if candidate_id == "eager-triton" and not (
-        case.dtype == "float16"
-        and case.seq_len in {512, 2048}
-        and case.d_model // case.num_heads == 64
-    ):
-        return "combined Triton route does not support this dtype and shape"
+    if CapabilityTag.CUDA not in spec.capability_tags:
+        return (
+            None
+            if spec.applies(case)
+            else f"candidate applies only to {spec.applicability_description}"
+        )
 
     if str(hardware_profile.get("device_type", "")).lower() != "cuda":
         return "CUDA device capability was not established"
@@ -260,7 +231,7 @@ def _capability_rejection(
         return "candidate requires CUDA 11 or newer"
 
     capability = _version_pair(hardware_profile.get("compute_capability"))
-    if candidate_id in _TRITON_CANDIDATES:
+    if CapabilityTag.TRITON in spec.capability_tags:
         if hardware_profile.get("triton_available") is False:
             return "Triton runtime is unavailable"
         if capability is None:
@@ -269,32 +240,41 @@ def _capability_rejection(
             return "Triton route requires compute capability 7.0 or newer"
 
     if (
-        candidate_id == "long-tail-online"
+        spec.minimum_compute_capability is not None
         and capability is not None
-        and capability < (8, 0)
+        and capability < spec.minimum_compute_capability
     ):
-        return "online attention route requires compute capability 8.0 or newer"
+        required = ".".join(str(value) for value in spec.minimum_compute_capability)
+        return f"candidate requires compute capability {required} or newer"
 
     if (
         case.dtype == "bfloat16"
-        and candidate_id in _TRITON_CANDIDATES
+        and CapabilityTag.TRITON in spec.capability_tags
         and hardware_profile.get("bf16_supported") is False
     ):
         return "native BF16 support is unavailable"
 
     if (
         case.dtype == "bfloat16"
-        and candidate_id in _TRITON_CANDIDATES
+        and CapabilityTag.TRITON in spec.capability_tags
         and capability is not None
         and capability < (8, 0)
     ):
         return "native BF16 Triton route requires compute capability 8.0 or newer"
 
     if (
-        candidate_id in _GRAPH_CANDIDATES
+        CapabilityTag.CUDA_GRAPH in spec.capability_tags
         and hardware_profile.get("cuda_graph_available") is False
     ):
         return "CUDA Graph runtime capability is unavailable"
+
+    if not spec.applies(case):
+        return f"candidate applies only to {spec.applicability_description}"
+    if not spec.supports_case_on_hardware(case):
+        description = (
+            spec.hardware_case_support_description or spec.applicability_description
+        )
+        return f"candidate backend supports only {description}"
 
     return None
 
@@ -430,67 +410,69 @@ def _candidate_score(
 ) -> tuple[int, list[str]]:
     score = 0
     reasons: list[str] = []
+    spec = candidate_spec(candidate_id)
+    tags = spec.routing_tags if spec is not None else frozenset()
 
-    if candidate_id in _AUTO_CANDIDATES:
+    if RoutingTag.SAFE_FALLBACK in tags or candidate_id == "auto":
         score += 35
         reasons.append("retained as the safe general fallback")
-    elif candidate_id == "eager-torch":
+    elif RoutingTag.TORCH_CONTROL in tags:
         score += 10
         reasons.append("portable eager control for a new device")
-    elif candidate_id == "eager-reference":
+    elif RoutingTag.REFERENCE_CONTROL in tags:
         score -= 20
         reasons.append("correctness control rather than a preferred optimized route")
-    elif candidate_id == "eager-triton":
+    elif RoutingTag.GENERAL_TRITON in tags:
         score += 12
         reasons.append("general custom-kernel comparison on supported CUDA hardware")
     else:
         reasons.append("eligible project candidate")
 
-    if candidate_id in _GRAPH_CANDIDATES:
+    if RoutingTag.GRAPH in tags:
         score += 85 if signals.bottleneck_class == "launch_underfill" else 15
         reasons.append("reduces repeated CPU and kernel-launch submission")
         if signals.graph_replay_is_cheaper:
             score += 15
             reasons.append("device anchor reports cheaper graph replay than launch")
-        if candidate_id in {"launch-cudagraph", "balanced-cudagraph"}:
+        if RoutingTag.SOLUTION_GRAPH in tags:
             score += 10
             reasons.append("deployable Solution-owned graph route")
-        elif candidate_id == "eager-cudagraph":
+        elif RoutingTag.RUNNER_GRAPH in tags:
             reasons.append("Runner-owned graph control for measuring the graph ceiling")
-    if candidate_id == "balanced-cudagraph" and case.seq_len <= 128:
+    if RoutingTag.BALANCED_GRAPH in tags and case.seq_len <= 128:
         score += 20
         reasons.append("matches the short balanced static-shape family")
 
-    if candidate_id == "compile-reduce-overhead":
+    if RoutingTag.COMPILE_REDUCE_OVERHEAD in tags:
         score += 70 if signals.bottleneck_class == "launch_underfill" else 20
         reasons.append("targets launch and Python overhead for short static shapes")
-    elif candidate_id == "compile-default":
+    elif RoutingTag.COMPILE_DEFAULT in tags:
         score += 45 if case.seq_len <= 128 else 12
         reasons.append("tests compiler fusion without an aggressive autotune search")
-    elif candidate_id == "compile-max-autotune":
+    elif RoutingTag.COMPILE_MAX_AUTOTUNE in tags:
         score += 65 if signals.bottleneck_class == "tensor_compute" else 5
         reasons.append("screens library and compiler choices for GEMM-heavy work")
 
-    if candidate_id == "long-tail-online":
+    if RoutingTag.ATTENTION_ONLINE in tags:
         score += 105 if signals.bottleneck_class == "attention_memory" else 20
         reasons.append("reduces long-sequence score and probability materialization")
         if signals.attention_to_l2 is not None and signals.attention_to_l2 >= 1.0:
             score += 15
             reasons.append("one attention matrix is at least as large as L2")
-    elif candidate_id == "attention-preprocess":
+    elif RoutingTag.ATTENTION_PREPROCESS in tags:
         score += 65 if case.seq_len >= 512 else 20
         reasons.append("fuses attention scale, mask, and promotion traffic")
-    elif candidate_id == "s512-native-softmax":
+    elif RoutingTag.S512_NATIVE_SOFTMAX in tags:
         score += 105 if case.dtype == "float16" and case.seq_len == 512 else 10
         reasons.append("targets the FP16 S512 softmax and conversion boundary")
 
-    if candidate_id == "wide-triton-inplace":
+    if RoutingTag.WIDE_INPLACE in tags:
         score += 105 if signals.bottleneck_class == "tensor_compute" else 55
         reasons.append(
             "keeps tuned GEMMs while removing a wide GELU allocation and write"
         )
 
-    if candidate_id == "padding-packed":
+    if RoutingTag.PADDING_PACKED in tags:
         if case.padding_ratio >= 0.5:
             score += 90
             reasons.append(
@@ -499,7 +481,7 @@ def _candidate_score(
         else:
             score -= 10
             reasons.append("limited padding gives little token-skipping headroom")
-    elif candidate_id == "padding-fused":
+    elif RoutingTag.PADDING_FUSED in tags:
         score += 65 if case.padding_ratio > 0 else 15
         reasons.append(
             "combines residual and padding work without a broad graph rewrite"
@@ -508,12 +490,13 @@ def _candidate_score(
     if signals.bottleneck_class in {
         "attention_memory",
         "memory_bandwidth",
-    } and candidate_id in {"attention-preprocess", "long-tail-online"}:
+    } and tags.intersection(
+        {RoutingTag.ATTENTION_PREPROCESS, RoutingTag.ATTENTION_ONLINE}
+    ):
         score += 20
-    if signals.bottleneck_class == "softmax_reduction" and candidate_id in {
-        "attention-preprocess",
-        "s512-native-softmax",
-    }:
+    if signals.bottleneck_class == "softmax_reduction" and tags.intersection(
+        {RoutingTag.ATTENTION_PREPROCESS, RoutingTag.S512_NATIVE_SOFTMAX}
+    ):
         score += 20
 
     return score, reasons
@@ -572,7 +555,18 @@ def build_routing_plan(
 
     ranked.sort(key=lambda item: (-item[0], item[1]))
     required: list[str] = []
-    fallback = next((item[2] for item in ranked if item[2] in _AUTO_CANDIDATES), None)
+    fallback = next(
+        (
+            item[2]
+            for item in ranked
+            if item[2] == "auto"
+            or (
+                (spec := candidate_spec(item[2])) is not None
+                and RoutingTag.SAFE_FALLBACK in spec.routing_tags
+            )
+        ),
+        None,
+    )
     if fallback is not None:
         required.append(fallback)
     for candidate_id in required_candidate_ids:

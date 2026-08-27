@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-import os
 import platform
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from runner.candidates import (
+    CandidateSpec,
+    candidate_spec,
+    candidate_spec_for_policy,
+    candidate_specs_for_case,
+)
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
@@ -20,95 +24,9 @@ from runner.contracts import (
     solution_implementation_hash,
     utc_now,
 )
-from runner.route_promotion import (
-    DEPLOYABLE_EAGER_POLICIES,
-    select_deployable_winner,
-)
+from runner.route_promotion import select_deployable_winner
+from runner.routing_contracts import workload_route_identity
 from runner.supervisor import run_managed_benchmark
-
-SOLUTION_POLICY_ENV = "TRANSFORMER_OPT_POLICY"
-SOLUTION_POLICIES = (
-    "dispatch",
-    "auto",
-    "reference",
-    "torch",
-    "triton",
-    "preprocess",
-    "s512-native-softmax",
-    "long-pv",
-    "long-tail-online",
-    "wide-epilogue",
-    "wide-triton-inplace",
-    "cuda-graph",
-    "balanced-cuda-graph",
-    "padding",
-    "packed",
-)
-
-
-@dataclass(frozen=True)
-class TuningCandidate:
-    """One bounded combination of model policy and compiler mode."""
-
-    candidate_id: str
-    solution_policy: str
-    compile_solution: bool = False
-    compile_mode: str = "default"
-    cuda_graph_solution: bool = False
-
-
-_EAGER_CANDIDATES = (
-    TuningCandidate("eager-reference", "reference"),
-    TuningCandidate("eager-torch", "torch"),
-    TuningCandidate("eager-auto", "auto"),
-    TuningCandidate("eager-triton", "triton"),
-)
-_COMPILE_DEFAULT = TuningCandidate(
-    "compile-default",
-    "auto",
-    True,
-    "default",
-)
-_COMPILE_REDUCE_OVERHEAD = TuningCandidate(
-    "compile-reduce-overhead",
-    "auto",
-    True,
-    "reduce-overhead",
-)
-_EAGER_CUDAGRAPH = TuningCandidate(
-    "eager-cudagraph",
-    "auto",
-    cuda_graph_solution=True,
-)
-_SOLUTION_CUDAGRAPH = TuningCandidate("launch-cudagraph", "cuda-graph")
-_BALANCED_CUDAGRAPH = TuningCandidate(
-    "balanced-cudagraph",
-    "balanced-cuda-graph",
-)
-_PADDING_FUSION_CANDIDATE = TuningCandidate("padding-fused", "padding")
-_PADDING_PACKED_CANDIDATE = TuningCandidate("padding-packed", "packed")
-_ATTENTION_PREPROCESS_CANDIDATE = TuningCandidate(
-    "attention-preprocess",
-    "preprocess",
-)
-_S512_NATIVE_SOFTMAX_CANDIDATE = TuningCandidate(
-    "s512-native-softmax",
-    "s512-native-softmax",
-)
-_LONG_TAIL_ONLINE_CANDIDATE = TuningCandidate(
-    "long-tail-online",
-    "long-tail-online",
-)
-_WIDE_TRITON_INPLACE_CANDIDATE = TuningCandidate(
-    "wide-triton-inplace",
-    "wide-triton-inplace",
-)
-_WIDE_CANDIDATE = TuningCandidate(
-    "compile-max-autotune",
-    "auto",
-    True,
-    "max-autotune",
-)
 
 _DEVICE_PROFILE_FIELDS = (
     "device_type",
@@ -132,17 +50,6 @@ _ROUTING_PLAN_FIELDS = (
     "selection_reasons",
     "capability_rejections",
     "screening_tuning_ids",
-)
-
-_ROUTE_VISIBLE_CASE_FIELDS = (
-    "dtype",
-    "batch_size",
-    "seq_len",
-    "d_model",
-    "num_heads",
-    "ffn_dim",
-    "num_layers",
-    "causal",
 )
 
 
@@ -177,116 +84,29 @@ def _installed_triton_version() -> str:
     return str(version) if version is not None else "unknown"
 
 
-@contextmanager
-def solution_policy(policy: str) -> Iterator[None]:
-    """Temporarily select a Solution execution policy for a serial worker run."""
-
-    if policy not in SOLUTION_POLICIES:
-        raise ContractError(f"unsupported solution policy: {policy}")
-    previous = os.environ.get(SOLUTION_POLICY_ENV)
-    os.environ[SOLUTION_POLICY_ENV] = policy
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop(SOLUTION_POLICY_ENV, None)
-        else:
-            os.environ[SOLUTION_POLICY_ENV] = previous
-
-
-def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
+def candidates_for_case(case: WorkloadCase) -> tuple[CandidateSpec, ...]:
     """Return the small candidate set that is meaningful for one workload case."""
 
-    candidates = list(_EAGER_CANDIDATES)
-    if case.seq_len <= 128:
-        candidates.extend((_COMPILE_DEFAULT, _COMPILE_REDUCE_OVERHEAD))
-    if (
-        case.batch_size == 8
-        and case.seq_len == 128
-        and case.d_model == 512
-        and case.num_heads == 8
-        and case.ffn_dim == 2048
-        and case.num_layers == 6
-        and case.dtype == "float16"
-        and not case.causal
-        and case.padding_ratio == 0
-    ):
-        candidates.append(_BALANCED_CUDAGRAPH)
-    if case.dtype == "float16" and (case.seq_len, case.d_model // case.num_heads) in {
-        (64, 32),
-        (2048, 64),
-    }:
-        candidates.append(_ATTENTION_PREPROCESS_CANDIDATE)
-    if (
-        case.batch_size == 8
-        and case.seq_len == 512
-        and case.d_model == 512
-        and case.num_heads == 8
-        and case.ffn_dim == 2048
-        and case.num_layers == 4
-        and case.dtype == "float16"
-    ):
-        candidates.append(_S512_NATIVE_SOFTMAX_CANDIDATE)
-    if (
-        case.batch_size == 1
-        and case.seq_len == 2048
-        and case.d_model == 512
-        and case.num_heads == 8
-        and case.dtype == "float16"
-    ):
-        candidates.append(_LONG_TAIL_ONLINE_CANDIDATE)
-    if case.padding_ratio > 0 or case.case_id.startswith("mask_s512_"):
-        candidates.extend((_PADDING_FUSION_CANDIDATE, _PADDING_PACKED_CANDIDATE))
-    elif (
-        case.batch_size == 1
-        and case.seq_len == 64
-        and case.d_model == 256
-        and case.num_heads == 8
-        and case.ffn_dim == 1024
-        and case.dtype == "float16"
-    ):
-        candidates.extend(
-            (
-                _PADDING_FUSION_CANDIDATE,
-                _EAGER_CUDAGRAPH,
-                _SOLUTION_CUDAGRAPH,
-            )
-        )
-    if case.d_model >= 1024 or case.ffn_dim >= 4096:
-        if _COMPILE_DEFAULT not in candidates:
-            candidates.append(_COMPILE_DEFAULT)
-        candidates.append(_WIDE_CANDIDATE)
-        if (
-            case.batch_size == 16
-            and case.seq_len == 256
-            and case.d_model == 1024
-            and case.num_heads == 8
-            and case.ffn_dim == 4096
-            and case.num_layers == 6
-            and case.dtype == "bfloat16"
-            and not case.causal
-        ):
-            candidates.extend((_WIDE_TRITON_INPLACE_CANDIDATE,))
-    return tuple(candidates)
+    if not isinstance(case, WorkloadCase):
+        raise TypeError("case must be a WorkloadCase")
+    case.validate()
+    return candidate_specs_for_case(case)
 
 
-def is_deployable_candidate(candidate: TuningCandidate) -> bool:
+def is_deployable_candidate(candidate: CandidateSpec) -> bool:
     """Return whether a candidate can be represented by the static dispatcher."""
 
-    return (
-        not candidate.compile_solution
-        and not candidate.cuda_graph_solution
-        and candidate.solution_policy in DEPLOYABLE_EAGER_POLICIES
-    )
+    spec = candidate_spec(candidate.candidate_id)
+    return bool(spec is not None and spec.deployable and spec == candidate)
 
 
 def _deployable_candidates_by_policy(
     case: WorkloadCase,
     *,
     rejected_ids: set[str] | None = None,
-) -> dict[str, TuningCandidate]:
+) -> dict[str, CandidateSpec]:
     rejected = rejected_ids or set()
-    by_policy: dict[str, TuningCandidate] = {}
+    by_policy: dict[str, CandidateSpec] = {}
     for candidate in candidates_for_case(case):
         if not is_deployable_candidate(candidate) or candidate.candidate_id in rejected:
             continue
@@ -302,7 +122,7 @@ def _deployable_candidates_by_policy(
 def calibration_route_key(case: WorkloadCase) -> tuple[Any, ...]:
     """Return the workload fields visible to one calibrated dispatch route."""
 
-    return tuple(getattr(case, field) for field in _ROUTE_VISIBLE_CASE_FIELDS)
+    return workload_route_identity(case)
 
 
 def align_shared_smoke_plans(
@@ -324,7 +144,7 @@ def align_shared_smoke_plans(
     for indices in groups.values():
         if len(indices) == 1:
             continue
-        policy_candidates: list[dict[str, TuningCandidate]] = []
+        policy_candidates: list[dict[str, CandidateSpec]] = []
         ordered_policies: list[list[str]] = []
         for index in indices:
             case = cases[index]
@@ -338,9 +158,8 @@ def align_shared_smoke_plans(
                 candidate.candidate_id: candidate for candidate in by_policy.values()
             }
             raw_order = aligned[index].get("candidate_order")
-            if (
-                not isinstance(raw_order, Sequence)
-                or isinstance(raw_order, (str, bytes))
+            if not isinstance(raw_order, Sequence) or isinstance(
+                raw_order, (str, bytes)
             ):
                 raise ContractError(f"Smoke plan for {case.case_id} has no order")
             order: list[str] = []
@@ -475,10 +294,7 @@ def build_formal_candidate_plans(
 ) -> list[dict[str, Any]]:
     """Build measured Formal controls and one shared deployable challenger."""
 
-    if (
-        len(cases) != len(smoke_summaries)
-        or len(cases) != len(incumbent_candidate_ids)
-    ):
+    if len(cases) != len(smoke_summaries) or len(cases) != len(incumbent_candidate_ids):
         raise ContractError("Formal finalist inputs must have the same length")
     implementation_hashes = {
         summary.get("source_implementation_sha256") for summary in smoke_summaries
@@ -508,7 +324,7 @@ def build_formal_candidate_plans(
 
     for indices in groups.values():
         incumbent_policies: list[str] = []
-        candidate_maps: list[dict[str, TuningCandidate]] = []
+        candidate_maps: list[dict[str, CandidateSpec]] = []
         for index in indices:
             candidates = _deployable_candidates_by_policy(cases[index])
             candidate_maps.append(candidates)
@@ -622,20 +438,14 @@ def deployable_candidate_id_for_policy(
 ) -> str | None:
     """Map one deployed policy back to its eager calibration candidate."""
 
-    for candidate in candidates_for_case(case):
-        if (
-            candidate.solution_policy == policy
-            and not candidate.compile_solution
-            and not candidate.cuda_graph_solution
-        ):
-            return candidate.candidate_id
-    return None
+    spec = candidate_spec_for_policy(case, policy, deployable_only=True)
+    return spec.candidate_id if spec is not None else None
 
 
 def select_candidates(
     case: WorkloadCase,
     requested_ids: Sequence[str],
-) -> tuple[TuningCandidate, ...]:
+) -> tuple[CandidateSpec, ...]:
     """Select explicit candidates while rejecting names that do not fit the case."""
 
     available = {item.candidate_id: item for item in candidates_for_case(case)}
@@ -652,7 +462,7 @@ def select_candidates(
 
 def _candidate_protocol(
     base: MeasurementProtocol,
-    candidate: TuningCandidate,
+    candidate: CandidateSpec,
 ) -> MeasurementProtocol:
     protocol = replace(
         base,
@@ -666,7 +476,7 @@ def _candidate_protocol(
 
 
 def _observation(
-    candidate: TuningCandidate,
+    candidate: CandidateSpec,
     result: dict[str, Any],
     result_path: Path,
 ) -> dict[str, Any]:
@@ -676,89 +486,13 @@ def _observation(
     correctness = result.get("correctness")
     execution_path = result.get("execution_path")
     source = result.get("source")
-    requested_policy = (
-        execution_path.get("requested_policy")
-        if isinstance(execution_path, dict)
-        else None
+    spec = candidate_spec(candidate.candidate_id)
+    policy_applied = bool(
+        spec is not None
+        and spec == candidate
+        and isinstance(execution_path, Mapping)
+        and spec.evidence_matches(execution_path)
     )
-    selected_policy = (
-        execution_path.get("selected_policy")
-        if isinstance(execution_path, dict)
-        else None
-    )
-    selected_matches = selected_policy == candidate.solution_policy
-    if candidate.solution_policy == "triton":
-        selected_matches = selected_policy in {"triton", "triton_partial"}
-    route_matches = True
-    if isinstance(execution_path, dict):
-        if candidate.solution_policy == "torch":
-            route_matches = (
-                execution_path.get("resolved_qkv_layout")
-                == "torch_three_contiguous_copies"
-            )
-        elif candidate.solution_policy == "padding":
-            route_matches = (
-                execution_path.get("block_fusion")
-                == "triton_residual_add_padding_when_masked"
-            )
-        elif candidate.solution_policy == "packed":
-            route_matches = (
-                execution_path.get("padding_route") == "packed_valid_token_ffn"
-            )
-        elif candidate.solution_policy == "reference":
-            route_matches = (
-                execution_path.get("resolved_attention") == "explicit_reference_order"
-            )
-        elif candidate.solution_policy == "preprocess":
-            route_matches = (
-                execution_path.get("resolved_attention")
-                == "explicit_qk_triton_preprocess_native_softmax_pv"
-            )
-        elif candidate.solution_policy == "s512-native-softmax":
-            route_matches = (
-                execution_path.get("resolved_attention")
-                == "explicit_qk_triton_scale_mask_native_half_softmax_pv"
-            )
-        elif candidate.solution_policy == "long-pv":
-            route_matches = (
-                execution_path.get("resolved_attention")
-                == "explicit_qk_triton_preprocess_native_softmax_triton_pv"
-            )
-        elif candidate.solution_policy == "long-tail-online":
-            route_matches = (
-                execution_path.get("resolved_attention")
-                == "three_explicit_layers_tail_online_attention"
-            )
-        elif candidate.solution_policy == "wide-epilogue":
-            route_matches = (
-                execution_path.get("resolved_ffn") == "cublaslt_tanh_gelu_epilogue"
-            )
-        elif candidate.solution_policy == "wide-triton-inplace":
-            route_matches = (
-                execution_path.get("resolved_qkv_layout") == "triton_single_pass"
-                and execution_path.get("resolved_ffn") == "torch_inplace_exact_gelu"
-            )
-        elif candidate.solution_policy == "cuda-graph":
-            route_matches = (
-                execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph"
-            )
-        elif candidate.solution_policy == "balanced-cuda-graph":
-            route_matches = (
-                execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph"
-                and execution_path.get("shape_route")
-                == "balanced_fp16_eager_cuda_graph"
-            )
-    policy_applied = (
-        requested_policy == candidate.solution_policy
-        and selected_matches
-        and route_matches
-    )
-    if candidate.cuda_graph_solution:
-        policy_applied = (
-            policy_applied
-            and isinstance(execution_path, dict)
-            and (execution_path.get("runtime_wrapper") == "eager_cuda_graph")
-        )
     baseline_rounds = (
         baseline.get("round_medians_ms") if isinstance(baseline, dict) else None
     )
@@ -852,19 +586,19 @@ def run_tuning_case(
     candidates = select_candidates(case, requested_candidates)
     for candidate in candidates:
         protocol = _candidate_protocol(base_protocol, candidate)
-        with solution_policy(candidate.solution_policy):
-            result, result_path = run_managed_benchmark(
-                project_root,
-                workload_set_id=workload_set_id,
-                case=case,
-                protocol=protocol,
-                device=device,
-                target="solution",
-                workload_sha256=workload_sha256,
-                sweep_id=tuning_id,
-                tuning_id=tuning_id,
-                candidate_id=candidate.candidate_id,
-            )
+        result, result_path = run_managed_benchmark(
+            project_root,
+            workload_set_id=workload_set_id,
+            case=case,
+            protocol=protocol,
+            device=device,
+            target="solution",
+            workload_sha256=workload_sha256,
+            sweep_id=tuning_id,
+            tuning_id=tuning_id,
+            candidate_id=candidate.candidate_id,
+            solution_policy=candidate.solution_policy,
+        )
         observations.append(_observation(candidate, result, result_path))
         environment = result.get("environment")
         if compact_device_profile is None and isinstance(environment, dict):
