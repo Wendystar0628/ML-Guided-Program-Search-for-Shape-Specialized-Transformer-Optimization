@@ -96,7 +96,9 @@ python -m runner benchmark --preset smoke --case-id balanced_s128_fp16
 python -m runner benchmark --preset smoke
 ```
 
-Screen selected candidates when iterating on one mechanism:
+Measure an explicit candidate set when iterating on one mechanism. `tune`
+requires at least one `--candidate`; automatic candidate planning and ranking
+belong to `calibrate`:
 
 ```powershell
 python -m runner tune --case-id mask_s512_padding_fp16 `
@@ -104,8 +106,9 @@ python -m runner tune --case-id mask_s512_padding_fp16 `
   --candidate padding-packed --preset smoke
 ```
 
-Use `tune` for focused experiments. It records measurements but never deploys a
-route, even with the formal preset:
+Use `tune` only for focused, non-deploying experiments over the candidates in
+the command. It records measurements but never deploys a route, even with the
+formal preset:
 
 ```powershell
 python -m runner tune --case-id launch_s64_fp16 `
@@ -178,10 +181,11 @@ The timing is explicit:
 
 The routing probe deliberately skips the broader SDPA backend diagnostic
 because that output is not consumed by the current cost model. The standalone
-`probe` command keeps diagnostic mode for investigations. Explicitly supplied
-`tune --candidate` lists also skip the routing probe because the user has
-already chosen the candidates, but they still run the complete correctness and
-performance measurement.
+`probe` command keeps diagnostic mode for investigations. `tune` requires an
+explicit `--candidate` list and skips the routing probe because the user has
+already chosen the candidates, but it still runs the complete correctness and
+performance measurement. Automatic candidate ordering is available only
+through `calibrate`.
 
 Candidate measurement remains authoritative. `calibrate` and `tune` reuse the
 same fresh-worker comparator and full-forward timing protocol as `benchmark`.

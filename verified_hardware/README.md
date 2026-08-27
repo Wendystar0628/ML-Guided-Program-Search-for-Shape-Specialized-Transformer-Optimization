@@ -65,9 +65,11 @@ keeps the measured incumbent, while a new exact key without a qualified
 specialized winner records the formally measured `auto` decision.
 
 Smoke calibration, plan-only calibration, and `tune` are non-deploying
-workflows. The manual `promote` command exists only for replaying a compatible
-historical formal summary or recovering from an interrupted deployment; it is
-not part of normal calibration.
+workflows. `tune` measures only an explicitly supplied `--candidate` list;
+automatic candidate planning and ranking belong to `calibrate`. The manual
+`promote` command exists only for replaying a compatible historical formal
+summary or recovering from an interrupted deployment; it is not part of normal
+calibration.
 
 After automatic publication, use the package launcher to reproduce the checked
 routes and retain one compact formal reference summary when needed.

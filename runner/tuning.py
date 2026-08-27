@@ -634,13 +634,13 @@ def deployable_candidate_id_for_policy(
 
 def select_candidates(
     case: WorkloadCase,
-    requested_ids: Sequence[str] | None,
+    requested_ids: Sequence[str],
 ) -> tuple[TuningCandidate, ...]:
     """Select explicit candidates while rejecting names that do not fit the case."""
 
     available = {item.candidate_id: item for item in candidates_for_case(case)}
     if not requested_ids:
-        return tuple(available.values())
+        raise ContractError("at least one explicit tuning candidate is required")
     unknown = sorted(set(requested_ids) - set(available))
     if unknown:
         raise ContractError(
@@ -836,7 +836,7 @@ def run_tuning_case(
     case: WorkloadCase,
     base_protocol: MeasurementProtocol,
     device: str,
-    requested_candidates: Sequence[str] | None = None,
+    requested_candidates: Sequence[str],
     routing_plan: Mapping[str, Any] | None = None,
     device_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -947,11 +947,7 @@ def run_tuning_case(
             _compact_routing_plan(routing_plan)
             if routing_plan is not None
             else {
-                "source": (
-                    "explicit_candidates"
-                    if requested_candidates is not None
-                    else "fixed_candidate_set"
-                ),
+                "source": "explicit_candidates",
                 "candidate_order": [item.candidate_id for item in candidates],
             }
         ),

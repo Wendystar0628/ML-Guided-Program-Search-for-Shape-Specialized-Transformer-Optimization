@@ -47,7 +47,6 @@ from runner.tuning import (
 from solution.dispatch import load_route_table, make_route_key, resolve_route_result
 
 DEFAULT_WORKLOAD_SET = "transformer_core_v1"
-DEFAULT_TUNE_CANDIDATE_LIMIT = 4
 DEFAULT_CALIBRATION_SMOKE_LIMIT = 3
 
 
@@ -162,28 +161,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     tune = subparsers.add_parser(
         "tune",
-        help="screen a bounded set of optimization candidates serially",
+        help="measure explicitly selected optimization candidates serially",
     )
     tune.add_argument("--workload-set", default=DEFAULT_WORKLOAD_SET)
     tune.add_argument(
         "--case-id",
         action="append",
         required=True,
-        help="case to screen; repeat to run more than one case",
+        help="case to measure; repeat to run more than one case",
     )
     tune.add_argument(
         "--candidate",
         action="append",
+        required=True,
         help=(
-            "candidate to measure in the supplied order; omit to probe once and "
-            "build a coarse candidate plan"
+            "candidate to measure in the supplied order; repeat to compare "
+            "explicit experiment candidates"
         ),
-    )
-    tune.add_argument(
-        "--candidate-limit",
-        type=_positive_int,
-        default=DEFAULT_TUNE_CANDIDATE_LIMIT,
-        help="maximum hardware-ranked candidates, including eager-auto",
     )
     tune.add_argument("--device", default="cuda:0")
     tune.add_argument("--preset", choices=("smoke", "formal"), default="smoke")
@@ -780,40 +774,23 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
         allow_tf32=args.allow_tf32,
         timeout_seconds=args.timeout,
     )
-    hardware_profile: dict[str, Any] | None = None
-    if args.candidate is None:
-        probe_context, probe_exit_code = _probe_for_routing(args, project_root)
-        if probe_context is None:
-            return probe_exit_code
-        hardware_profile = probe_context.hardware_profile
-
     summaries: list[dict[str, Any]] = []
     for case_id in args.case_id:
         case = select_workload_case(workload_set, case_id)
         available = {item.candidate_id for item in candidates_for_case(case)}
-        if args.candidate:
-            unavailable = sorted(set(args.candidate) - available)
-            if unavailable:
-                raise ContractError(
-                    f"candidates are not available for {case_id}: {unavailable}; "
-                    f"available={sorted(available)}"
-                )
-            requested_candidates = list(args.candidate)
-            routing_plan: dict[str, Any] = {
-                "source": "explicit_candidates",
-                "decision_scope": "candidate_order_only",
-                "requires_full_workload_measurement": True,
-                "candidate_order": requested_candidates,
-            }
-        else:
-            assert hardware_profile is not None
-            routing_plan = _routing_plan_for_case(
-                case,
-                hardware_profile,
-                args.candidate_limit,
+        unavailable = sorted(set(args.candidate) - available)
+        if unavailable:
+            raise ContractError(
+                f"candidates are not available for {case_id}: {unavailable}; "
+                f"available={sorted(available)}"
             )
-            requested_candidates = routing_plan["candidate_order"]
-            _print_routing_plan(case_id, routing_plan)
+        requested_candidates = list(args.candidate)
+        routing_plan: dict[str, Any] = {
+            "source": "explicit_candidates",
+            "decision_scope": "candidate_order_only",
+            "requires_full_workload_measurement": True,
+            "candidate_order": requested_candidates,
+        }
         print(f"\n=== Full-workload candidate measurement: {case_id} ===")
         summary = run_tuning_case(
             project_root,
@@ -824,7 +801,7 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
             device=args.device,
             requested_candidates=requested_candidates,
             routing_plan=routing_plan,
-            device_profile=hardware_profile,
+            device_profile=None,
         )
         summaries.append(summary)
         _print_tuning_summary(summary)

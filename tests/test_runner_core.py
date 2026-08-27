@@ -411,11 +411,19 @@ def test_cli_parses_probe_benchmark_profile_and_tune() -> None:
     assert profile.case_id == "attention_s2048_fp16"
     assert profile.solution_policy == "dispatch"
 
-    tune = parser.parse_args(["tune", "--case-id", "launch_s64_fp16"])
+    tune = parser.parse_args(
+        [
+            "tune",
+            "--case-id",
+            "launch_s64_fp16",
+            "--candidate",
+            "eager-auto",
+        ]
+    )
     assert tune.command == "tune"
     assert tune.case_id == ["launch_s64_fp16"]
-    assert tune.candidate is None
-    assert tune.candidate_limit == 4
+    assert tune.candidate == ["eager-auto"]
+    assert not hasattr(tune, "candidate_limit")
     assert tune.preset == "smoke"
 
     default_calibrate = parser.parse_args(["calibrate"])
@@ -637,94 +645,26 @@ def _staged_tuning_summary(
     }
 
 
-def test_automatic_tune_probes_once_and_uses_ranked_candidates(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    probe_calls: list[dict[str, Any]] = []
-    plan_calls: list[dict[str, Any]] = []
-    tuning_calls: list[dict[str, Any]] = []
+def test_tune_requires_explicit_candidates_and_has_no_candidate_limit() -> None:
+    parser = runner_cli.build_parser()
 
-    def fake_probe(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], Path]:
-        del args
-        probe_calls.append(kwargs)
-        return _routing_probe_result(), tmp_path / "probe.json"
+    with pytest.raises(SystemExit) as missing_candidate:
+        parser.parse_args(["tune", "--case-id", "balanced_s128_fp16"])
+    assert missing_candidate.value.code == 2
 
-    def fake_plan(
-        case: WorkloadCase,
-        hardware_profile: dict[str, Any],
-        candidate_ids: tuple[str, ...],
-        *,
-        limit: int,
-    ) -> dict[str, Any]:
-        plan_calls.append(
-            {
-                "case_id": case.case_id,
-                "profile": hardware_profile,
-                "candidate_ids": candidate_ids,
-                "limit": limit,
-            }
+    with pytest.raises(SystemExit) as removed_candidate_limit:
+        parser.parse_args(
+            [
+                "tune",
+                "--case-id",
+                "balanced_s128_fp16",
+                "--candidate",
+                "eager-auto",
+                "--candidate-limit",
+                "2",
+            ]
         )
-        assert "balanced-cudagraph" in candidate_ids
-        return {
-            "source": "hardware_cost_model",
-            "bottleneck_class": "balanced",
-            "workload_analysis": {"case_id": case.case_id},
-            "candidate_order": ["balanced-cudagraph", "eager-auto"],
-            "selection_reasons": {},
-            "capability_rejections": {},
-        }
-
-    def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        del args
-        tuning_calls.append(kwargs)
-        return _successful_tuning_summary(
-            kwargs["case"].case_id,
-            kwargs["requested_candidates"],
-            tmp_path,
-        )
-
-    monkeypatch.setattr(runner_cli, "run_managed_probe", fake_probe)
-    monkeypatch.setattr(runner_cli, "build_routing_plan", fake_plan)
-    monkeypatch.setattr(runner_cli, "run_tuning_case", fake_tuning)
-    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
-    monkeypatch.setattr(runner_cli, "_print_tuning_summary", lambda *args: None)
-    monkeypatch.setattr(runner_cli, "_print_routing_plan", lambda *args: None)
-
-    exit_code = runner_cli.main(
-        [
-            "tune",
-            "--case-id",
-            "balanced_s128_fp16",
-            "--candidate-limit",
-            "2",
-            "--matmul-precision",
-            "highest",
-            "--no-allow-tf32",
-        ]
-    )
-
-    assert exit_code == 0
-    assert len(probe_calls) == 1
-    assert probe_calls[0]["timeout_seconds"] == 30.0
-    assert probe_calls[0]["matmul_precision"] == "highest"
-    assert probe_calls[0]["allow_tf32"] is False
-    assert probe_calls[0]["probe_mode"] == "routing"
-    assert len(plan_calls) == 1
-    assert plan_calls[0]["limit"] == 2
-    assert len(tuning_calls) == 1
-    assert tuning_calls[0]["requested_candidates"] == [
-        "balanced-cudagraph",
-        "eager-auto",
-    ]
-    assert tuning_calls[0]["routing_plan"]["source"] == "hardware_cost_model"
-    assert tuning_calls[0]["routing_plan"]["decision_scope"] == (
-        "candidate_order_only"
-    )
-    assert tuning_calls[0]["routing_plan"]["requires_full_workload_measurement"]
-    assert tuning_calls[0]["device_profile"]["device_name"] == "fixture-gpu"
-    assert tuning_calls[0]["base_protocol"].matmul_precision == "highest"
-    assert tuning_calls[0]["base_protocol"].allow_tf32 is False
+    assert removed_candidate_limit.value.code == 2
 
 
 def test_explicit_tune_preserves_order_without_a_probe(
@@ -737,6 +677,10 @@ def test_explicit_tune_preserves_order_without_a_probe(
         del args, kwargs
         raise AssertionError("explicit tuning must not run a hardware probe")
 
+    def unexpected_plan(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args, kwargs
+        raise AssertionError("explicit tuning must not build a routing plan")
+
     def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
         del args
         tuning_calls.append(kwargs)
@@ -747,6 +691,7 @@ def test_explicit_tune_preserves_order_without_a_probe(
         )
 
     monkeypatch.setattr(runner_cli, "run_managed_probe", unexpected_probe)
+    monkeypatch.setattr(runner_cli, "build_routing_plan", unexpected_plan)
     monkeypatch.setattr(runner_cli, "run_tuning_case", fake_tuning)
     monkeypatch.setattr(runner_cli, "_print_tuning_summary", lambda *args: None)
 
@@ -759,6 +704,11 @@ def test_explicit_tune_preserves_order_without_a_probe(
             "eager-torch",
             "--candidate",
             "eager-auto",
+            "--matmul-precision",
+            "highest",
+            "--no-allow-tf32",
+            "--timeout",
+            "42",
         ]
     )
 
@@ -767,6 +717,10 @@ def test_explicit_tune_preserves_order_without_a_probe(
         "eager-torch",
         "eager-auto",
     ]
+    assert tuning_calls[0]["device"] == "cuda:0"
+    assert tuning_calls[0]["base_protocol"].matmul_precision == "highest"
+    assert tuning_calls[0]["base_protocol"].allow_tf32 is False
+    assert tuning_calls[0]["base_protocol"].timeout_seconds == 42.0
     assert tuning_calls[0]["routing_plan"] == {
         "source": "explicit_candidates",
         "decision_scope": "candidate_order_only",

@@ -516,6 +516,11 @@ def test_select_candidates_rejects_a_route_that_does_not_fit_the_case() -> None:
         tuning.select_candidates(_case(), ("padding-packed",))
 
 
+def test_select_candidates_requires_an_explicit_candidate() -> None:
+    with pytest.raises(ContractError, match="at least one explicit"):
+        tuning.select_candidates(_case(), ())
+
+
 def test_select_candidates_preserves_explicit_order() -> None:
     selected = tuning.select_candidates(
         _case(),
