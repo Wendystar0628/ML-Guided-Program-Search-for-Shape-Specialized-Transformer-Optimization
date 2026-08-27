@@ -30,6 +30,7 @@ from runner.routing_contracts import (
 from solution.dispatch import (
     HARDWARE_ROUTE_FIELDS,
     ROUTE_FIELDS,
+    SCHEMA_VERSION,
     load_verified_bundle,
     resolve_route,
     validate_bundle_manifest,
@@ -38,7 +39,6 @@ from solution.dispatch import (
 )
 
 TUNING_SCHEMA_VERSION = 1
-ROUTE_SCHEMA_VERSION = 2
 DEFAULT_ROUTE_POLICY = "auto"
 MINIMUM_ROUTE_GAIN = 1.02
 _FORMAL_MINIMUM_COUNTS = {
@@ -735,7 +735,7 @@ def build_promoted_route_document(
     match = _route_match(summary)
     if existing is None:
         document: dict[str, Any] = {
-            "schema_version": ROUTE_SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "default_policy": DEFAULT_ROUTE_POLICY,
             "routes": [],
         }
@@ -792,22 +792,6 @@ def build_promoted_route_document(
 
     policy = str(deployment["solution_policy"])
     return _upsert_exact_route(document, match, policy), deployment
-
-
-def promote_tuning_summary(
-    project_root: Path,
-    summary: Mapping[str, Any],
-    *,
-    route_path: Path | None = None,
-) -> tuple[dict[str, Any], dict[str, Any], Path]:
-    """Atomically publish a formally screened route."""
-
-    document, winners, destination = promote_tuning_summaries(
-        project_root,
-        [summary],
-        route_path=route_path,
-    )
-    return document, winners[0], destination
 
 
 def _summary_case_id(summary: Mapping[str, Any]) -> str:
@@ -1023,7 +1007,7 @@ def promote_tuning_summaries(
         copy.deepcopy(dict(existing))
         if existing is not None
         else {
-            "schema_version": ROUTE_SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "default_policy": DEFAULT_ROUTE_POLICY,
             "routes": [],
         }
@@ -1103,13 +1087,11 @@ __all__ = [
     "DEFAULT_ROUTE_POLICY",
     "DEPLOYABLE_EAGER_POLICIES",
     "MINIMUM_ROUTE_GAIN",
-    "ROUTE_SCHEMA_VERSION",
     "TUNING_SCHEMA_VERSION",
     "auto_promote_calibration",
     "build_promoted_route_document",
     "find_matching_verified_route",
     "promote_tuning_summaries",
-    "promote_tuning_summary",
     "select_deployable_winner",
     "validate_promotion_case_set",
     "verified_profile_from_probe_result",

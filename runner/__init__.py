@@ -1,3 +1,1 @@
-"""Minimal measurement loop for performance development."""
-
-__version__ = "0.3.0"
+"""Benchmark, tuning, and hardware-aware routing package."""

@@ -252,32 +252,6 @@ class WorkerRequest:
 
 
 @dataclass(frozen=True)
-class CorrectnessSummary:
-    passed: bool
-    trial_count: int
-    failed_elements: int
-    max_abs_error: float
-
-    @classmethod
-    def from_success(
-        cls,
-        value: Any,
-        *,
-        expected_trials: Any,
-    ) -> CorrectnessSummary:
-        error = validate_correctness(value, expected_trials=expected_trials)
-        if error is not None:
-            raise ContractError(error)
-        assert isinstance(value, Mapping)
-        return cls(
-            passed=True,
-            trial_count=int(value["trial_count"]),
-            failed_elements=int(value["failed_elements"]),
-            max_abs_error=float(value["max_abs_error"]),
-        )
-
-
-@dataclass(frozen=True)
 class TimingStats:
     median_ms: float
     p90_ms: float

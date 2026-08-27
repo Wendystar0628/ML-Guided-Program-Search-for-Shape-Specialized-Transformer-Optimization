@@ -57,14 +57,6 @@ class PolicySpec:
                 f"unsupported tail attention policy: {self.tail_attention}"
             )
 
-    def attention_for_layer(self, layer_index: int, layer_count: int) -> str:
-        """Return the requested attention implementation for one layer."""
-
-        if self.tail_attention is not None and layer_index == layer_count - 1:
-            return self.tail_attention
-        return self.attention
-
-
 _POLICY_SPECS = {
     "auto": PolicySpec("auto"),
     "reference": PolicySpec(

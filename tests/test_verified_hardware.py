@@ -14,6 +14,7 @@ from runner import verified_hardware as verified
 from runner.contracts import solution_implementation_hash
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+WORKLOAD_SET_ID = "transformer_core_v1"
 
 IDENTITY = {
     "gpu": {
@@ -61,7 +62,7 @@ def _case(case_id: str, *, sequence_length: int) -> dict[str, Any]:
 def _workload_document() -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "workload_set_id": verified.WORKLOAD_SET_ID,
+        "workload_set_id": WORKLOAD_SET_ID,
         "groups": [
             {
                 "group_id": "fixture",
@@ -153,13 +154,13 @@ def _write_manifest(
     if not transformer.exists():
         transformer.write_text("VALUE = 1\n", encoding="utf-8")
     workload_path = (
-        paths.project_root / "runner" / "workloads" / f"{verified.WORKLOAD_SET_ID}.json"
+        paths.project_root / "runner" / "workloads" / f"{WORKLOAD_SET_ID}.json"
     )
     _write_json(workload_path, workload_document)
     _write_json(paths.routes, routes)
     workload_set = verified.load_workload_set(
         paths.project_root,
-        verified.WORKLOAD_SET_ID,
+        WORKLOAD_SET_ID,
     )
     implementation_hash = solution_implementation_hash(solution_root)
     protocol = {"preset": "formal"}
@@ -168,7 +169,7 @@ def _write_manifest(
         {
             "schema_version": 1,
             "workload_set": {
-                "set_id": verified.WORKLOAD_SET_ID,
+                "set_id": WORKLOAD_SET_ID,
                 "sha256": workload_set.sha256,
             },
             "solution": {"implementation_sha256": implementation_hash},
@@ -207,7 +208,7 @@ def _benchmark_result(
         "target": "solution",
         "outcome": "success",
         "workload": {
-            "set_id": verified.WORKLOAD_SET_ID,
+            "set_id": WORKLOAD_SET_ID,
             "sha256": workload_sha256,
             "case": case,
         },
@@ -290,7 +291,7 @@ def test_build_benchmark_command_uses_the_shared_runner_and_local_results(
     )
 
     assert command[:4] == [verified.sys.executable, "-m", "runner", "benchmark"]
-    assert command[command.index("--workload-set") + 1] == verified.WORKLOAD_SET_ID
+    assert command[command.index("--workload-set") + 1] == WORKLOAD_SET_ID
     assert command[command.index("--device") + 1] == "cuda:1"
     assert command[command.index("--preset") + 1] == "smoke"
     assert command[command.index("--timeout") + 1] == "45"
@@ -306,7 +307,7 @@ def test_run_verified_attributes_routes_and_writes_compact_summary(
         paths.project_root
         / "runner"
         / "workloads"
-        / f"{verified.WORKLOAD_SET_ID}.json",
+        / f"{WORKLOAD_SET_ID}.json",
         workload_document,
     )
     _write_json(paths.profile, _profile())
@@ -327,9 +328,9 @@ def test_run_verified_attributes_routes_and_writes_compact_summary(
 
         workload_set = verified.load_workload_set(
             paths.project_root,
-            verified.WORKLOAD_SET_ID,
+            WORKLOAD_SET_ID,
         )
-        digest = verified.route_table_sha256(paths.routes)
+        digest = hashlib.sha256(paths.routes.read_bytes()).hexdigest()
         source = verified._portable_source(paths.routes, paths.project_root)
         for index, case in enumerate(workload_document["ordered_cases"]):
             policy, origin = verified._expected_route(_routes(), case, IDENTITY)
@@ -398,12 +399,12 @@ def test_verified_workload_rejects_a_missing_exact_route(tmp_path: Path) -> None
         paths.project_root
         / "runner"
         / "workloads"
-        / f"{verified.WORKLOAD_SET_ID}.json",
+        / f"{WORKLOAD_SET_ID}.json",
         _workload_document(),
     )
     workload_set = verified.load_workload_set(
         paths.project_root,
-        verified.WORKLOAD_SET_ID,
+        WORKLOAD_SET_ID,
     )
     routes = _routes()
     routes["routes"] = routes["routes"][:1]
@@ -422,12 +423,12 @@ def test_verified_workload_rejects_a_broad_route(tmp_path: Path) -> None:
         paths.project_root
         / "runner"
         / "workloads"
-        / f"{verified.WORKLOAD_SET_ID}.json",
+        / f"{WORKLOAD_SET_ID}.json",
         _workload_document(),
     )
     workload_set = verified.load_workload_set(
         paths.project_root,
-        verified.WORKLOAD_SET_ID,
+        WORKLOAD_SET_ID,
     )
     routes = {
         "schema_version": 2,
@@ -452,11 +453,11 @@ def test_checked_formal_reference_matches_the_current_bundle() -> None:
     profile = json.loads((bundle / "profile.json").read_text(encoding="utf-8"))
     workload_set = verified.load_workload_set(
         PROJECT_ROOT,
-        verified.WORKLOAD_SET_ID,
+        WORKLOAD_SET_ID,
     )
 
     assert reference["schema_version"] == 2
-    assert reference["workload_set"]["set_id"] == verified.WORKLOAD_SET_ID
+    assert reference["workload_set"]["set_id"] == WORKLOAD_SET_ID
     assert reference["workload_set"]["sha256"] == workload_set.sha256
     assert reference["route_table"]["source"] == (
         "verified_hardware/nvidia_geforce_rtx_4080/routes.json"

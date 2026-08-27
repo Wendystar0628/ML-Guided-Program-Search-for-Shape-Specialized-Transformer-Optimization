@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from solution.dispatch import (
-    HARDWARE_ROUTE_FIELDS,
     ROUTE_FIELDS,
     WORKLOAD_ROUTE_FIELDS,
     make_route_key,
@@ -233,13 +232,6 @@ def validate_selected_route_groups(
             )
 
 
-def validate_identity_fields(identity: HardwareIdentity) -> None:
-    """Guard the shared schema constants against accidental drift."""
-
-    if set(identity.as_route_fields()) != HARDWARE_ROUTE_FIELDS:
-        raise ValueError("hardware route identity fields do not match the schema")
-
-
 __all__ = [
     "HardwareIdentity",
     "exact_route_key",
@@ -249,7 +241,6 @@ __all__ = [
     "hardware_identity_from_verified_profile",
     "route_match_from_summary",
     "shared_route_groups",
-    "validate_identity_fields",
     "validate_selected_route_groups",
     "workload_route_identity",
 ]

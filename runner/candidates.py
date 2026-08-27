@@ -603,16 +603,6 @@ def candidate_spec_for_policy(
     return matches[0] if matches else None
 
 
-def solution_policy_ids() -> tuple[str, ...]:
-    """Return unique Solution policies represented by the candidate registry."""
-
-    policies: list[str] = []
-    for spec in _CANDIDATE_SPECS:
-        if spec.solution_policy not in policies:
-            policies.append(spec.solution_policy)
-    return tuple(policies)
-
-
 def deployable_policy_ids() -> frozenset[str]:
     """Return policies backed by an active, statically dispatchable candidate."""
 
@@ -633,5 +623,4 @@ __all__ = [
     "candidate_spec_for_policy",
     "candidate_specs_for_case",
     "deployable_policy_ids",
-    "solution_policy_ids",
 ]

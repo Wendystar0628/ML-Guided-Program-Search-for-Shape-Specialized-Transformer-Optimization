@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import math
 import platform
 import subprocess
@@ -35,7 +34,6 @@ from solution.dispatch import (
     validate_verified_route_table,
 )
 
-WORKLOAD_SET_ID = "transformer_core_v1"
 _IDENTITY_FIELDS = (
     ("gpu", "name"),
     ("gpu", "compute_capability"),
@@ -207,15 +205,6 @@ def validate_runtime_identity(
             "runtime does not match the verified hardware profile: "
             + "; ".join(mismatches)
         )
-
-
-def route_table_sha256(path: Path) -> str:
-    """Hash the exact bytes loaded by the shared dispatcher."""
-
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
-        raise VerifiedHardwareError(f"cannot read route table {path}: {exc}") from exc
 
 
 def bundle_manifest(paths: BundlePaths) -> VerifiedBundleManifest:

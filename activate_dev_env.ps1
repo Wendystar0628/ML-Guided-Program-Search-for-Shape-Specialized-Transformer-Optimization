@@ -82,19 +82,6 @@ $env:TORCH_EXTENSIONS_DIR = $torchExtensions
 $env:TRITON_CACHE_DIR = $tritonCache
 $env:TORCHINDUCTOR_CACHE_DIR = $inductorCache
 $env:PYTHONUTF8 = '1'
-$env:TECHJAM_PATCH_TORCH_CPP_EXTENSION_UTF8 = '1'
-$compatibilityPath = Join-Path $projectRoot 'environment'
-if ($env:PYTHONPATH) {
-    $env:PYTHONPATH = "$compatibilityPath;$env:PYTHONPATH"
-} else {
-    $env:PYTHONPATH = $compatibilityPath
-}
-
-# PyTorch 2.12 decodes localized cl.exe output with the Windows OEM codec.
-# On this UTF-8-emitting Chinese MSVC installation that version probe raises a
-# UnicodeDecodeError before compilation starts. The compiler/toolkit versions
-# are fixed and verified by this environment, so skip only that ABI probe.
-$env:TORCH_DONT_CHECK_COMPILER_ABI = '1'
 
 Write-Host ''
 Write-Host 'TikTok TechJam GPU development environment activated.' -ForegroundColor Green

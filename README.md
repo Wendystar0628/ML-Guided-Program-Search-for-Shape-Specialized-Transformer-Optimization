@@ -377,7 +377,6 @@ tests/architecture/          Fast structural and registry contract guards
 tests/gpu/                   Real-CUDA policy and kernel smoke checks
 tests/                       Remaining correctness and runner regressions
 results/                     Generated cross-device development results, ignored
-environment/                 Local Windows runtime compatibility hook
 ```
 
 Performance work stays centered on the shared `solution/` mainline. A complete
