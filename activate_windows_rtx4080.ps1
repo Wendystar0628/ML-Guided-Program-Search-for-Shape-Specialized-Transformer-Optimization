@@ -84,7 +84,7 @@ $env:TORCHINDUCTOR_CACHE_DIR = $inductorCache
 $env:PYTHONUTF8 = '1'
 
 Write-Host ''
-Write-Host 'TikTok TechJam GPU development environment activated.' -ForegroundColor Green
+Write-Host 'TikTok TechJam local Windows RTX 4080 environment activated.' -ForegroundColor Green
 Write-Host "Project          : $projectRoot"
 Write-Host "Python           : $((Get-Command python).Source)"
 Write-Host "CUDA_PATH        : $env:CUDA_PATH"

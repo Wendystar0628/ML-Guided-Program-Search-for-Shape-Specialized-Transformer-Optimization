@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import platform
+import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,10 +13,12 @@ from typing import Literal
 
 import torch
 
+from project_identity import official_snapshot_hash, solution_implementation_hash
+
 from .policies import ROUTABLE_POLICY_IDS
 
-SCHEMA_VERSION = 2
-MANIFEST_SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
+MANIFEST_SCHEMA_VERSION = 2
 ALLOWED_POLICIES = ROUTABLE_POLICY_IDS
 HARDWARE_ROUTE_FIELDS = frozenset(
     (
@@ -26,6 +29,7 @@ HARDWARE_ROUTE_FIELDS = frozenset(
         "torch",
         "cuda_runtime",
         "triton",
+        "driver",
     )
 )
 WORKLOAD_ROUTE_FIELDS = (
@@ -48,6 +52,7 @@ _STRING_FIELDS = frozenset(
         "torch",
         "cuda_runtime",
         "triton",
+        "driver",
         "dtype",
     }
 )
@@ -79,7 +84,8 @@ class FormalSummaryRef:
     """Compact reference to the Formal runs behind verified routes."""
 
     summary_id: str
-    case_ids: tuple[str, ...]
+    case_id: str
+    route_sha256: str
 
 
 @dataclass(frozen=True)
@@ -88,6 +94,7 @@ class VerifiedBundleManifest:
 
     workload_set_id: str
     workload_set_sha256: str
+    official_snapshot_sha256: str
     solution_implementation_sha256: str
     route_table_sha256: str
     formal_protocol: dict[str, object]
@@ -95,15 +102,33 @@ class VerifiedBundleManifest:
 
 
 def _static_runtime_facts() -> dict[str, str]:
-    """Return process-static software facts used by schema-version-2 routes."""
+    """Return process-static software facts used by exact routes."""
 
     facts = {
         "platform_system": platform.system(),
         "torch": str(torch.__version__),
         "triton": "unavailable",
+        "driver": "unavailable",
     }
     if torch.version.cuda is not None:
         facts["cuda_runtime"] = str(torch.version.cuda)
+        try:
+            completed = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=driver_version",
+                    "--format=csv,noheader",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+            driver = completed.stdout.splitlines()[0].strip()
+            if completed.returncode == 0 and driver:
+                facts["driver"] = driver
+        except (OSError, subprocess.SubprocessError, IndexError):
+            pass
     try:
         import triton
     except Exception:  # noqa: BLE001 - Triton is an optional route capability.
@@ -155,7 +180,7 @@ def _validate_match(match: object, *, index: int) -> dict[str, object]:
 
 
 def validate_route_table(payload: object) -> RouteTable:
-    """Validate a schema-version-2 decoded route table."""
+    """Validate the current exact-route table schema."""
 
     if not isinstance(payload, dict):
         raise TypeError("route table must be a JSON object")
@@ -224,16 +249,15 @@ def validate_verified_route_table(
     table = validate_route_table(payload)
     if table.default_policy != "auto":
         raise ValueError("verified route table must use default_policy=auto")
-    if (
-        expected_identity is not None
-        and set(expected_identity) != HARDWARE_ROUTE_FIELDS
+    if expected_identity is not None and (
+        not expected_identity or not set(expected_identity) <= HARDWARE_ROUTE_FIELDS
     ):
-        raise ValueError("verified hardware identity does not match route schema")
+        raise ValueError("verified hardware identity contains unknown route fields")
     for index, (match, _policy) in enumerate(table.routes):
         if expected_identity is not None:
             mismatches = [
                 field
-                for field in HARDWARE_ROUTE_FIELDS
+                for field in expected_identity
                 if match.get(field) != expected_identity[field]
             ]
             if mismatches:
@@ -273,6 +297,7 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
     required = {
         "schema_version",
         "workload_set",
+        "official",
         "solution",
         "route_table",
         "formal",
@@ -289,15 +314,17 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
         )
 
     workload = payload.get("workload_set")
+    official = payload.get("official")
     solution = payload.get("solution")
     route_table = payload.get("route_table")
     formal = payload.get("formal")
     if not all(
         isinstance(value, Mapping)
-        for value in (workload, solution, route_table, formal)
+        for value in (workload, official, solution, route_table, formal)
     ):
         raise TypeError("verified bundle manifest sections must be objects")
     assert isinstance(workload, Mapping)
+    assert isinstance(official, Mapping)
     assert isinstance(solution, Mapping)
     assert isinstance(route_table, Mapping)
     assert isinstance(formal, Mapping)
@@ -307,6 +334,8 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
         raise ValueError("workload_set.set_id must be a safe non-empty identifier")
     if set(workload) != {"set_id", "sha256"}:
         raise ValueError("workload_set must contain set_id and sha256")
+    if set(official) != {"snapshot_sha256"}:
+        raise ValueError("official must contain snapshot_sha256")
     if set(solution) != {"implementation_sha256"}:
         raise ValueError("solution must contain implementation_sha256")
     if set(route_table) != {"sha256"}:
@@ -333,55 +362,47 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
     )
     normalized_sources: list[FormalSummaryRef] = []
     seen_summary_ids: set[str] = set()
-    seen_case_ids: set[str] = set()
     for index, source in enumerate(sources):
         if not isinstance(source, Mapping):
             raise TypeError(f"formal.source_summaries[{index}] must be an object")
-        if set(source) != {"summary_id", "case_ids"}:
+        if set(source) != {"summary_id", "case_id", "route_sha256"}:
             raise ValueError(
                 f"invalid formal.source_summaries[{index}] fields; "
-                "expected summary_id and case_ids"
+                "expected summary_id, case_id, and route_sha256"
             )
         summary_id = source.get("summary_id")
-        case_ids = source.get("case_ids")
+        case_id = source.get("case_id")
         if not isinstance(summary_id, str) or not summary_id.strip():
             raise ValueError(
                 f"formal.source_summaries[{index}].summary_id must be non-empty"
             )
-        if (
-            not isinstance(case_ids, Sequence)
-            or isinstance(case_ids, (str, bytes))
-            or not case_ids
-            or any(not isinstance(case_id, str) or not case_id for case_id in case_ids)
-        ):
+        if not isinstance(case_id, str) or not case_id:
             raise ValueError(
-                f"formal.source_summaries[{index}].case_ids must be non-empty strings"
-            )
-        if len(case_ids) != len(set(case_ids)):
-            raise ValueError(
-                f"formal.source_summaries[{index}].case_ids contains duplicates"
+                f"formal.source_summaries[{index}].case_id must be non-empty"
             )
         normalized_summary_id = summary_id.strip()
-        normalized_case_ids = tuple(str(case_id) for case_id in case_ids)
         if normalized_summary_id in seen_summary_ids:
             raise ValueError(
                 f"formal.source_summaries[{index}].summary_id is duplicated"
             )
-        overlap = seen_case_ids.intersection(normalized_case_ids)
-        if overlap:
-            raise ValueError(
-                "formal.source_summaries assign a case more than once: "
-                + ", ".join(sorted(overlap))
-            )
         seen_summary_ids.add(normalized_summary_id)
-        seen_case_ids.update(normalized_case_ids)
         normalized_sources.append(
-            FormalSummaryRef(normalized_summary_id, normalized_case_ids)
+            FormalSummaryRef(
+                normalized_summary_id,
+                case_id,
+                _require_sha256(
+                    source.get("route_sha256"),
+                    field=f"formal.source_summaries[{index}].route_sha256",
+                ),
+            )
         )
 
     return VerifiedBundleManifest(
         workload_set_id=set_id.strip(),
         workload_set_sha256=workload_sha256,
+        official_snapshot_sha256=_require_sha256(
+            official.get("snapshot_sha256"), field="official.snapshot_sha256"
+        ),
         solution_implementation_sha256=solution_sha256,
         route_table_sha256=_require_sha256(
             route_table.get("sha256"), field="route_table.sha256"
@@ -394,7 +415,7 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
 def _canonical_json_sha256(path: Path) -> str:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
         raise ValueError(f"unable to hash JSON document {path}: {exc}") from exc
     return _canonical_value_sha256(document)
 
@@ -402,6 +423,7 @@ def _canonical_json_sha256(path: Path) -> str:
 def _validate_manifest_case_coverage(
     manifest: VerifiedBundleManifest,
     *,
+    table: RouteTable,
     workload_document: Mapping[str, object],
 ) -> None:
     raw_cases = workload_document.get("ordered_cases")
@@ -413,33 +435,15 @@ def _validate_manifest_case_coverage(
         if not isinstance(case_id, str) or not case_id:
             raise ValueError("verified bundle workload set contains an invalid case")
         expected_case_ids.add(case_id)
-    manifested_case_ids = {
-        case_id for source in manifest.source_summaries for case_id in source.case_ids
-    }
-    if manifested_case_ids != expected_case_ids:
+    manifested_case_ids = {source.case_id for source in manifest.source_summaries}
+    if not expected_case_ids.issubset(manifested_case_ids):
         raise ValueError("verified bundle Formal sources do not cover the workload set")
-
-
-def _solution_implementation_sha256(solution_root: Path) -> str:
-    suffixes = {".py", ".cpp", ".cc", ".c", ".h", ".cu", ".cuh"}
-    files = sorted(
-        path
-        for path in solution_root.rglob("*")
-        if path.is_file()
-        and path.suffix.lower() in suffixes
-        and "__pycache__" not in path.parts
-    )
-    if not files:
-        raise ValueError(f"no Solution source files found under {solution_root}")
-    digest = hashlib.sha256()
-    for path in files:
-        relative = path.relative_to(solution_root).as_posix().encode("utf-8")
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        content = path.read_bytes()
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
+    route_hashes = {_canonical_value_sha256(match) for match, _policy in table.routes}
+    manifested_route_hashes = {
+        source.route_sha256 for source in manifest.source_summaries
+    }
+    if manifested_route_hashes != route_hashes:
+        raise ValueError("verified bundle Formal sources do not cover its exact routes")
 
 
 def load_verified_bundle(
@@ -471,11 +475,15 @@ def load_verified_bundle(
     manifest = validate_bundle_manifest(manifest_payload)
     if manifest.route_table_sha256 != route_digest:
         raise ValueError("verified bundle route-table hash is stale")
-    current_implementation = _solution_implementation_sha256(
-        resolved_project / "solution"
-    )
+    current_implementation = solution_implementation_hash(resolved_project / "solution")
     if manifest.solution_implementation_sha256 != current_implementation:
         raise ValueError("verified bundle Solution implementation hash is stale")
+    try:
+        current_official = official_snapshot_hash(resolved_project)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"unable to verify official snapshot: {exc}") from exc
+    if manifest.official_snapshot_sha256 != current_official:
+        raise ValueError("verified bundle official snapshot hash is stale")
     workload_path = (
         resolved_project / "runner" / "workloads" / f"{manifest.workload_set_id}.json"
     )
@@ -491,6 +499,7 @@ def load_verified_bundle(
         raise TypeError("verified bundle workload set must be a JSON object")
     _validate_manifest_case_coverage(
         manifest,
+        table=table,
         workload_document=workload_document,
     )
     return table, route_digest, manifest
@@ -664,6 +673,7 @@ def make_route_key(
     torch_version: str | None = None,
     cuda_runtime: str | None = None,
     triton_version: str | None = None,
+    driver: str | None = None,
 ) -> dict[str, object]:
     """Build a route key from explicit static facts without touching a device."""
 
@@ -685,6 +695,8 @@ def make_route_key(
         key["cuda_runtime"] = str(cuda_runtime).strip()
     if triton_version is not None:
         key["triton"] = str(triton_version).strip()
+    if driver is not None:
+        key["driver"] = str(driver).strip()
     return key
 
 
@@ -797,6 +809,7 @@ class OfflineDispatcher:
         torch_version: str | None = None,
         cuda_runtime: str | None = None,
         triton_version: str | None = None,
+        driver: str | None = None,
     ) -> str:
         """Resolve a policy while preserving the original string-only API."""
 
@@ -812,6 +825,7 @@ class OfflineDispatcher:
             torch_version=torch_version,
             cuda_runtime=cuda_runtime,
             triton_version=triton_version,
+            driver=driver,
         ).policy
 
     def resolve_result(
@@ -828,6 +842,7 @@ class OfflineDispatcher:
         torch_version: str | None = None,
         cuda_runtime: str | None = None,
         triton_version: str | None = None,
+        driver: str | None = None,
     ) -> RouteResolution:
         """Resolve a policy and report calibrated-table versus fallback origin."""
 
@@ -859,6 +874,7 @@ class OfflineDispatcher:
             torch_version=torch_version,
             cuda_runtime=cuda_runtime,
             triton_version=triton_version,
+            driver=driver,
         )
         for (match, policy), (source, digest) in zip(
             self.table.routes,

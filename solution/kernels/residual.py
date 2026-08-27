@@ -15,6 +15,24 @@ except (ImportError, OSError):
 TRITON_RESIDUAL_AVAILABLE = triton is not None and tl is not None
 
 
+def supports_triton_residual(
+    *,
+    device_type: str,
+    dtype: torch.dtype,
+    has_valid_token_mask: bool,
+    mask_compatible: bool,
+) -> bool:
+    """Return whether static context can use the fused residual kernel."""
+
+    return bool(
+        TRITON_RESIDUAL_AVAILABLE
+        and device_type == "cuda"
+        and dtype in (torch.float16, torch.bfloat16, torch.float32)
+        and has_valid_token_mask
+        and mask_compatible
+    )
+
+
 if TRITON_RESIDUAL_AVAILABLE:
 
     @triton.jit
@@ -45,10 +63,11 @@ def can_use_triton_residual(
     """Return whether the residual tensors support the fused pointwise path."""
 
     return bool(
-        TRITON_RESIDUAL_AVAILABLE
-        and value.is_cuda
+        value.is_cuda
         and update.is_cuda
         and valid_token_mask.is_cuda
+        and update.device == value.device
+        and valid_token_mask.device == value.device
         and value.dtype in (torch.float16, torch.bfloat16, torch.float32)
         and update.dtype == value.dtype
         and valid_token_mask.dtype == torch.bool
@@ -58,6 +77,15 @@ def can_use_triton_residual(
         and value.is_contiguous()
         and update.is_contiguous()
         and valid_token_mask.is_contiguous()
+        and supports_triton_residual(
+            device_type=value.device.type,
+            dtype=value.dtype,
+            has_valid_token_mask=True,
+            mask_compatible=(
+                valid_token_mask.device == value.device
+                and valid_token_mask.shape == value.shape[:2]
+            ),
+        )
     )
 
 

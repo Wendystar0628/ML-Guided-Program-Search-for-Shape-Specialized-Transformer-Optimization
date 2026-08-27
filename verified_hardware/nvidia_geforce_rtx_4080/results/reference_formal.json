@@ -1,18 +1,30 @@
 {
-  "schema_version": 2,
-  "reference_type": "verified_hardware_formal_sweep",
-  "hardware_id": "nvidia_geforce_rtx_4080",
-  "sweep": {
-    "sweep_id": "20260827T114237.158071Z-73cfcc94",
-    "started_at": "2026-08-27T11:42:37.158571+00:00",
-    "completed_at": "2026-08-27T11:43:36.591079+00:00",
-    "preset": "formal"
+  "schema_version": 1,
+  "sweep_id": "20260827T163151.788901Z-2d999b07",
+  "created_at": "2026-08-27T16:31:51.789401+00:00",
+  "workload_set_id": "transformer_core_v1",
+  "workload_sha256": "f6a9d6265d53f198a041da687a928aedf524da9eb481b1e9a269242cd2cdec5f",
+  "target": "solution",
+  "source": {
+    "official_sha256": "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b",
+    "solution_sha256": "ec75008438f2d592d136c84bacd26fe8e8e8b4a6982c0b0ff01373f6718b0050"
   },
-  "workload_set": {
-    "set_id": "transformer_core_v1",
-    "sha256": "f6a9d6265d53f198a041da687a928aedf524da9eb481b1e9a269242cd2cdec5f",
-    "case_count": 9,
-    "group_count": 5
+  "protocol": {
+    "preset": "formal",
+    "seed": 1234,
+    "accuracy_trials": 5,
+    "rtol": 0.01,
+    "atol": 0.001,
+    "warmup": 20,
+    "repeats": 100,
+    "rounds": 3,
+    "compile_baseline": false,
+    "compile_solution": false,
+    "cuda_graph_solution": false,
+    "compile_mode": "default",
+    "matmul_precision": "high",
+    "allow_tf32": true,
+    "timeout_seconds": 900.0
   },
   "environment": {
     "device": "cuda:0",
@@ -24,280 +36,154 @@
     "total_memory_bytes": 17170956288,
     "driver": "610.88"
   },
-  "protocol": {
-    "seed": 1234,
-    "accuracy_trials": 5,
-    "rtol": 0.01,
-    "atol": 0.001,
-    "warmup": 20,
-    "repeats": 100,
-    "rounds": 3,
-    "timer": "cuda_event",
-    "samples_per_side": 300,
-    "compile_baseline": false,
-    "compile_solution": false,
-    "cuda_graph_solution": false,
-    "compile_mode": "default",
-    "matmul_precision": "high",
-    "allow_tf32": true,
-    "timeout_seconds": 900.0
-  },
-  "source_hashes": {
-    "official_sha256": "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b",
-    "solution_sha256": "52e450fddb9a0f31d46a22b60f1c15ca89bbff59379f688b66f81bef3f20a971"
-  },
-  "route_table": {
+  "dispatch": {
     "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
-    "sha256": "53e384279734fbf38de1667a752027f5935b9ad0fa858f7a06b9fe1faefade04"
+    "sha256": "bfe68b2c29872fb41eb4a33fc8cf0dea956f0a0d8086c89e80fd4e3c49e37822"
   },
-  "correctness": {
-    "all_cases_passed": true,
-    "passed_cases": 9,
-    "case_count": 9,
-    "total_trials": 45,
-    "failed_elements": 0,
-    "max_abs_error": 0.00390625,
-    "all_routes_calibrated": true
-  },
-  "cases": [
+  "sweep_outcome": "complete",
+  "case_results": [
+    {
+      "case_id": "launch_s64_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163151.790402Z-5cbedfee",
+      "baseline_median_ms": 1.7038879990577698,
+      "target_median_ms": 0.13414399325847626,
+      "speedup": 12.701932883231095,
+      "dispatch_policy": "cuda-graph",
+      "selected_policy": "cuda-graph",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "balanced_s128_fp32",
+      "outcome": "success",
+      "run_id": "20260827T163155.629605Z-8464fbf5",
+      "baseline_median_ms": 5.71345591545105,
+      "target_median_ms": 3.1620320081710815,
+      "speedup": 1.8068937634681665,
+      "dispatch_policy": "auto",
+      "selected_policy": "auto",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "balanced_s128_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163201.215498Z-c796da73",
+      "baseline_median_ms": 6.021791934967041,
+      "target_median_ms": 0.8775680065155029,
+      "speedup": 6.86190915149396,
+      "dispatch_policy": "balanced-cuda-graph",
+      "selected_policy": "balanced-cuda-graph",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "attention_s2048_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163206.135958Z-ca86ebc7",
+      "baseline_median_ms": 9.586688041687012,
+      "target_median_ms": 5.382191896438599,
+      "speedup": 1.7811865920333558,
+      "dispatch_policy": "long-tail-online",
+      "selected_policy": "long-tail-online",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "attention_s2048_causal_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163214.192423Z-1336d7b2",
+      "baseline_median_ms": 11.453951835632324,
+      "target_median_ms": 5.356543779373169,
+      "speedup": 2.138310131943453,
+      "dispatch_policy": "long-tail-online",
+      "selected_policy": "long-tail-online",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "mask_s512_full_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163222.929223Z-59289863",
+      "baseline_median_ms": 5.059072017669678,
+      "target_median_ms": 2.801664113998413,
+      "speedup": 1.8057382369257642,
+      "dispatch_policy": "s512-native-softmax",
+      "selected_policy": "s512-native-softmax",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "mask_s512_padding_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163228.762270Z-c8f3704d",
+      "baseline_median_ms": 5.160959959030151,
+      "target_median_ms": 2.7996160984039307,
+      "speedup": 1.8434527369564813,
+      "dispatch_policy": "s512-native-softmax",
+      "selected_policy": "s512-native-softmax",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "mask_s512_causal_padding_fp16",
+      "outcome": "success",
+      "run_id": "20260827T163234.572585Z-6ff14cfd",
+      "baseline_median_ms": 5.493247985839844,
+      "target_median_ms": 2.8037118911743164,
+      "speedup": 1.959276915410532,
+      "dispatch_policy": "s512-native-softmax",
+      "selected_policy": "s512-native-softmax",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    },
+    {
+      "case_id": "wide_s256_bf16",
+      "outcome": "success",
+      "run_id": "20260827T163240.537833Z-bed0883c",
+      "baseline_median_ms": 10.764288425445557,
+      "target_median_ms": 10.18726396560669,
+      "speedup": 1.056641750109447,
+      "dispatch_policy": "wide-triton-inplace",
+      "selected_policy": "wide-triton-inplace",
+      "route_origin": "calibrated",
+      "policy_applied": true
+    }
+  ],
+  "failed_cases": [],
+  "groups": [
     {
       "group_id": "launch_graph",
-      "workload": {
-        "case_id": "launch_s64_fp16",
-        "batch_size": 1,
-        "seq_len": 64,
-        "d_model": 256,
-        "num_heads": 8,
-        "ffn_dim": 1024,
-        "num_layers": 4,
-        "dtype": "float16",
-        "causal": false,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 1.9075679779052734,
-        "baseline_p90_ms": 2.3370591163635255,
-        "target_median_ms": 0.13414399325847626,
-        "target_p90_ms": 0.13516800105571747,
-        "speedup": 14.220301122463704
-      },
-      "actual_policy": "cuda-graph",
-      "route_origin": "calibrated"
+      "display_name": "Launch / Graph",
+      "weight": 0.2,
+      "geomean_speedup": 12.701932883231096
     },
     {
       "group_id": "balanced_precision",
-      "workload": {
-        "case_id": "balanced_s128_fp32",
-        "batch_size": 8,
-        "seq_len": 128,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 6,
-        "dtype": "float32",
-        "causal": false,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 2.5297919511795044,
-        "baseline_p90_ms": 3.0465792894363406,
-        "target_median_ms": 1.4510079622268677,
-        "target_p90_ms": 1.9425280094146729,
-        "speedup": 1.7434721359468095
-      },
-      "actual_policy": "auto",
-      "route_origin": "calibrated"
-    },
-    {
-      "group_id": "balanced_precision",
-      "workload": {
-        "case_id": "balanced_s128_fp16",
-        "batch_size": 8,
-        "seq_len": 128,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 6,
-        "dtype": "float16",
-        "causal": false,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 2.6449921131134033,
-        "baseline_p90_ms": 3.1584639549255376,
-        "target_median_ms": 0.8785920143127441,
-        "target_p90_ms": 1.3379584431648255,
-        "speedup": 3.010489590190937
-      },
-      "actual_policy": "balanced-cuda-graph",
-      "route_origin": "calibrated"
+      "display_name": "Balanced / Precision",
+      "weight": 0.2,
+      "geomean_speedup": 3.52118458069434
     },
     {
       "group_id": "long_attention",
-      "workload": {
-        "case_id": "attention_s2048_fp16",
-        "batch_size": 1,
-        "seq_len": 2048,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 4,
-        "dtype": "float16",
-        "causal": false,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 10.09772777557373,
-        "baseline_p90_ms": 11.057808017730713,
-        "target_median_ms": 5.758576154708862,
-        "target_p90_ms": 6.763008213043213,
-        "speedup": 1.7535111986522376
-      },
-      "actual_policy": "long-tail-online",
-      "route_origin": "calibrated"
-    },
-    {
-      "group_id": "long_attention",
-      "workload": {
-        "case_id": "attention_s2048_causal_fp16",
-        "batch_size": 1,
-        "seq_len": 2048,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 4,
-        "dtype": "float16",
-        "causal": true,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 12.164095878601074,
-        "baseline_p90_ms": 13.218304061889649,
-        "target_median_ms": 5.753920078277588,
-        "target_p90_ms": 6.76689920425415,
-        "speedup": 2.114053673516151
-      },
-      "actual_policy": "long-tail-online",
-      "route_origin": "calibrated"
+      "display_name": "Long Attention",
+      "weight": 0.2,
+      "geomean_speedup": 1.9515966121682922
     },
     {
       "group_id": "padding_mask",
-      "workload": {
-        "case_id": "mask_s512_full_fp16",
-        "batch_size": 8,
-        "seq_len": 512,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 4,
-        "dtype": "float16",
-        "causal": false,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 5.5731201171875,
-        "baseline_p90_ms": 6.619340658187866,
-        "target_median_ms": 3.1319040060043335,
-        "target_p90_ms": 3.4860032558441167,
-        "speedup": 1.7794670930216847
-      },
-      "actual_policy": "s512-native-softmax",
-      "route_origin": "calibrated"
-    },
-    {
-      "group_id": "padding_mask",
-      "workload": {
-        "case_id": "mask_s512_padding_fp16",
-        "batch_size": 8,
-        "seq_len": 512,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 4,
-        "dtype": "float16",
-        "causal": false,
-        "padding_ratio": 0.75,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 5.601792097091675,
-        "baseline_p90_ms": 6.628044748306275,
-        "target_median_ms": 3.159551978111267,
-        "target_p90_ms": 3.608166432380677,
-        "speedup": 1.7729703881752066
-      },
-      "actual_policy": "s512-native-softmax",
-      "route_origin": "calibrated"
-    },
-    {
-      "group_id": "padding_mask",
-      "workload": {
-        "case_id": "mask_s512_causal_padding_fp16",
-        "batch_size": 8,
-        "seq_len": 512,
-        "d_model": 512,
-        "num_heads": 8,
-        "ffn_dim": 2048,
-        "num_layers": 4,
-        "dtype": "float16",
-        "causal": true,
-        "padding_ratio": 0.75,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 5.871615886688232,
-        "baseline_p90_ms": 6.802640056610107,
-        "target_median_ms": 3.1452159881591797,
-        "target_p90_ms": 3.44217598438263,
-        "speedup": 1.8668402770407988
-      },
-      "actual_policy": "s512-native-softmax",
-      "route_origin": "calibrated"
+      "display_name": "Padding / Mask",
+      "weight": 0.2,
+      "geomean_speedup": 1.8683613493805922
     },
     {
       "group_id": "wide_gemm_ffn",
-      "workload": {
-        "case_id": "wide_s256_bf16",
-        "batch_size": 16,
-        "seq_len": 256,
-        "d_model": 1024,
-        "num_heads": 8,
-        "ffn_dim": 4096,
-        "num_layers": 6,
-        "dtype": "bfloat16",
-        "causal": false,
-        "padding_ratio": 0.0,
-        "input_scale": 1.0
-      },
-      "performance": {
-        "baseline_median_ms": 11.834367752075195,
-        "baseline_p90_ms": 12.675072383880615,
-        "target_median_ms": 10.764800071716309,
-        "target_p90_ms": 11.795762920379637,
-        "speedup": 1.0993578768981593
-      },
-      "actual_policy": "wide-triton-inplace",
-      "route_origin": "calibrated"
+      "display_name": "Wide GEMM / FFN",
+      "weight": 0.2,
+      "geomean_speedup": 1.056641750109447
     }
   ],
-  "aggregate": {
-    "group_geomean_speedups": {
-      "launch_graph": 14.220301122463704,
-      "balanced_precision": 2.2910051759120553,
-      "long_attention": 1.9253614702342186,
-      "padding_mask": 1.805924272560301,
-      "wide_gemm_ffn": 1.0993578768981593
-    },
-    "group_balanced_geomean_speedup": 2.624563915391093,
-    "worst_case": {
-      "case_id": "wide_s256_bf16",
-      "speedup": 1.0993578768981593
-    }
-  }
+  "group_balanced_geomean_speedup": 2.8007056036041584,
+  "worst_case_speedup": 1.056641750109447
 }

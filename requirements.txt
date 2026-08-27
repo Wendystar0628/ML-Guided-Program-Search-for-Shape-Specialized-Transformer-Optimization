@@ -1,11 +1,7 @@
---index-url https://pypi.org/simple
---extra-index-url https://download.pytorch.org/whl/cu132
+# Cross-platform project tools. Install a CUDA-enabled PyTorch build and the
+# Triton package supported by the target platform before using this file.
 
-# GPU runtime. PyTorch 2.12 is paired with Triton 3.7 on native Windows.
-torch==2.12.1+cu132
-triton-windows==3.7.1.post27
-
-# CUDA/C++ extension build helpers.
+# Optional CUDA/C++ extension build helpers.
 cmake==4.4.2
 ninja==1.13.0
 pybind11==3.1.0

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,10 +13,44 @@ from torch import nn
 from official import torch_transformer_benchmark as official
 from runner.contracts import ContractError, MeasurementProtocol, WorkloadCase
 from runner.execution import (
+    PreparedExecution,
     _validate_cuda_graph_composition,
     _validate_profile_execution_path,
+    execute_benchmark,
+    execute_profile,
+    prepare_execution,
     run_performance,
 )
+from runner.result_contracts import WorkerRequest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _tiny_case() -> WorkloadCase:
+    return WorkloadCase(
+        case_id="execution_fixture",
+        batch_size=1,
+        seq_len=2,
+        d_model=4,
+        num_heads=1,
+        ffn_dim=8,
+        num_layers=1,
+        dtype="float32",
+        causal=False,
+        padding_ratio=0.0,
+        input_scale=1.0,
+    )
+
+
+def _request(run_kind: str, protocol: MeasurementProtocol) -> WorkerRequest:
+    return WorkerRequest(
+        run_kind=run_kind,  # type: ignore[arg-type]
+        project_root=PROJECT_ROOT,
+        case=_tiny_case(),
+        protocol=protocol,
+        device="cpu",
+        target="baseline",
+    )
 
 
 @pytest.mark.parametrize(
@@ -39,6 +75,56 @@ def test_operator_profile_rejects_the_solution_graph_wrapper() -> None:
         _validate_profile_execution_path(
             {"runtime_wrapper": "solution_eager_cuda_graph"}
         )
+
+
+def test_prepare_execution_returns_one_frozen_shared_context() -> None:
+    prepared = prepare_execution(
+        _request(
+            "benchmark",
+            MeasurementProtocol(
+                preset="smoke",
+                accuracy_trials=1,
+                warmup=0,
+                repeats=1,
+                rounds=1,
+            ),
+        ),
+        expected_run_kind="benchmark",
+    )
+
+    assert isinstance(prepared, PreparedExecution)
+    assert prepared.target_model is prepared.baseline
+    assert prepared.device.type == "cpu"
+    with pytest.raises(FrozenInstanceError):
+        prepared.device = torch.device("cuda")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("run_kind", "execute"),
+    [("benchmark", execute_benchmark), ("profile", execute_profile)],
+)
+def test_cpu_formal_is_rejected_by_the_shared_preparation_path(
+    run_kind: str,
+    execute: Any,
+) -> None:
+    response = execute(
+        _request(
+            run_kind,
+            MeasurementProtocol(
+                preset="formal",
+                accuracy_trials=1,
+                warmup=0,
+                repeats=1,
+                rounds=1,
+            ),
+        )
+    )
+
+    assert response["outcome"] == "unsupported"
+    assert response["failure"]["stage"] == "device"
+    assert response["failure"]["message"] == (
+        "CPU execution is supported only by the smoke preset"
+    )
 
 
 def test_performance_alternates_order_and_uses_all_raw_samples(

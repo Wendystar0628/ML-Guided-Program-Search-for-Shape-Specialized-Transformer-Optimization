@@ -1,9 +1,10 @@
 {
   "schema_version": 1,
   "source_probe": {
-    "run_id": "20260826T230113.128218Z-4f2f851a",
-    "created_at": "2026-08-26T23:01:13.128218+00:00",
-    "requested_device": "cuda:0"
+    "run_id": "20260827T155717.733545Z-b28e0b74",
+    "created_at": "2026-08-27T15:57:17.734047+00:00",
+    "requested_device": "cuda:0",
+    "mode": "routing"
   },
   "device_operation_passed": true,
   "runtime_policy": {
@@ -61,7 +62,7 @@
       "method": "single_element_inplace_add",
       "repeats_per_round": 128,
       "rounds": 3,
-      "effective_latency_us": 5.958499852567911
+      "effective_latency_us": 6.391750182956457
     },
     "cuda_graph_replay": {
       "available": true,
@@ -69,8 +70,8 @@
       "kernel_nodes": 8,
       "repeats_per_round": 64,
       "rounds": 3,
-      "replay_latency_us": 8.112000301480293,
-      "effective_latency_per_node_us": 1.0140000376850367
+      "replay_latency_us": 8.078999817371368,
+      "effective_latency_per_node_us": 1.009874977171421
     },
     "device_copy": {
       "available": true,
@@ -78,8 +79,8 @@
       "payload_bytes": 33554432,
       "repeats_per_round": 16,
       "rounds": 3,
-      "latency_ms": 0.027775999158620834,
-      "effective_bandwidth_gbps": 1208.036902952804
+      "latency_ms": 0.02917799912393093,
+      "effective_bandwidth_gbps": 1149.990849526061
     },
     "gemm_float16": {
       "available": true,
@@ -89,8 +90,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.03058299981057644,
-      "tflops": 70.21821473697754
+      "latency_ms": 0.030559999868273735,
+      "tflops": 70.2710620830021
     },
     "gemm_bfloat16": {
       "available": true,
@@ -100,8 +101,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.03049599938094616,
-      "tflops": 70.41853658161286
+      "latency_ms": 0.031007999554276466,
+      "tflops": 69.25579459716646
     },
     "gemm_float32": {
       "available": true,
@@ -111,8 +112,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.057691000401973724,
-      "tflops": 37.22389338089083,
+      "latency_ms": 0.07417599856853485,
+      "tflops": 28.951192965954267,
       "tf32_allowed": true
     },
     "softmax_fp32": {
@@ -122,81 +123,8 @@
       "columns": 1024,
       "repeats_per_round": 16,
       "rounds": 3,
-      "latency_ms": 0.009212000295519829,
-      "throughput_gigaelements_per_second": 227.65435657008504
+      "latency_ms": 0.009126000106334686,
+      "throughput_gigaelements_per_second": 229.7996905067195
     }
-  },
-  "sdpa": {
-    "available": true,
-    "test_shape": {
-      "batch_size": 1,
-      "num_heads": 8,
-      "seq_len": 64
-    },
-    "global_policy_enabled": {
-      "flash": true,
-      "efficient": true,
-      "cudnn": true,
-      "math": true
-    },
-    "scenarios": [
-      {
-        "id": "fp32_dense_head64",
-        "dtype": "float32",
-        "head_dim": 64,
-        "call_form": "dense",
-        "supported_backends": [
-          "efficient",
-          "math"
-        ],
-        "unsupported_backends": {
-          "flash": "no_kernel",
-          "cudnn": "no_kernel"
-        }
-      },
-      {
-        "id": "fp16_dense_head64",
-        "dtype": "float16",
-        "head_dim": 64,
-        "call_form": "dense",
-        "supported_backends": [
-          "efficient",
-          "cudnn",
-          "math"
-        ],
-        "unsupported_backends": {
-          "flash": "no_kernel"
-        }
-      },
-      {
-        "id": "fp16_causal_padding_head64",
-        "dtype": "float16",
-        "head_dim": 64,
-        "call_form": "padding_mask_plus_is_causal",
-        "supported_backends": [
-          "efficient",
-          "cudnn"
-        ],
-        "unsupported_backends": {
-          "flash": "no_kernel",
-          "math": "invalid_mask_combination"
-        }
-      },
-      {
-        "id": "bf16_dense_head128",
-        "dtype": "bfloat16",
-        "head_dim": 128,
-        "call_form": "dense",
-        "supported_backends": [
-          "efficient",
-          "cudnn",
-          "math"
-        ],
-        "unsupported_backends": {
-          "flash": "no_kernel"
-        }
-      }
-    ],
-    "flash_compiled": false
   }
 }

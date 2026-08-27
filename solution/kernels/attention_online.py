@@ -31,6 +31,36 @@ _HEAD_DIM = 64
 _REFERENCE_SCALE = _HEAD_DIM**-0.5
 
 
+def supports_triton_online_attention(
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    batch_size: int,
+    num_heads: int,
+    sequence_length: int,
+    head_dim: int,
+    grad_or_training: bool,
+    mask_compatible: bool,
+) -> bool:
+    """Return whether static context can use the exact online-attention kernel."""
+
+    if not (
+        TRITON_ONLINE_ATTENTION_AVAILABLE
+        and device.type == "cuda"
+        and dtype == torch.float16
+        and (batch_size, num_heads, sequence_length, head_dim)
+        == (_BATCH_SIZE, _NUM_HEADS, _SEQUENCE_LENGTH, _HEAD_DIM)
+        and not grad_or_training
+        and mask_compatible
+        and torch.version.cuda is not None
+    ):
+        return False
+    try:
+        return torch.cuda.get_device_capability(device)[0] >= 8
+    except (AssertionError, RuntimeError):
+        return False
+
+
 if TRITON_ONLINE_ATTENTION_AVAILABLE:
 
     @triton.jit
@@ -193,37 +223,39 @@ def can_use_triton_online_attention(
 ) -> bool:
     """Return whether tensors match the single bounded experimental route."""
 
-    if not TRITON_ONLINE_ATTENTION_AVAILABLE:
-        return False
     if not query.is_cuda or not key.is_cuda or not value.is_cuda:
         return False
     if query.device != key.device or query.device != value.device:
         return False
     if query.dtype != torch.float16 or key.dtype != query.dtype or value.dtype != query.dtype:
         return False
-    expected_shape = (_BATCH_SIZE, _NUM_HEADS, _SEQUENCE_LENGTH, _HEAD_DIM)
-    if query.shape != expected_shape or key.shape != expected_shape:
+    if query.ndim != 4 or key.shape != query.shape:
         return False
-    if value.shape != expected_shape:
+    if value.shape != query.shape:
         return False
     if query.stride(-1) != 1 or key.stride(-1) != 1 or value.stride(-1) != 1:
         return False
-    if query.requires_grad or key.requires_grad or value.requires_grad:
-        return False
-    if torch.is_grad_enabled():
-        return False
-    if torch.version.cuda is None:
-        return False
-    if torch.cuda.get_device_capability(query.device)[0] < 8:
-        return False
-    if valid_token_mask is None:
-        return True
-    return (
+    mask_compatible = valid_token_mask is None or (
         valid_token_mask.is_cuda
         and valid_token_mask.device == query.device
         and valid_token_mask.dtype == torch.bool
         and valid_token_mask.is_contiguous()
         and valid_token_mask.shape == (_BATCH_SIZE, _SEQUENCE_LENGTH)
+    )
+    return supports_triton_online_attention(
+        device=query.device,
+        dtype=query.dtype,
+        batch_size=query.shape[0],
+        num_heads=query.shape[1],
+        sequence_length=query.shape[2],
+        head_dim=query.shape[3],
+        grad_or_training=(
+            torch.is_grad_enabled()
+            or query.requires_grad
+            or key.requires_grad
+            or value.requires_grad
+        ),
+        mask_compatible=mask_compatible,
     )
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import platform
 
 import pytest
@@ -11,7 +10,6 @@ import torch
 import triton
 
 from solution.dispatch import (
-    ROUTE_FIELDS,
     make_route_key,
     resolve_route,
     resolve_route_result,
@@ -19,7 +17,6 @@ from solution.dispatch import (
     validate_verified_route_table,
 )
 from tests.support.routing_fixtures import (
-    PROJECT_ROOT,
     exact_match,
     exact_route_document,
     transformer_config,
@@ -37,6 +34,7 @@ def _runtime_route_key(*, dtype: torch.dtype = torch.float16) -> dict[str, objec
         torch_version=str(torch.__version__),
         cuda_runtime=str(torch.version.cuda),
         triton_version=str(triton.__version__),
+        driver="fixture-driver",
     )
 
 
@@ -114,15 +112,3 @@ def test_verified_route_rejects_mismatched_hardware_identity() -> None:
             exact_route_document("auto"),
             expected_identity=expected_identity,
         )
-
-
-def test_checked_rtx4080_routes_use_only_exact_schema_v2_entries() -> None:
-    route_path = (
-        PROJECT_ROOT / "verified_hardware" / "nvidia_geforce_rtx_4080" / "routes.json"
-    )
-    document = json.loads(route_path.read_text(encoding="utf-8"))
-    table = validate_verified_route_table(document)
-
-    assert document["schema_version"] == 2
-    assert table.routes
-    assert all(set(match) == ROUTE_FIELDS for match, _policy in table.routes)

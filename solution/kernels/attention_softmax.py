@@ -13,6 +13,53 @@ except (ImportError, OSError):
 
 
 TRITON_ATTENTION_SOFTMAX_AVAILABLE = triton is not None and tl is not None
+_TRITON_SOFTMAX_SEQUENCE_LENGTHS = frozenset({512, 2048})
+
+
+def supports_triton_attention_softmax(
+    *,
+    device_type: str,
+    dtype: torch.dtype,
+    sequence_length: int,
+    head_dim: int,
+    mask_compatible: bool,
+) -> bool:
+    """Return whether static context can use the bounded softmax kernel."""
+
+    return bool(
+        TRITON_ATTENTION_SOFTMAX_AVAILABLE
+        and device_type == "cuda"
+        and dtype == torch.float16
+        and sequence_length in _TRITON_SOFTMAX_SEQUENCE_LENGTHS
+        and head_dim == 64
+        and mask_compatible
+    )
+
+
+def supports_s512_native_half_softmax(
+    *,
+    device_type: str,
+    dtype: torch.dtype,
+    batch_size: int,
+    num_heads: int,
+    sequence_length: int,
+    head_dim: int,
+    mask_compatible: bool,
+) -> bool:
+    """Return whether static context matches the exact S512 candidate."""
+
+    return bool(
+        supports_triton_attention_softmax(
+            device_type=device_type,
+            dtype=dtype,
+            sequence_length=sequence_length,
+            head_dim=head_dim,
+            mask_compatible=mask_compatible,
+        )
+        and batch_size == 8
+        and num_heads == 8
+        and sequence_length == 512
+    )
 
 
 if TRITON_ATTENTION_SOFTMAX_AVAILABLE:
@@ -107,25 +154,26 @@ def can_use_triton_attention_softmax(
 ) -> bool:
     """Return whether scores match the deliberately narrow tuned shape family."""
 
-    if not TRITON_ATTENTION_SOFTMAX_AVAILABLE:
-        return False
     if not scores.is_cuda or not scores.is_contiguous():
         return False
     if scores.dtype != torch.float16 or scores.ndim != 4:
         return False
-    if scores.shape[-1] != scores.shape[-2] or scores.shape[-1] not in (512, 2048):
+    if scores.shape[-1] != scores.shape[-2]:
         return False
-    if head_dim != 64:
-        return False
-    if valid_token_mask is None:
-        return True
-    return (
+    mask_compatible = valid_token_mask is None or (
         valid_token_mask.is_cuda
         and valid_token_mask.device == scores.device
         and valid_token_mask.dtype == torch.bool
         and valid_token_mask.is_contiguous()
         and valid_token_mask.shape
         == (scores.shape[0], scores.shape[-1])
+    )
+    return supports_triton_attention_softmax(
+        device_type=scores.device.type,
+        dtype=scores.dtype,
+        sequence_length=scores.shape[-1],
+        head_dim=head_dim,
+        mask_compatible=mask_compatible,
     )
 
 
@@ -175,22 +223,25 @@ def can_use_s512_native_half_softmax(
 ) -> bool:
     """Return whether inputs match the deliberately narrow S512 candidate."""
 
-    if not TRITON_ATTENTION_SOFTMAX_AVAILABLE:
+    if not scores.is_cuda or not scores.is_contiguous() or scores.ndim != 4:
         return False
-    if not scores.is_cuda or scores.dtype != torch.float16:
+    if scores.shape[-1] != scores.shape[-2]:
         return False
-    if not scores.is_contiguous() or scores.shape != (8, 8, 512, 512):
-        return False
-    if head_dim != 64:
-        return False
-    if valid_token_mask is None:
-        return True
-    return bool(
+    mask_compatible = valid_token_mask is None or bool(
         valid_token_mask.is_cuda
         and valid_token_mask.device == scores.device
         and valid_token_mask.dtype == torch.bool
         and valid_token_mask.is_contiguous()
-        and valid_token_mask.shape == (8, 512)
+        and valid_token_mask.shape == (scores.shape[0], scores.shape[-1])
+    )
+    return supports_s512_native_half_softmax(
+        device_type=scores.device.type,
+        dtype=scores.dtype,
+        batch_size=scores.shape[0],
+        num_heads=scores.shape[1],
+        sequence_length=scores.shape[-1],
+        head_dim=head_dim,
+        mask_compatible=mask_compatible,
     )
 
 

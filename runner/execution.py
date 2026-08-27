@@ -10,6 +10,7 @@ import tempfile
 import types
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -18,11 +19,11 @@ import torch
 from torch import nn
 
 from official import torch_transformer_benchmark as official
+from project_identity import solution_implementation_hash
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
     WorkloadCase,
-    solution_source_hash,
 )
 from runner.probe import collect_environment
 from runner.result_contracts import WorkerRequest
@@ -449,9 +450,9 @@ def _configure_runtime(protocol: MeasurementProtocol, device: torch.device) -> N
 
 
 def _load_solution_source(project_root: Path) -> tuple[ModuleType, str]:
-    source_hash_before_load = solution_source_hash(project_root / "solution")
+    source_hash_before_load = solution_implementation_hash(project_root / "solution")
     solution_module = load_solution_module(project_root)
-    measured_source_hash = solution_source_hash(project_root / "solution")
+    measured_source_hash = solution_implementation_hash(project_root / "solution")
     if measured_source_hash != source_hash_before_load:
         raise ContractError("Solution source changed while it was being loaded")
     return solution_module, measured_source_hash
@@ -473,6 +474,253 @@ def _build_solution(
         )
     configure(policy=solution_policy)
     return solution
+
+
+@dataclass(frozen=True)
+class PreparedExecution:
+    """Models and immutable run context shared by timing and profiling."""
+
+    request: WorkerRequest
+    project_root: Path
+    case: WorkloadCase
+    protocol: MeasurementProtocol
+    device: torch.device
+    dtype: torch.dtype
+    config: official.TransformerConfig
+    environment: dict[str, Any]
+    baseline: nn.Module
+    target_model: nn.Module
+    reporting_solution: nn.Module | None
+    solution_source_sha256: str | None
+    execution_path: dict[str, Any]
+
+
+class _PreparationFailure(Exception):
+    """Preserve the failed preparation stage and any context already collected."""
+
+    def __init__(
+        self,
+        stage: str,
+        cause: BaseException,
+        *,
+        environment: dict[str, Any] | None,
+        solution_hash: str | None,
+        execution_path: dict[str, Any] | None,
+    ) -> None:
+        super().__init__(str(cause))
+        self.stage = stage
+        self.cause = cause
+        self.environment = environment
+        self.solution_hash = solution_hash
+        self.execution_path = execution_path
+
+
+def prepare_execution(
+    request: WorkerRequest | Mapping[str, Any],
+    *,
+    expected_run_kind: str | None = None,
+) -> PreparedExecution:
+    """Build one validated execution context for benchmark or profile work."""
+
+    stage = "request"
+    environment: dict[str, Any] | None = None
+    measured_source_hash: str | None = None
+    execution_path: dict[str, Any] | None = None
+    try:
+        parsed_request = (
+            request
+            if isinstance(request, WorkerRequest)
+            else WorkerRequest.from_dict(request)
+        )
+        if parsed_request.run_kind not in {"benchmark", "profile"}:
+            raise ContractError(
+                "prepare_execution accepts only benchmark or profile requests"
+            )
+        if (
+            expected_run_kind is not None
+            and parsed_request.run_kind != expected_run_kind
+        ):
+            raise ContractError(
+                f"expected {expected_run_kind!r} request, received "
+                f"{parsed_request.run_kind!r}"
+            )
+
+        assert parsed_request.project_root is not None
+        assert parsed_request.case is not None
+        assert parsed_request.protocol is not None
+        assert parsed_request.target is not None
+        project_root = parsed_request.project_root
+        case = parsed_request.case
+        protocol = parsed_request.protocol
+        target = parsed_request.target
+
+        if parsed_request.run_kind == "profile" and protocol.cuda_graph_solution:
+            raise ContractError(
+                "the eager CUDA Graph candidate is supported only by benchmark runs"
+            )
+        if target == "baseline" and protocol.cuda_graph_solution:
+            raise ContractError("CUDA Graph wrapping applies only to the Solution")
+
+        stage = "device"
+        device = official.resolve_device(parsed_request.device)
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
+        if device.type == "cpu" and protocol.preset != "smoke":
+            raise ContractError("CPU execution is supported only by the smoke preset")
+        environment = collect_environment(device)
+
+        stage = "dtype"
+        dtype = official.resolve_dtype(case.dtype)
+        _configure_runtime(protocol, device)
+        config = _config_for_case(case)
+
+        stage = "build_model"
+        baseline = official.BaselineTransformer(config)
+        solution: nn.Module | None = None
+        if target == "solution":
+            stage = "load_solution"
+            solution_module, measured_source_hash = _load_solution_source(project_root)
+            stage = "build_model"
+            solution = _build_solution(
+                solution_module,
+                config,
+                parsed_request.solution_policy,
+            )
+            stage = "copy_weights"
+            weight_loader = getattr(solution_module, "copy_model_weights", None)
+            if weight_loader is None:
+                official.copy_model_weights(baseline, solution, strict=True)
+            else:
+                weight_loader(baseline, solution, strict=True)
+
+        stage = "move_model"
+        baseline = baseline.to(device=device, dtype=dtype).eval()
+        if solution is not None:
+            solution = solution.to(device=device, dtype=dtype).eval()
+        reporting_solution = solution
+
+        execution_path = _describe_execution_path(
+            solution if solution is not None else baseline,
+            case=case,
+        )
+        _validate_cuda_graph_composition(execution_path, protocol)
+        if parsed_request.run_kind == "profile":
+            _validate_profile_execution_path(execution_path)
+        elif solution is not None and protocol.cuda_graph_solution:
+            if device.type != "cuda":
+                raise ContractError("the eager CUDA Graph candidate requires CUDA")
+            solution = _CudaGraphSolution(solution).eval()
+            execution_path["runtime_wrapper"] = "eager_cuda_graph"
+
+        stage = "compile"
+        baseline = official.maybe_compile(
+            baseline,
+            protocol.compile_baseline,
+            protocol.compile_mode,
+        )
+        if solution is not None:
+            target_model = official.maybe_compile(
+                solution,
+                protocol.compile_solution,
+                protocol.compile_mode,
+            )
+        else:
+            target_model = baseline
+
+        return PreparedExecution(
+            request=parsed_request,
+            project_root=project_root,
+            case=case,
+            protocol=protocol,
+            device=device,
+            dtype=dtype,
+            config=config,
+            environment=environment,
+            baseline=baseline,
+            target_model=target_model,
+            reporting_solution=reporting_solution,
+            solution_source_sha256=measured_source_hash,
+            execution_path=execution_path,
+        )
+    except BaseException as exc:
+        raise _PreparationFailure(
+            stage,
+            exc,
+            environment=environment,
+            solution_hash=measured_source_hash,
+            execution_path=execution_path,
+        ) from exc
+
+
+def _run_prepared_correctness(
+    prepared: PreparedExecution,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Run the shared Solution comparator and refresh eager execution evidence."""
+
+    execution_path = dict(prepared.execution_path)
+    if prepared.reporting_solution is None:
+        return None, execution_path
+
+    observe_execution = (
+        not prepared.protocol.compile_solution
+        and not prepared.protocol.cuda_graph_solution
+        and _set_execution_observation(prepared.reporting_solution, True)
+    )
+    try:
+        correctness = run_correctness(
+            prepared.baseline,
+            prepared.target_model,
+            prepared.config,
+            prepared.case,
+            prepared.protocol,
+            prepared.device,
+            prepared.dtype,
+        )
+    finally:
+        if observe_execution:
+            _set_execution_observation(prepared.reporting_solution, False)
+    if observe_execution:
+        execution_path = _describe_execution_path(
+            prepared.reporting_solution,
+            case=prepared.case,
+        )
+    return correctness, execution_path
+
+
+def _assert_solution_source_integrity(
+    prepared: PreparedExecution,
+    *,
+    phase: str,
+) -> None:
+    if prepared.solution_source_sha256 is None:
+        return
+    current_hash = solution_implementation_hash(prepared.project_root / "solution")
+    if current_hash != prepared.solution_source_sha256:
+        raise ContractError(f"Solution source changed before {phase}")
+
+
+def _invalid_output_response(
+    prepared: PreparedExecution,
+    correctness: dict[str, Any],
+    execution_path: dict[str, Any],
+    *,
+    result_key: str,
+) -> dict[str, Any]:
+    response = {
+        "outcome": "invalid_output",
+        "solution_source_sha256": prepared.solution_source_sha256,
+        "environment": prepared.environment,
+        "correctness": correctness,
+        result_key: None,
+        "execution_path": execution_path,
+        "failure": {
+            "stage": "correctness",
+            "type": "CorrectnessError",
+            "message": "Solution failed the correctness contract",
+            "exit_code": None,
+        },
+    }
+    return response
 
 
 def _exception_outcome(exc: BaseException, stage: str) -> str:
@@ -529,141 +777,38 @@ def execute_benchmark(
     performance: dict[str, Any] | None = None
     measured_source_hash: str | None = None
     execution_path: dict[str, Any] | None = None
-    target = (
-        str(request.target or "solution")
-        if isinstance(request, WorkerRequest)
-        else str(request.get("target", "solution"))
-    )
     try:
-        parsed_request = (
-            request
-            if isinstance(request, WorkerRequest)
-            else WorkerRequest.from_dict(request)
-        )
-        if parsed_request.run_kind != "benchmark":
-            raise ContractError(
-                f"execute_benchmark received {parsed_request.run_kind!r} request"
-            )
-        assert parsed_request.project_root is not None
-        assert parsed_request.case is not None
-        assert parsed_request.protocol is not None
-        assert parsed_request.target is not None
-        project_root = parsed_request.project_root
-        case = parsed_request.case
-        protocol = parsed_request.protocol
-        target = parsed_request.target
-        if target == "baseline" and protocol.cuda_graph_solution:
-            raise ContractError("CUDA Graph wrapping applies only to the Solution")
+        prepared = prepare_execution(request, expected_run_kind="benchmark")
+        environment = prepared.environment
+        measured_source_hash = prepared.solution_source_sha256
+        execution_path = dict(prepared.execution_path)
 
-        stage = "device"
-        requested_device = parsed_request.device
-        device = official.resolve_device(requested_device)
-        if device.type == "cuda":
-            torch.cuda.set_device(device)
-        if device.type == "cpu" and protocol.preset != "smoke":
-            raise ContractError("CPU execution is supported only by the smoke preset")
-        environment = collect_environment(device)
-
-        stage = "dtype"
-        dtype = official.resolve_dtype(case.dtype)
-        _configure_runtime(protocol, device)
-        config = _config_for_case(case)
-
-        stage = "build_model"
-        baseline = official.BaselineTransformer(config)
-        solution: nn.Module | None = None
-        if target == "solution":
-            stage = "load_solution"
-            solution_module, measured_source_hash = _load_solution_source(project_root)
-            stage = "build_model"
-            solution = _build_solution(
-                solution_module,
-                config,
-                parsed_request.solution_policy,
-            )
-            stage = "copy_weights"
-            weight_loader = getattr(solution_module, "copy_model_weights", None)
-            if weight_loader is None:
-                official.copy_model_weights(baseline, solution, strict=True)
-            else:
-                weight_loader(baseline, solution, strict=True)
-
-        stage = "move_model"
-        baseline = baseline.to(device=device, dtype=dtype).eval()
-        if solution is not None:
-            solution = solution.to(device=device, dtype=dtype).eval()
-        reporting_solution = solution
-
-        execution_path = _describe_execution_path(
-            solution if solution is not None else baseline,
-            case=case,
-        )
-        _validate_cuda_graph_composition(execution_path, protocol)
-
-        if solution is not None and protocol.cuda_graph_solution:
-            if device.type != "cuda":
-                raise ContractError("the eager CUDA Graph candidate requires CUDA")
-            solution = _CudaGraphSolution(solution).eval()
-            execution_path["runtime_wrapper"] = "eager_cuda_graph"
-
-        stage = "compile"
-        baseline = official.maybe_compile(
-            baseline, protocol.compile_baseline, protocol.compile_mode
-        )
-        if solution is not None:
-            solution = official.maybe_compile(
-                solution, protocol.compile_solution, protocol.compile_mode
-            )
-
-        if solution is not None:
+        if prepared.reporting_solution is not None:
             stage = "correctness"
-            observe_execution = (
-                reporting_solution is not None
-                and not protocol.compile_solution
-                and not protocol.cuda_graph_solution
-                and _set_execution_observation(reporting_solution, True)
-            )
-            try:
-                correctness = run_correctness(
-                    baseline, solution, config, case, protocol, device, dtype
-                )
-            finally:
-                if observe_execution:
-                    _set_execution_observation(reporting_solution, False)
-            if observe_execution:
-                execution_path = _describe_execution_path(
-                    reporting_solution,
-                    case=case,
-                )
+            correctness, execution_path = _run_prepared_correctness(prepared)
+            assert correctness is not None
             if not correctness["passed"]:
-                if measured_source_hash is not None:
-                    stage = "source_integrity"
-                    if (
-                        solution_source_hash(project_root / "solution")
-                        != measured_source_hash
-                    ):
-                        raise ContractError(
-                            "Solution source changed before correctness completed"
-                        )
-                outcome = "invalid_output"
-                return {
-                    "outcome": outcome,
-                    "solution_source_sha256": measured_source_hash,
-                    "environment": environment,
-                    "correctness": correctness,
-                    "performance": None,
-                    "execution_path": execution_path,
-                    "failure": {
-                        "stage": "correctness",
-                        "type": "CorrectnessError",
-                        "message": "Solution failed the correctness contract",
-                        "exit_code": None,
-                    },
-                }
+                stage = "source_integrity"
+                _assert_solution_source_integrity(
+                    prepared,
+                    phase="correctness completed",
+                )
+                return _invalid_output_response(
+                    prepared,
+                    correctness,
+                    execution_path,
+                    result_key="performance",
+                )
 
             stage = "timing"
             performance = run_performance(
-                baseline, solution, config, case, protocol, device, dtype
+                prepared.baseline,
+                prepared.target_model,
+                prepared.config,
+                prepared.case,
+                prepared.protocol,
+                prepared.device,
+                prepared.dtype,
             )
         else:
             correctness = {
@@ -675,16 +820,19 @@ def execute_benchmark(
             }
             stage = "timing"
             performance = run_baseline_performance(
-                baseline, config, case, protocol, device, dtype
+                prepared.baseline,
+                prepared.config,
+                prepared.case,
+                prepared.protocol,
+                prepared.device,
+                prepared.dtype,
             )
 
-        if measured_source_hash is not None:
-            stage = "source_integrity"
-            source_hash_after_run = solution_source_hash(project_root / "solution")
-            if source_hash_after_run != measured_source_hash:
-                raise ContractError(
-                    "Solution source changed before the benchmark completed"
-                )
+        stage = "source_integrity"
+        _assert_solution_source_integrity(
+            prepared,
+            phase="the benchmark completed",
+        )
 
         return {
             "outcome": "success",
@@ -695,6 +843,16 @@ def execute_benchmark(
             "execution_path": execution_path,
             "failure": None,
         }
+    except _PreparationFailure as failure:
+        return _failure_response(
+            failure.cause,
+            failure.stage,
+            environment=failure.environment,
+            correctness=None,
+            performance=None,
+            solution_hash=failure.solution_hash,
+            execution_path=failure.execution_path,
+        )
     except BaseException as exc:  # noqa: BLE001 - worker execution boundary.
         return _failure_response(
             exc,
@@ -800,155 +958,53 @@ def execute_profile(
     correctness: dict[str, Any] | None = None
     measured_source_hash: str | None = None
     execution_path: dict[str, Any] | None = None
-    target = (
-        str(request.target or "solution")
-        if isinstance(request, WorkerRequest)
-        else str(request.get("target", "solution"))
-    )
     try:
-        parsed_request = (
-            request
-            if isinstance(request, WorkerRequest)
-            else WorkerRequest.from_dict(request)
-        )
-        if parsed_request.run_kind != "profile":
-            raise ContractError(
-                f"execute_profile received {parsed_request.run_kind!r} request"
-            )
-        assert parsed_request.project_root is not None
-        assert parsed_request.case is not None
-        assert parsed_request.protocol is not None
-        assert parsed_request.target is not None
-        project_root = parsed_request.project_root
-        case = parsed_request.case
-        protocol = parsed_request.protocol
-        target = parsed_request.target
-        if protocol.cuda_graph_solution:
-            raise ContractError(
-                "the eager CUDA Graph candidate is supported only by benchmark runs"
-            )
+        prepared = prepare_execution(request, expected_run_kind="profile")
+        environment = prepared.environment
+        measured_source_hash = prepared.solution_source_sha256
+        execution_path = dict(prepared.execution_path)
 
-        stage = "device"
-        requested_device = parsed_request.device
-        device = official.resolve_device(requested_device)
-        if device.type == "cuda":
-            torch.cuda.set_device(device)
-        environment = collect_environment(device)
-
-        stage = "dtype"
-        dtype = official.resolve_dtype(case.dtype)
-        _configure_runtime(protocol, device)
-        config = _config_for_case(case)
-
-        stage = "build_model"
-        baseline = official.BaselineTransformer(config)
-        solution: nn.Module | None = None
-        if target == "solution":
-            stage = "load_solution"
-            solution_module, measured_source_hash = _load_solution_source(project_root)
-            stage = "build_model"
-            solution = _build_solution(
-                solution_module,
-                config,
-                parsed_request.solution_policy,
-            )
-            stage = "copy_weights"
-            weight_loader = getattr(solution_module, "copy_model_weights", None)
-            if weight_loader is None:
-                official.copy_model_weights(baseline, solution, strict=True)
-            else:
-                weight_loader(baseline, solution, strict=True)
-
-        stage = "move_model"
-        baseline = baseline.to(device=device, dtype=dtype).eval()
-        if solution is not None:
-            solution = solution.to(device=device, dtype=dtype).eval()
-        reporting_solution = solution
-
-        execution_path = _describe_execution_path(
-            solution if solution is not None else baseline,
-            case=case,
-        )
-        _validate_cuda_graph_composition(execution_path, protocol)
-        _validate_profile_execution_path(execution_path)
-
-        stage = "compile"
-        if target == "baseline":
-            model = official.maybe_compile(
-                baseline, protocol.compile_baseline, protocol.compile_mode
-            )
-        else:
-            assert solution is not None
-            baseline = official.maybe_compile(
-                baseline, protocol.compile_baseline, protocol.compile_mode
-            )
-            model = official.maybe_compile(
-                solution, protocol.compile_solution, protocol.compile_mode
-            )
-
-        if target == "solution":
+        if prepared.reporting_solution is not None:
             stage = "correctness"
-            observe_execution = (
-                reporting_solution is not None
-                and not protocol.compile_solution
-                and _set_execution_observation(reporting_solution, True)
-            )
-            try:
-                correctness = run_correctness(
-                    baseline, model, config, case, protocol, device, dtype
-                )
-            finally:
-                if observe_execution:
-                    _set_execution_observation(reporting_solution, False)
-            if observe_execution:
-                execution_path = _describe_execution_path(
-                    reporting_solution,
-                    case=case,
-                )
+            correctness, execution_path = _run_prepared_correctness(prepared)
+            assert correctness is not None
             if not correctness["passed"]:
-                if measured_source_hash is not None:
-                    stage = "source_integrity"
-                    if (
-                        solution_source_hash(project_root / "solution")
-                        != measured_source_hash
-                    ):
-                        raise ContractError(
-                            "Solution source changed before correctness completed"
-                        )
-                outcome = "invalid_output"
-                return {
-                    "outcome": outcome,
-                    "solution_source_sha256": measured_source_hash,
-                    "environment": environment,
-                    "correctness": correctness,
-                    "profile": None,
-                    "execution_path": execution_path,
-                    "failure": {
-                        "stage": "correctness",
-                        "type": "CorrectnessError",
-                        "message": "Solution failed the correctness contract",
-                        "exit_code": None,
-                    },
-                }
+                stage = "source_integrity"
+                _assert_solution_source_integrity(
+                    prepared,
+                    phase="correctness completed",
+                )
+                return _invalid_output_response(
+                    prepared,
+                    correctness,
+                    execution_path,
+                    result_key="profile",
+                )
         else:
             correctness = None
 
         stage = "profile"
         inputs, valid_mask = official.generate_random_case(
-            config=config,
-            device=device,
-            dtype=dtype,
-            seed=protocol.seed + 100000,
-            padding_ratio=case.padding_ratio,
-            input_scale=case.input_scale,
+            config=prepared.config,
+            device=prepared.device,
+            dtype=prepared.dtype,
+            seed=prepared.protocol.seed + 100000,
+            padding_ratio=prepared.case.padding_ratio,
+            input_scale=prepared.case.input_scale,
         )
         input_snapshot = inputs.clone()
         mask_snapshot = valid_mask.clone()
-        official.warmup_model(model, inputs, valid_mask, protocol.warmup, device)
+        official.warmup_model(
+            prepared.target_model,
+            inputs,
+            valid_mask,
+            prepared.protocol.warmup,
+            prepared.device,
+        )
         activities = [torch.profiler.ProfilerActivity.CPU]
-        if device.type == "cuda":
+        if prepared.device.type == "cuda":
             activities.append(torch.profiler.ProfilerActivity.CUDA)
-        iterations = min(max(protocol.repeats, 1), 10)
+        iterations = min(max(prepared.protocol.repeats, 1), 10)
         with (
             torch.profiler.profile(
                 activities=activities,
@@ -957,9 +1013,9 @@ def execute_profile(
             torch.inference_mode(),
         ):
             for _ in range(iterations):
-                model(inputs, valid_mask)
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
+                prepared.target_model(inputs, valid_mask)
+        if prepared.device.type == "cuda":
+            torch.cuda.synchronize(prepared.device)
         _assert_unchanged("input", inputs, input_snapshot)
         _assert_unchanged("valid_token_mask", valid_mask, mask_snapshot)
 
@@ -974,10 +1030,11 @@ def execute_profile(
             event for event in events if str(event.key).startswith("aten::")
         ]
         operator_events.sort(
-            key=lambda event: _profile_time(event, device), reverse=True
+            key=lambda event: _profile_time(event, prepared.device), reverse=True
         )
         total_operator_self_time_us = math.fsum(
-            max(_profile_time(event, device), 0.0) for event in operator_events
+            max(_profile_time(event, prepared.device), 0.0)
+            for event in operator_events
         )
         if (
             not math.isfinite(total_operator_self_time_us)
@@ -986,7 +1043,7 @@ def execute_profile(
             raise ContractError("profiler did not record positive ATen self time")
         operator_hotspots: list[dict[str, Any]] = []
         for event in operator_events:
-            operation_time = _profile_time(event, device)
+            operation_time = _profile_time(event, prepared.device)
             calls = int(event.count)
             if not math.isfinite(operation_time) or operation_time <= 0 or calls <= 0:
                 continue
@@ -1012,13 +1069,11 @@ def execute_profile(
             if len(operator_hotspots) == 8:
                 break
 
-        if measured_source_hash is not None:
-            stage = "source_integrity"
-            source_hash_after_run = solution_source_hash(project_root / "solution")
-            if source_hash_after_run != measured_source_hash:
-                raise ContractError(
-                    "Solution source changed before profiling completed"
-                )
+        stage = "source_integrity"
+        _assert_solution_source_integrity(
+            prepared,
+            phase="profiling completed",
+        )
 
         return {
             "outcome": "success",
@@ -1028,7 +1083,7 @@ def execute_profile(
             "profile": {
                 "iterations": iterations,
                 "time_basis": "self_device_us_per_forward"
-                if device.type == "cuda"
+                if prepared.device.type == "cuda"
                 else "self_cpu_us_per_forward",
                 "total_self_time_us_per_forward": round(
                     total_operator_self_time_us / iterations,
@@ -1044,6 +1099,18 @@ def execute_profile(
             "execution_path": execution_path,
             "failure": None,
         }
+    except _PreparationFailure as failure:
+        response = _failure_response(
+            failure.cause,
+            failure.stage,
+            environment=failure.environment,
+            correctness=None,
+            performance=None,
+            solution_hash=failure.solution_hash,
+            execution_path=failure.execution_path,
+        )
+        response["profile"] = None
+        return response
     except BaseException as exc:  # noqa: BLE001 - worker execution boundary.
         response = _failure_response(
             exc,

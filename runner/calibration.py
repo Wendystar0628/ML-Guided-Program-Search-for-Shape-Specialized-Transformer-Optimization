@@ -7,28 +7,34 @@ present progress events.
 
 from __future__ import annotations
 
+import json
+import os
 import platform
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from project_identity import solution_implementation_hash
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
     WorkloadCase,
     load_workload_set,
+    new_run_id,
     select_workload_case,
-    solution_implementation_hash,
+    utc_now,
 )
 from runner.hardware_router import build_routing_plan
+from runner.locking import device_measurement_lease
 from runner.route_promotion import (
     auto_promote_calibration,
     find_matching_verified_route,
     verified_profile_from_probe_result,
 )
 from runner.routing_contracts import validate_selected_route_groups
-from runner.supervisor import run_managed_probe
+from runner.supervisor import CancellationToken, run_managed_probe
 from runner.tuning import (
     align_shared_smoke_plans,
     build_formal_candidate_plans,
@@ -57,6 +63,7 @@ class CalibrationRequest:
     plan_only: bool = False
     matmul_precision: str = "high"
     allow_tf32: bool = True
+    session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +74,12 @@ class CalibrationEvent:
     case_id: str | None = None
     stage: str | None = None
     data: Mapping[str, Any] = field(default_factory=dict)
+    session_id: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable progress event for a CLI or agent."""
+
+        return {key: _json_value(value) for key, value in vars(self).items()}
 
 
 @dataclass(frozen=True)
@@ -89,6 +102,13 @@ class CalibrationResult:
     route_path: Path | None = None
     route_action: str | None = None
     message: str | None = None
+    session_id: str | None = None
+    checkpoint_path: Path | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the terminal state using only JSON-compatible values."""
+
+        return {key: _json_value(value) for key, value in vars(self).items()}
 
 
 @dataclass(frozen=True)
@@ -108,6 +128,145 @@ class _RoutingProbeContext:
     hardware_profile: dict[str, Any]
     raw_result: dict[str, Any]
     result_path: Path
+
+
+def _json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_value(item) for item in value]
+    as_dict = getattr(value, "as_dict", None)
+    if callable(as_dict):
+        return _json_value(as_dict())
+    return str(value)
+
+
+def _replace_json(path: Path, document: Mapping[str, Any]) -> None:
+    """Atomically replace one mutable calibration checkpoint."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(
+        _json_value(document),
+        ensure_ascii=False,
+        indent=2,
+        allow_nan=False,
+    ).encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+class _CalibrationCheckpoint:
+    """Small mutable snapshot used to inspect an interrupted calibration."""
+
+    def __init__(
+        self,
+        project_root: Path,
+        session_id: str,
+        workload_set_id: str,
+        solution_sha256: str | None,
+    ) -> None:
+        self.path = (
+            project_root.resolve()
+            / "results"
+            / "calibration"
+            / f"{session_id}.json"
+        )
+        if self.path.exists():
+            raise ContractError(f"calibration session already exists: {session_id}")
+        self._document: dict[str, Any] = {
+            "schema_version": 1,
+            "session_id": session_id,
+            "status": "running",
+            "stage": "starting",
+            "active_case_id": None,
+            "workload": {
+                "set_id": workload_set_id,
+                "sha256": None,
+            },
+            "solution_implementation_sha256": solution_sha256,
+            "case_ids": [],
+            "completed_summary_ids": [],
+            "outcome": None,
+        }
+        self._publish()
+
+    @property
+    def stage(self) -> str:
+        return str(self._document["stage"])
+
+    @property
+    def case_ids(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self._document["case_ids"])
+
+    def discard(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+    def configure(self, *, workload_sha256: str, case_ids: Sequence[str]) -> None:
+        self._document["workload"] = {
+            "set_id": self._document["workload"]["set_id"],
+            "sha256": workload_sha256,
+        }
+        self._document["case_ids"] = list(case_ids)
+        self._publish()
+
+    def enter(self, stage: str, case_id: str | None = None) -> None:
+        self._document["stage"] = stage
+        self._document["active_case_id"] = case_id
+        self._publish()
+
+    def record_summary(
+        self,
+        *,
+        summary: Mapping[str, Any],
+    ) -> None:
+        summary_id = summary.get("tuning_id")
+        if isinstance(summary_id, str) and summary_id:
+            completed = self._document["completed_summary_ids"]
+            if summary_id not in completed:
+                completed.append(summary_id)
+        observations = summary.get("observations")
+        cancelled = isinstance(observations, list) and any(
+            isinstance(item, Mapping) and item.get("outcome") == "cancelled"
+            for item in observations
+        )
+        if not cancelled:
+            self._document["active_case_id"] = None
+        self._publish()
+
+    def finish(self, result: CalibrationResult) -> bool:
+        if result.outcome == "cancelled":
+            self._document.update(
+                {
+                    "status": "cancelled",
+                    "stage": result.stage,
+                    "outcome": result.outcome,
+                }
+            )
+            self._publish()
+            return True
+        self.path.unlink(missing_ok=True)
+        return False
+
+    def _publish(self) -> None:
+        self._document["updated_at"] = utc_now()
+        _replace_json(self.path, self._document)
 
 
 def hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -261,10 +420,71 @@ class CalibrationService:
         request: CalibrationRequest,
         *,
         on_event: ProgressCallback | None = None,
+        cancellation_token: CancellationToken | None = None,
     ) -> CalibrationResult:
         self._validate_request(request)
         if len(request.case_ids) != len(set(request.case_ids)):
             raise ContractError("calibration case_ids must not contain duplicates")
+        session_id = request.session_id or new_run_id()
+        token = cancellation_token or CancellationToken()
+        solution_root = request.project_root / "solution"
+        implementation_sha256 = (
+            self._dependencies.implementation_hash(solution_root)
+            if solution_root.is_dir()
+            else None
+        )
+        checkpoint = _CalibrationCheckpoint(
+            request.project_root,
+            session_id,
+            request.workload_set_id,
+            implementation_sha256,
+        )
+
+        def emit_with_session(event: CalibrationEvent) -> None:
+            if on_event is not None:
+                on_event(replace(event, session_id=session_id))
+
+        try:
+            with device_measurement_lease(
+                request.project_root,
+                request.device,
+                purpose="calibration",
+            ):
+                result = self._run(
+                    request,
+                    on_event=emit_with_session,
+                    cancellation_token=token,
+                    checkpoint=checkpoint,
+                )
+        except ContractError:
+            checkpoint.discard()
+            raise
+        except KeyboardInterrupt:
+            token.cancel()
+            result = CalibrationResult(
+                outcome="cancelled",
+                exit_code=130,
+                stage=checkpoint.stage,
+                workload_set_id=request.workload_set_id,
+                case_ids=checkpoint.case_ids or request.case_ids,
+                message="calibration was interrupted by the user",
+            )
+        result = replace(result, session_id=session_id)
+        checkpoint_retained = checkpoint.finish(result)
+        return replace(
+            result,
+            checkpoint_path=checkpoint.path if checkpoint_retained else None,
+        )
+
+    def _run(
+        self,
+        request: CalibrationRequest,
+        *,
+        on_event: ProgressCallback | None,
+        cancellation_token: CancellationToken,
+        checkpoint: _CalibrationCheckpoint,
+    ) -> CalibrationResult:
+        self._validate_request(request)
         workload_set = load_workload_set(
             request.project_root,
             request.workload_set_id,
@@ -279,10 +499,25 @@ class CalibrationService:
         )
         case_ids = tuple(case.case_id for case in cases)
         full_case_ids = [case.case_id for case in workload_set.cases]
+        checkpoint.configure(
+            workload_sha256=workload_set.sha256,
+            case_ids=case_ids,
+        )
+        if cancellation_token.is_cancelled:
+            self._emit(on_event, "cancellation_observed", stage="starting")
+            return CalibrationResult(
+                outcome="cancelled",
+                exit_code=130,
+                stage="starting",
+                workload_set_id=request.workload_set_id,
+                case_ids=case_ids,
+            )
 
+        checkpoint.enter("probe")
         probe_context, probe_code, probe_result, probe_result_path = self._probe(
             request,
             on_event,
+            cancellation_token,
         )
         if probe_context is None:
             return CalibrationResult(
@@ -295,6 +530,7 @@ class CalibrationService:
                 probe_result_path=probe_result_path,
             )
         hardware_profile = probe_context.hardware_profile
+        checkpoint.enter("planning")
 
         existing_route: Path | None = None
         if str(hardware_profile["device_type"]).lower() == "cuda":
@@ -347,6 +583,14 @@ class CalibrationService:
             "probe_result_path": probe_context.result_path,
             "smoke_plans": tuple(smoke_plans),
         }
+        if cancellation_token.is_cancelled:
+            self._emit(on_event, "cancellation_observed", stage="planning")
+            return CalibrationResult(
+                outcome="cancelled",
+                exit_code=130,
+                stage="planning",
+                **result_base,
+            )
         if request.plan_only:
             self._emit(on_event, "plan_only_completed")
             return CalibrationResult(
@@ -385,12 +629,14 @@ class CalibrationService:
             smoke_protocol,
             "smoke",
             on_event,
+            cancellation_token,
+            checkpoint,
         )
         smoke_result_base = {
             **result_base,
             "smoke_summaries": tuple(smoke_summaries),
         }
-        if self._was_cancelled(smoke_summaries):
+        if cancellation_token.is_cancelled or self._was_cancelled(smoke_summaries):
             return CalibrationResult(
                 outcome="cancelled",
                 exit_code=130,
@@ -413,6 +659,7 @@ class CalibrationService:
                 **smoke_result_base,
             )
 
+        checkpoint.enter("formal_selection")
         try:
             formal_plans = list(
                 build_formal_candidate_plans(cases, smoke_summaries, incumbents)
@@ -464,13 +711,15 @@ class CalibrationService:
             formal_protocol,
             "formal",
             on_event,
+            cancellation_token,
+            checkpoint,
         )
         formal_result_base = {
             **smoke_result_base,
             "formal_plans": tuple(formal_plans),
             "formal_summaries": tuple(formal_summaries),
         }
-        if self._was_cancelled(formal_summaries):
+        if cancellation_token.is_cancelled or self._was_cancelled(formal_summaries):
             return CalibrationResult(
                 outcome="cancelled",
                 exit_code=130,
@@ -499,6 +748,15 @@ class CalibrationService:
                 **formal_result_base,
             )
 
+        if cancellation_token.is_cancelled:
+            self._emit(on_event, "cancellation_observed", stage="promotion")
+            return CalibrationResult(
+                outcome="cancelled",
+                exit_code=130,
+                stage="promotion",
+                **formal_result_base,
+            )
+        checkpoint.enter("promotion")
         self._emit(on_event, "promotion_started")
         try:
             previous_route_bytes = (
@@ -557,6 +815,22 @@ class CalibrationService:
             raise ContractError(f"unsupported calibration preset: {request.preset}")
         if request.candidate_limit <= 0:
             raise ContractError("candidate-limit must be positive")
+        if request.session_id is not None:
+            allowed = set(
+                "abcdefghijklmnopqrstuvwxyz"
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "0123456789._-"
+            )
+            if (
+                not request.session_id
+                or len(request.session_id) > 128
+                or request.session_id in {".", ".."}
+                or any(character not in allowed for character in request.session_id)
+            ):
+                raise ContractError(
+                    "session_id must use 1-128 letters, digits, dots, dashes, "
+                    "or underscores"
+                )
         if (
             request.preset == "formal"
             and not request.plan_only
@@ -571,6 +845,7 @@ class CalibrationService:
         self,
         request: CalibrationRequest,
         on_event: ProgressCallback | None,
+        cancellation_token: CancellationToken,
     ) -> tuple[
         _RoutingProbeContext | None,
         int,
@@ -588,6 +863,7 @@ class CalibrationService:
             matmul_precision=request.matmul_precision,
             allow_tf32=request.allow_tf32,
             probe_mode="routing",
+            cancellation_token=cancellation_token,
         )
         self._emit(
             on_event,
@@ -714,10 +990,23 @@ class CalibrationService:
         protocol: MeasurementProtocol,
         stage: str,
         on_event: ProgressCallback | None,
+        cancellation_token: CancellationToken,
+        checkpoint: _CalibrationCheckpoint,
     ) -> list[dict[str, Any]]:
+        checkpoint.enter(stage)
         self._emit(on_event, "stage_started", stage=stage)
         summaries: list[dict[str, Any]] = []
         for case, plan in zip(cases, plans, strict=True):
+            if cancellation_token.is_cancelled:
+                checkpoint.enter(stage, case.case_id)
+                self._emit(
+                    on_event,
+                    "cancellation_observed",
+                    case_id=case.case_id,
+                    stage=stage,
+                )
+                break
+            checkpoint.enter(stage, case.case_id)
             summary = self._dependencies.run_tuning(
                 request.project_root,
                 workload_set_id=request.workload_set_id,
@@ -728,8 +1017,10 @@ class CalibrationService:
                 requested_candidates=plan["candidate_order"],
                 routing_plan=plan,
                 device_profile=hardware_profile,
+                cancellation_token=cancellation_token,
             )
             summaries.append(summary)
+            checkpoint.record_summary(summary=summary)
             self._emit(
                 on_event,
                 "tuning_completed",
@@ -739,6 +1030,8 @@ class CalibrationService:
             )
             if self._summary_cancelled(summary):
                 break
+        if not cancellation_token.is_cancelled and not self._was_cancelled(summaries):
+            checkpoint.enter(stage)
         return summaries
 
     @staticmethod

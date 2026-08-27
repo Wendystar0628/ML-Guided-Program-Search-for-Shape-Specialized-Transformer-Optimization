@@ -7,12 +7,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from project_identity import solution_implementation_hash
 from runner.contracts import (
     MeasurementProtocol,
     WorkloadCase,
     load_workload_set,
-    solution_implementation_hash,
-    solution_source_hash,
 )
 from runner.tuning import candidates_for_case
 
@@ -131,6 +130,7 @@ def successful_run(
     target_median = 2.0 / speedup
     return {
         "schema_version": 2,
+        "run_id": f"fixture-{case_id}",
         "run_kind": "benchmark",
         "target": "solution",
         "sweep_id": sweep_id,
@@ -266,6 +266,7 @@ def staged_tuning_summary(
                 "target_round_medians_ms": [target, target],
                 "target_median_ms": target,
                 "target_p90_ms": target * 1.01,
+                "official_snapshot_sha256": EXPECTED_OFFICIAL_SHA256,
                 "execution_path": {
                     "requested_policy": candidate.solution_policy,
                     "selected_policy": candidate.solution_policy,
@@ -286,7 +287,9 @@ def staged_tuning_summary(
         "protocol": {"preset": preset},
         "source_consistent": True,
         "implementation_consistent": True,
-        "source_solution_sha256": solution_source_hash(PROJECT_ROOT / "solution"),
+        "official_consistent": True,
+        "official_snapshot_sha256": EXPECTED_OFFICIAL_SHA256,
+        "source_solution_sha256": implementation_hash,
         "source_implementation_sha256": implementation_hash,
         "observations": observations,
         "winner": max(observations, key=lambda item: item["conservative_speedup"]),

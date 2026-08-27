@@ -16,6 +16,7 @@ from solution.dispatch import ALLOWED_POLICIES
 from solution.policies import (
     POLICY_SPECS,
     ROUTABLE_POLICY_IDS,
+    ExecutionComponent,
     get_policy_spec,
 )
 
@@ -144,3 +145,37 @@ def test_each_active_deployable_policy_has_one_candidate_owner() -> None:
 
     assert set(owners) == deployable_policy_ids()
     assert all(len(candidate_ids) == 1 for candidate_ids in owners.values())
+
+
+def test_specialized_policy_identity_is_defined_by_required_components() -> None:
+    expected = {
+        "triton": {
+            ExecutionComponent.TRITON_QKV_LAYOUT,
+            ExecutionComponent.TRITON_ATTENTION_SOFTMAX,
+        },
+        "preprocess": {ExecutionComponent.TRITON_ATTENTION_PREPROCESS},
+        "s512-native-softmax": {
+            ExecutionComponent.S512_NATIVE_HALF_SOFTMAX
+        },
+        "long-tail-online": {ExecutionComponent.TAIL_ONLINE_ATTENTION},
+        "wide-triton-inplace": {
+            ExecutionComponent.TRITON_QKV_LAYOUT,
+            ExecutionComponent.WIDE_INPLACE_FFN,
+        },
+        "cuda-graph": {ExecutionComponent.CUDA_GRAPH},
+        "balanced-cuda-graph": {ExecutionComponent.CUDA_GRAPH},
+        "padding": {ExecutionComponent.TRITON_RESIDUAL},
+        "packed": {ExecutionComponent.PACKED_FFN},
+    }
+
+    assert {
+        policy_id: set(spec.required_components)
+        for policy_id, spec in POLICY_SPECS.items()
+        if spec.required_components
+    } == expected
+    assert POLICY_SPECS["triton"].allow_partial_application
+    assert all(
+        not spec.allow_partial_application
+        for policy_id, spec in POLICY_SPECS.items()
+        if policy_id != "triton"
+    )

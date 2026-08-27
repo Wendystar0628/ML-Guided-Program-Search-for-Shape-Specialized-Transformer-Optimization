@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from runner.calibration import (
     hardware_profile_from_probe,
 )
 from runner.contracts import ContractError, WorkloadCase
+from runner.supervisor import CancellationToken
 from tests.support.runner_fixtures import (
     EXPECTED_CASES,
     PROJECT_ROOT,
@@ -399,3 +401,114 @@ def test_calibration_stops_before_planning_when_probe_fails(tmp_path: Path) -> N
     assert result.outcome == "probe_failed"
     assert result.exit_code == 1
     assert [event.kind for event in events] == ["probe_started", "probe_completed"]
+
+
+def test_cooperative_cancellation_retains_one_compact_checkpoint(
+    tmp_path: Path,
+) -> None:
+    session_id = f"cancel-{tmp_path.name}"
+    token = CancellationToken()
+    events: list[CalibrationEvent] = []
+
+    def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args
+        assert kwargs["cancellation_token"] is token
+        token.cancel()
+        return {
+            "tuning_id": "cancelled-summary",
+            "observations": [{"outcome": "cancelled"}],
+        }
+
+    service = CalibrationService(
+        CalibrationDependencies(
+            run_probe=lambda *args, **kwargs: (
+                routing_probe_result(),
+                tmp_path / "probe.json",
+            ),
+            build_plan=lambda *args, **kwargs: {
+                "source": "hardware_cost_model",
+                "candidate_order": ["eager-auto"],
+            },
+            run_tuning=fake_tuning,
+            find_verified_route=lambda *args, **kwargs: None,
+            implementation_hash=lambda *args, **kwargs: "fixture-implementation",
+        )
+    )
+
+    result = service.run(
+        _request(
+            session_id=session_id,
+            case_ids=("launch_s64_fp16",),
+        ),
+        on_event=events.append,
+        cancellation_token=token,
+    )
+
+    try:
+        assert result.outcome == "cancelled"
+        assert result.exit_code == 130
+        assert result.session_id == session_id
+        assert result.checkpoint_path is not None
+        checkpoint = json.loads(result.checkpoint_path.read_text(encoding="utf-8"))
+        assert checkpoint == {
+            "schema_version": 1,
+            "session_id": session_id,
+            "status": "cancelled",
+            "stage": "smoke",
+            "active_case_id": "launch_s64_fp16",
+            "workload": {
+                "set_id": WORKLOAD_SET_ID,
+                "sha256": checkpoint["workload"]["sha256"],
+            },
+            "solution_implementation_sha256": "fixture-implementation",
+            "case_ids": ["launch_s64_fp16"],
+            "completed_summary_ids": ["cancelled-summary"],
+            "outcome": "cancelled",
+            "updated_at": checkpoint["updated_at"],
+        }
+        assert len(checkpoint["workload"]["sha256"]) == 64
+        assert all(event.session_id == session_id for event in events)
+        json.dumps([event.as_dict() for event in events], allow_nan=False)
+        json.dumps(result.as_dict(), allow_nan=False)
+    finally:
+        if result.checkpoint_path is not None:
+            result.checkpoint_path.unlink(missing_ok=True)
+
+
+def test_completed_calibration_removes_transient_checkpoint(tmp_path: Path) -> None:
+    session_id = f"complete-{tmp_path.name}"
+    service = CalibrationService(
+        CalibrationDependencies(
+            run_probe=lambda *args, **kwargs: (
+                routing_probe_result(),
+                tmp_path / "probe.json",
+            ),
+            build_plan=lambda *args, **kwargs: {
+                "source": "hardware_cost_model",
+                "candidate_order": ["eager-auto"],
+            },
+            run_tuning=lambda *args, **kwargs: staged_tuning_summary(
+                kwargs["case"],
+                ["eager-auto"],
+                kwargs["base_protocol"].preset,
+                tmp_path,
+            ),
+            find_verified_route=lambda *args, **kwargs: None,
+            implementation_hash=lambda *args, **kwargs: "fixture-implementation",
+        )
+    )
+
+    result = service.run(
+        _request(
+            session_id=session_id,
+            case_ids=("launch_s64_fp16",),
+        )
+    )
+
+    checkpoint_path = (
+        PROJECT_ROOT / "results" / "calibration" / f"{session_id}.json"
+    )
+    assert result.outcome == "smoke_complete"
+    assert result.session_id == session_id
+    assert result.checkpoint_path is None
+    assert not checkpoint_path.exists()

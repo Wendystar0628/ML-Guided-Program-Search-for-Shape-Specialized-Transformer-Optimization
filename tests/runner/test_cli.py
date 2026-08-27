@@ -9,6 +9,7 @@ import pytest
 
 from runner import __main__ as runner_cli
 from runner.contracts import MeasurementProtocol, WorkloadCase
+from runner.sweep import BenchmarkSweepService
 from tests.support.runner_fixtures import (
     EXPECTED_CASES,
     WORKLOAD_SET_ID,
@@ -72,20 +73,6 @@ def test_cli_parses_public_commands() -> None:
     assert calibrate.allow_tf32 is False
     assert calibrate.plan_only is False
 
-    promote = parser.parse_args(
-        [
-            "promote",
-            "--tuning-id",
-            "fixture-tuning",
-            "--route-table",
-            "verified_hardware/fixture/routes.json",
-        ]
-    )
-    assert promote.command == "promote"
-    assert promote.tuning_id == ["fixture-tuning"]
-    assert promote.route_table == Path("verified_hardware/fixture/routes.json")
-
-
 def test_tune_requires_explicit_candidates() -> None:
     parser = runner_cli.build_parser()
 
@@ -95,31 +82,12 @@ def test_tune_requires_explicit_candidates() -> None:
     assert missing_candidate.value.code == 2
 
 
-@pytest.mark.parametrize(
-    ("extra_arguments", "expected_ids", "expected_result_dir"),
-    [
-        (
-            [
-                "--case-id",
-                "balanced_s128_fp16",
-                "--result-dir",
-                "verified_hardware/fixture/results/runs",
-            ],
-            ["balanced_s128_fp16"],
-            Path("verified_hardware/fixture/results/runs"),
-        ),
-        ([], [case[0] for case in EXPECTED_CASES], None),
-    ],
-    ids=("single-case", "ordered-sweep"),
-)
-def test_benchmark_cli_dispatches_public_runner_api(
+def test_single_case_benchmark_cli_dispatches_supervisor(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    extra_arguments: list[str],
-    expected_ids: list[str],
-    expected_result_dir: Path | None,
 ) -> None:
     calls: list[tuple[str, str | None, str | None]] = []
+    result_dir = Path("verified_hardware/fixture/results/runs")
 
     def fake_run_managed_benchmark(
         project_root: Path,
@@ -138,7 +106,7 @@ def test_benchmark_cli_dispatches_public_runner_api(
         assert workload_set_id == WORKLOAD_SET_ID
         assert target == "solution"
         assert solution_policy == "dispatch"
-        assert result_dir == expected_result_dir
+        assert result_dir == Path("verified_hardware/fixture/results/runs")
         calls.append((case.case_id, workload_sha256, sweep_id))
         return successful_run(
             case.case_id,
@@ -148,12 +116,60 @@ def test_benchmark_cli_dispatches_public_runner_api(
 
     monkeypatch.setattr(runner_cli, "run_managed_benchmark", fake_run_managed_benchmark)
 
-    assert runner_cli.main(["benchmark", *extra_arguments]) == 0
-    assert [case_id for case_id, _, _ in calls] == expected_ids
-    if len(expected_ids) == 1:
-        assert calls[0][2] is None
-    else:
-        sweep_ids = {sweep_id for _, _, sweep_id in calls}
-        assert len(sweep_ids) == 1
-        assert None not in sweep_ids
+    assert (
+        runner_cli.main(
+            [
+                "benchmark",
+                "--case-id",
+                "balanced_s128_fp16",
+                "--result-dir",
+                str(result_dir),
+            ]
+        )
+        == 0
+    )
+    assert [case_id for case_id, _, _ in calls] == ["balanced_s128_fp16"]
+    assert calls[0][2] is None
     assert all(workload_hash for _, workload_hash, _ in calls)
+
+
+def test_full_benchmark_cli_dispatches_sweep_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, Path]] = []
+
+    def fake_run_managed_benchmark(
+        _project_root: Path,
+        **arguments: Any,
+    ) -> tuple[dict[str, Any], Path]:
+        case = arguments["case"]
+        sweep_id = arguments["sweep_id"]
+        result_dir = arguments["result_dir"]
+        calls.append((case.case_id, sweep_id, result_dir))
+        return (
+            successful_run(case.case_id, 2.0, sweep_id=sweep_id),
+            result_dir / f"{case.case_id}.json",
+        )
+
+    monkeypatch.setattr(
+        runner_cli,
+        "BenchmarkSweepService",
+        lambda: BenchmarkSweepService(fake_run_managed_benchmark),
+    )
+    output_root = tmp_path / "sweeps"
+
+    assert (
+        runner_cli.main(["benchmark", "--result-dir", str(output_root)])
+        == 0
+    )
+    assert [case_id for case_id, _, _ in calls] == [
+        case[0] for case in EXPECTED_CASES
+    ]
+    sweep_ids = {sweep_id for _, sweep_id, _ in calls}
+    assert len(sweep_ids) == 1
+    sweep_id = next(iter(sweep_ids))
+    assert {directory for _, _, directory in calls} == {
+        (output_root / sweep_id / "runs").resolve()
+    }
+    assert (output_root / sweep_id / "summary.json").is_file()

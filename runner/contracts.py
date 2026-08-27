@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from project_identity import official_snapshot_hash
+
 
 class ContractError(ValueError):
     """Raised when an input or persisted result violates the runner contract."""
@@ -277,48 +279,6 @@ def new_run_id() -> str:
     return f"{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _hash_solution_files(solution_root: Path) -> str:
-    suffixes = {".py", ".cpp", ".cc", ".c", ".h", ".cu", ".cuh"}
-    files = sorted(
-        path
-        for path in solution_root.rglob("*")
-        if path.is_file()
-        and path.suffix.lower() in suffixes
-        and "__pycache__" not in path.parts
-    )
-    if not files:
-        raise ContractError(f"no solution source files found under {solution_root}")
-    digest = hashlib.sha256()
-    for path in files:
-        relative = path.relative_to(solution_root).as_posix().encode("utf-8")
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        data = path.read_bytes()
-        digest.update(len(data).to_bytes(8, "big"))
-        digest.update(data)
-    return digest.hexdigest()
-
-
-def solution_source_hash(solution_root: Path) -> str:
-    """Hash executable Solution code; route tables carry their own identity."""
-
-    return _hash_solution_files(solution_root)
-
-
-def solution_implementation_hash(solution_root: Path) -> str:
-    """Hash executable implementation files for promotion compatibility."""
-
-    return _hash_solution_files(solution_root)
-
-
 def load_json(path: Path) -> dict[str, Any]:
     def reject_constant(value: str) -> None:
         raise ValueError(f"non-standard JSON constant: {value}")
@@ -336,16 +296,12 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def validate_official_snapshot(project_root: Path) -> dict[str, Any]:
     metadata = load_json(project_root / "official" / "snapshot.json")
-    snapshot = project_root / str(metadata.get("snapshot_path", ""))
-    expected_size = metadata.get("byte_count")
-    expected_hash = metadata.get("sha256")
-    if not snapshot.is_file():
-        raise ContractError(f"official snapshot is missing: {snapshot}")
-    if snapshot.stat().st_size != expected_size:
-        raise ContractError("official snapshot byte count does not match metadata")
-    actual_hash = sha256_file(snapshot)
-    if actual_hash != expected_hash:
-        raise ContractError("official snapshot checksum does not match metadata")
+    try:
+        actual_hash = official_snapshot_hash(project_root)
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
+    if metadata.get("sha256") != actual_hash:
+        raise ContractError("official snapshot metadata hash is not normalized")
     return metadata
 
 
@@ -429,11 +385,7 @@ def select_workload_case(workload_set: WorkloadSet, case_id: str) -> WorkloadCas
     raise ContractError(f"unknown case_id {case_id!r}; available: {available}")
 
 
-def atomic_write_json(path: Path, document: dict[str, Any]) -> None:
-    """Publish one immutable, strict JSON result using a same-directory rename."""
-
-    if path.exists():
-        raise ContractError(f"refusing to overwrite existing result: {path}")
+def _atomic_publish_json(path: Path, document: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
         document,
@@ -457,3 +409,17 @@ def atomic_write_json(path: Path, document: dict[str, Any]) -> None:
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def atomic_write_json(path: Path, document: dict[str, Any]) -> None:
+    """Publish one immutable, strict JSON result using a same-directory rename."""
+
+    if path.exists():
+        raise ContractError(f"refusing to overwrite existing result: {path}")
+    _atomic_publish_json(path, document)
+
+
+def atomic_replace_json(path: Path, document: dict[str, Any]) -> None:
+    """Atomically replace one explicitly mutable JSON reference document."""
+
+    _atomic_publish_json(path, document)

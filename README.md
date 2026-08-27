@@ -26,8 +26,8 @@ workflow is:
 4. formally remeasure only the dynamically selected controls and finalist;
 5. apply the correctness, observed-execution, incumbent, gain, and shared-route
    gates before publishing every accepted route atomically; and
-6. bind the published routes to the measured Workload and Solution version in
-   a small verified-bundle manifest;
+6. bind the published routes to the measured official snapshot, Workload,
+   Solution, protocol, and exact runtime in a small verified-bundle manifest;
 7. use deterministic dispatch at runtime, with `auto` as the safe fallback.
 
 The workload and optimization code stay shared. Only an exact, measured route
@@ -69,21 +69,28 @@ benchmark logic into `forward`.
 
 ## Environment
 
-The checked Windows development environment uses Python 3.12, PyTorch with
-CUDA, and Triton for Windows:
+For the validated local Windows RTX 4080 environment:
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-. .\activate_dev_env.ps1
-python environment_check.py
+.\.venv\Scripts\python.exe -m pip install -r requirements-windows-rtx4080.txt
+. .\activate_windows_rtx4080.ps1
+python environment_check.py --check-extension
 ```
 
-`activate_dev_env.ps1` configures the local MSVC, CUDA, Triton, TorchInductor,
-and CUDA-extension paths. `environment_check.py` exercises PyTorch CUDA,
-Triton JIT, `torch.compile`, and a small CUDA extension. Device-specific
-versions are recorded in the corresponding verified-hardware profile rather
-than treated as repository-wide requirements.
+`activate_windows_rtx4080.ps1` is intentionally machine specific: it selects
+the checked MSVC and CUDA 13.2 toolchains and targets `sm_89`. The matching
+fully resolved package set is kept in
+`requirements-windows-rtx4080-lock.txt`.
+
+On another GPU or platform, install the CUDA-enabled PyTorch and Triton builds
+supported there, then install the platform-neutral tools in `requirements.txt`.
+Run `python environment_check.py --device cuda:0`; it detects the current CUDA
+runtime and Compute Capability, selects that capability as the default extension
+target, and exercises PyTorch CUDA, Triton JIT, and `torch.compile`. Add
+`--check-extension` only when a local CUDA toolkit and host compiler are
+available. Native Windows uses `triton-windows`; Linux environments should use
+the Triton distribution selected by their PyTorch/CUDA stack.
 
 ## Quick start on any supported GPU
 
@@ -114,9 +121,10 @@ remeasurement, and promotion gates. A new device formally compares at most
 `eager-auto` and its best Smoke challenger. A device with a specialized current
 route also retains that incumbent, so Formal measures at most three distinct
 candidates. Runner then locates or creates the exact verified-device package
-and publishes all accepted routes with one atomic `routes.json` update. A
-companion `manifest.json` binds that table to the exact Workload definition,
-Solution implementation, Formal protocol, and compact Summary/Case IDs:
+and publishes `profile.json`, `routes.json`, and `manifest.json` as one locked
+bundle update with rollback on failure. The manifest binds the table to the
+official snapshot, exact Workload definition, Solution implementation, Formal
+protocol, and compact Summary/Route identities:
 
 ```powershell
 python -m runner calibrate --preset formal --device cuda:0
@@ -146,15 +154,6 @@ formal preset:
 ```powershell
 python -m runner tune --case-id launch_s64_fp16 `
   --candidate eager-auto --candidate launch-cudagraph --preset formal
-```
-
-Manual promotion is retained only to replay a compatible historical formal
-summary or recover from an interrupted deployment:
-
-```powershell
-python -m runner promote `
-  --route-table verified_hardware/<device_id>/routes.json `
-  --tuning-id <tuning-id>
 ```
 
 Run a complete formal sweep or profile one representative case:
@@ -233,15 +232,17 @@ preset. Workloads that share one runtime route key are screened and formally
 decided together, so one incompatible per-case winner cannot overwrite the
 other. After all fail-closed implementation, execution, correctness,
 conservative-gain, incumbent, and shared-route gates pass, Runner resolves or
-creates the verified package and publishes all route changes together. The
-manual `promote` command is retained only for compatible history replay or
-deployment recovery and applies the same gates.
+creates the verified package and publishes all route changes together. There is
+no separate manual deployment path: interrupted work is represented by a small
+calibration checkpoint, while a subsequent Formal calibration remeasures and
+publishes through the same deterministic service.
 
 At inference time, [`solution/dispatch.py`](solution/dispatch.py) loads the
 verified device-route catalog once, accepts only bundles whose manifest still
-matches the route table, Workload definition, and current Solution
-implementation, then matches the exact hardware/software/shape key. A missing,
-invalid, or stale bundle is skipped closed and the unmatched input uses `auto`.
+matches the route table, official snapshot, Workload definition, and current
+Solution implementation, then matches the exact GPU, platform, PyTorch, CUDA,
+Triton, driver, dtype, and shape key. A missing, invalid, or stale bundle is
+skipped closed and the unmatched input uses `auto`.
 There is no online benchmarking and no scan of historical result files in
 `forward`. A verified route therefore needs only cheap identity matching during
 ordinary execution; performance anchors belong only to cold-start calibration
@@ -297,8 +298,14 @@ Every benchmark case runs in a fresh worker process. The worker:
 The default development paths are:
 
 ```text
-results/runs/<run_id>.json
-results/tuning/<tuning_id>.json
+results/sweeps/<sweep_id>/summary.json
+results/sweeps/<sweep_id>/runs/<run_id>.json
+results/tuning/<tuning_id>/summary.json
+results/tuning/<tuning_id>/runs/<run_id>.json
+results/probes/<run_id>.json
+results/profiles/<run_id>.json
+results/runs/<run_id>.json                    # explicit single-case benchmark
+results/calibration/<session_id>.json        # retained only after interruption
 ```
 
 A benchmark result retains the workload and protocol, compact hardware/runtime
@@ -365,7 +372,7 @@ official/                    Immutable supplied benchmark snapshot
 solution/                    Shared optimized Transformer and kernel candidates
 solution/policies.py         Single registry of concrete runtime policies
 solution/execution_plan.py   Pure runtime eligibility and execution-plan resolver
-runner/                      Probe, analysis, benchmark, profile, tune, and promotion
+runner/                      Probe, analysis, benchmark, profile, tune, and calibration
 runner/candidates.py         Candidate applicability, capability, and evidence registry
 runner/calibration.py        Reusable cold-start service for CLI and future Agent callers
 runner/result_contracts.py   Typed worker and compact benchmark-result boundaries

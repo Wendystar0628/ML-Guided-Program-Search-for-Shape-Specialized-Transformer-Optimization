@@ -29,6 +29,7 @@ class HardwareIdentity:
     torch: str
     cuda_runtime: str
     triton: str
+    driver: str
 
     def as_route_fields(self) -> dict[str, str]:
         return {
@@ -39,6 +40,7 @@ class HardwareIdentity:
             "torch": self.torch,
             "cuda_runtime": self.cuda_runtime,
             "triton": self.triton,
+            "driver": self.driver,
         }
 
     def as_make_route_key_kwargs(self) -> dict[str, str]:
@@ -50,6 +52,7 @@ class HardwareIdentity:
             "torch_version": self.torch,
             "cuda_runtime": self.cuda_runtime,
             "triton_version": self.triton,
+            "driver": self.driver,
         }
 
 
@@ -76,6 +79,7 @@ def hardware_identity_from_flat_profile(
         torch=_required_string(profile.get("torch"), "torch"),
         cuda_runtime=_required_string(profile.get("cuda_runtime"), "cuda_runtime"),
         triton=_required_string(profile.get("triton"), "triton"),
+        driver=_required_string(profile.get("driver") or "unavailable", "driver"),
     )
 
 
@@ -107,6 +111,7 @@ def hardware_identity_from_hardware_profile(
         torch=_required_string(software.get("torch"), "torch"),
         cuda_runtime=_required_string(software.get("cuda_runtime"), "cuda_runtime"),
         triton=_required_string(software.get("triton"), "triton"),
+        driver=_required_string(software.get("driver") or "unavailable", "driver"),
     )
 
 
@@ -153,6 +158,7 @@ def hardware_identity_from_runtime(
         torch=_required_string(software.get("torch"), "torch"),
         cuda_runtime=_required_string(software.get("cuda_runtime"), "cuda_runtime"),
         triton=_required_string(software.get("triton"), "triton"),
+        driver=_required_string(software.get("driver") or "unavailable", "driver"),
     )
 
 

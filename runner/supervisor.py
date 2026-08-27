@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from runner.contracts import (
     utc_now,
     validate_official_snapshot,
 )
+from runner.locking import device_measurement_lease
 from runner.result_contracts import (
     compact_correctness,
     compact_performance,
@@ -30,6 +32,24 @@ from runner.result_contracts import (
     validate_benchmark_performance,
     validate_correctness,
 )
+
+
+class CancellationToken:
+    """Thread-safe cooperative cancellation shared by callers and workers."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        """Request cancellation. Repeated calls are harmless."""
+
+        self._event.set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Return whether cancellation has been requested."""
+
+        return self._event.is_set()
 
 
 def _validate_timeout_seconds(value: Any) -> float:
@@ -110,6 +130,7 @@ def _run_worker_inner(
     project_root: Path,
     request: dict[str, Any],
     timeout_seconds: float,
+    cancellation_token: CancellationToken | None = None,
 ) -> dict[str, Any]:
     timeout_seconds = _validate_timeout_seconds(timeout_seconds)
     cache_root = project_root / ".cache" / "runner"
@@ -141,35 +162,59 @@ def _run_worker_inner(
             ],
             **popen_options,
         )
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            _stop_process_tree(process)
-            return _failure_response(
-                "timeout",
-                stage="worker",
-                failure_type="TimeoutExpired",
-                message=f"runner worker exceeded {timeout_seconds:g} seconds",
-                exit_code=process.returncode,
-            )
-        except KeyboardInterrupt:
-            _stop_process_tree(process)
-            return _failure_response(
-                "cancelled",
-                stage="worker",
-                failure_type="KeyboardInterrupt",
-                message="runner worker was cancelled by the user",
-                exit_code=process.returncode,
-            )
-        except (OSError, ValueError, OverflowError, subprocess.SubprocessError) as exc:
-            _stop_process_tree(process)
-            return _failure_response(
-                "runtime_error",
-                stage="worker",
-                failure_type=type(exc).__name__,
-                message=str(exc),
-                exit_code=process.returncode,
-            )
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate()
+                    break
+                if cancellation_token is not None and cancellation_token.is_cancelled:
+                    _stop_process_tree(process)
+                    return _failure_response(
+                        "cancelled",
+                        stage="worker",
+                        failure_type="CancellationRequested",
+                        message="runner worker was cancelled by its caller",
+                        exit_code=process.returncode,
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _stop_process_tree(process)
+                    return _failure_response(
+                        "timeout",
+                        stage="worker",
+                        failure_type="TimeoutExpired",
+                        message=f"runner worker exceeded {timeout_seconds:g} seconds",
+                        exit_code=process.returncode,
+                    )
+                try:
+                    stdout, stderr = process.communicate(timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            except KeyboardInterrupt:
+                _stop_process_tree(process)
+                return _failure_response(
+                    "cancelled",
+                    stage="worker",
+                    failure_type="KeyboardInterrupt",
+                    message="runner worker was cancelled by the user",
+                    exit_code=process.returncode,
+                )
+            except (
+                OSError,
+                ValueError,
+                OverflowError,
+                subprocess.SubprocessError,
+            ) as exc:
+                _stop_process_tree(process)
+                return _failure_response(
+                    "runtime_error",
+                    stage="worker",
+                    failure_type=type(exc).__name__,
+                    message=str(exc),
+                    exit_code=process.returncode,
+                )
 
         if response_path.is_file():
             try:
@@ -224,9 +269,23 @@ def _run_worker(
     project_root: Path,
     request: dict[str, Any],
     timeout_seconds: float,
+    cancellation_token: CancellationToken | None = None,
 ) -> dict[str, Any]:
+    if cancellation_token is not None and cancellation_token.is_cancelled:
+        return _failure_response(
+            "cancelled",
+            stage="worker_start",
+            failure_type="CancellationRequested",
+            message="runner request was cancelled before the worker started",
+            exit_code=None,
+        )
     try:
-        return _run_worker_inner(project_root, request, timeout_seconds)
+        return _run_worker_inner(
+            project_root,
+            request,
+            timeout_seconds,
+            cancellation_token,
+        )
     except KeyboardInterrupt:
         return _failure_response(
             "cancelled",
@@ -388,6 +447,45 @@ def run_managed_benchmark(
     candidate_id: str | None = None,
     result_dir: Path | None = None,
     solution_policy: str | None = None,
+    cancellation_token: CancellationToken | None = None,
+) -> tuple[dict[str, Any], Path]:
+    with device_measurement_lease(
+        project_root,
+        device,
+        purpose="benchmark",
+    ):
+        return _run_managed_benchmark(
+            project_root,
+            workload_set_id=workload_set_id,
+            case=case,
+            protocol=protocol,
+            device=device,
+            target=target,
+            workload_sha256=workload_sha256,
+            sweep_id=sweep_id,
+            tuning_id=tuning_id,
+            candidate_id=candidate_id,
+            result_dir=result_dir,
+            solution_policy=solution_policy,
+            cancellation_token=cancellation_token,
+        )
+
+
+def _run_managed_benchmark(
+    project_root: Path,
+    *,
+    workload_set_id: str,
+    case: WorkloadCase,
+    protocol: MeasurementProtocol,
+    device: str,
+    target: str = "solution",
+    workload_sha256: str | None = None,
+    sweep_id: str | None = None,
+    tuning_id: str | None = None,
+    candidate_id: str | None = None,
+    result_dir: Path | None = None,
+    solution_policy: str | None = None,
+    cancellation_token: CancellationToken | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
     run_id = new_run_id()
@@ -403,7 +501,12 @@ def run_managed_benchmark(
     }
     if solution_policy is not None and target == "solution":
         request["solution_policy"] = solution_policy
-    response = _run_worker(project_root, request, protocol.timeout_seconds)
+    response = _run_worker(
+        project_root,
+        request,
+        protocol.timeout_seconds,
+        cancellation_token=cancellation_token,
+    )
     source = {"official_sha256": snapshot["sha256"]}
     if response.get("solution_source_sha256") is not None:
         source["solution_sha256"] = response["solution_source_sha256"]
@@ -462,6 +565,37 @@ def run_managed_profile(
     target: str,
     workload_sha256: str | None = None,
     solution_policy: str | None = None,
+    cancellation_token: CancellationToken | None = None,
+) -> tuple[dict[str, Any], Path]:
+    with device_measurement_lease(
+        project_root,
+        device,
+        purpose="profile",
+    ):
+        return _run_managed_profile(
+            project_root,
+            workload_set_id=workload_set_id,
+            case=case,
+            protocol=protocol,
+            device=device,
+            target=target,
+            workload_sha256=workload_sha256,
+            solution_policy=solution_policy,
+            cancellation_token=cancellation_token,
+        )
+
+
+def _run_managed_profile(
+    project_root: Path,
+    *,
+    workload_set_id: str,
+    case: WorkloadCase,
+    protocol: MeasurementProtocol,
+    device: str,
+    target: str,
+    workload_sha256: str | None = None,
+    solution_policy: str | None = None,
+    cancellation_token: CancellationToken | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
     run_id = new_run_id()
@@ -477,7 +611,12 @@ def run_managed_profile(
     }
     if solution_policy is not None and target == "solution":
         request["solution_policy"] = solution_policy
-    response = _run_worker(project_root, request, protocol.timeout_seconds)
+    response = _run_worker(
+        project_root,
+        request,
+        protocol.timeout_seconds,
+        cancellation_token=cancellation_token,
+    )
     source = {"official_sha256": snapshot["sha256"]}
     if response.get("solution_source_sha256") is not None:
         source["solution_sha256"] = response["solution_source_sha256"]
@@ -510,7 +649,11 @@ def run_managed_profile(
     if failure is not None:
         result["failure"] = failure
     _enforce_success_contract(result)
-    return _persist_result(project_root, result)
+    return _persist_result(
+        project_root,
+        result,
+        result_dir=project_root / "results" / "profiles",
+    )
 
 
 def run_managed_probe(
@@ -521,6 +664,33 @@ def run_managed_probe(
     matmul_precision: str = "high",
     allow_tf32: bool = True,
     probe_mode: str = "diagnostic",
+    cancellation_token: CancellationToken | None = None,
+) -> tuple[dict[str, Any], Path]:
+    with device_measurement_lease(
+        project_root,
+        device,
+        purpose="device probe",
+    ):
+        return _run_managed_probe(
+            project_root,
+            device=device,
+            timeout_seconds=timeout_seconds,
+            matmul_precision=matmul_precision,
+            allow_tf32=allow_tf32,
+            probe_mode=probe_mode,
+            cancellation_token=cancellation_token,
+        )
+
+
+def _run_managed_probe(
+    project_root: Path,
+    *,
+    device: str,
+    timeout_seconds: float = 30.0,
+    matmul_precision: str = "high",
+    allow_tf32: bool = True,
+    probe_mode: str = "diagnostic",
+    cancellation_token: CancellationToken | None = None,
 ) -> tuple[dict[str, Any], Path]:
     timeout_seconds = _validate_timeout_seconds(timeout_seconds)
     if matmul_precision not in {"highest", "high", "medium"}:
@@ -532,16 +702,18 @@ def run_managed_probe(
     project_root = project_root.resolve()
     run_id = new_run_id()
     created_at = utc_now()
+    worker_request = {
+        "run_kind": "probe",
+        "device": device,
+        "probe_mode": probe_mode,
+        "matmul_precision": matmul_precision,
+        "allow_tf32": allow_tf32,
+    }
     response = _run_worker(
         project_root,
-        {
-            "run_kind": "probe",
-            "device": device,
-            "probe_mode": probe_mode,
-            "matmul_precision": matmul_precision,
-            "allow_tf32": allow_tf32,
-        },
+        worker_request,
         timeout_seconds,
+        cancellation_token=cancellation_token,
     )
     result: dict[str, Any] = {
         "schema_version": 2,
@@ -561,4 +733,8 @@ def run_managed_probe(
     if failure is not None:
         result["failure"] = failure
     _enforce_success_contract(result)
-    return _persist_result(project_root, result)
+    return _persist_result(
+        project_root,
+        result,
+        result_dir=project_root / "results" / "probes",
+    )

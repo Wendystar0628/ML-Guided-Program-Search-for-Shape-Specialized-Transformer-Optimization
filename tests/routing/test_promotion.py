@@ -8,10 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from runner import route_promotion
 from runner.contracts import ContractError
 from runner.route_promotion import (
+    auto_promote_calibration,
     build_promoted_route_document,
-    promote_tuning_summaries,
     select_deployable_winner,
 )
 from solution.dispatch import ROUTE_FIELDS
@@ -23,8 +24,13 @@ from tests.support.routing_fixtures import (
     exact_route_document,
     formal_summary,
     promotion_project,
+    routing_probe_result,
     s512_summary,
 )
+
+
+def test_standalone_route_promotion_api_is_removed() -> None:
+    assert not hasattr(route_promotion, "promote_tuning_summaries")
 
 
 def test_formal_promotion_ignores_compile_and_writes_one_exact_route() -> None:
@@ -179,21 +185,25 @@ def test_shared_s512_route_requires_all_formal_summaries(tmp_path: Path) -> None
     full = s512_summary("mask_s512_full_fp16", padding_ratio=0.0)
     padding = s512_summary("mask_s512_padding_fp16", padding_ratio=0.75)
     bind_workload_summaries(project_root, [full, padding])
-    route_path = tmp_path / "routes.json"
+    case_ids = ["mask_s512_full_fp16", "mask_s512_padding_fp16"]
 
     with pytest.raises(ContractError, match="shared runtime route"):
-        promote_tuning_summaries(
+        auto_promote_calibration(
             project_root,
             [full],
-            route_path=route_path,
+            probe_result=routing_probe_result(),
+            full_workload_case_ids=case_ids,
         )
 
-    document, winners, _ = promote_tuning_summaries(
+    document, winners, route_path, created = auto_promote_calibration(
         project_root,
         [full, padding],
-        route_path=route_path,
+        probe_result=routing_probe_result(),
+        full_workload_case_ids=case_ids,
     )
 
+    assert created is True
+    assert route_path.parent.parent == project_root / "verified_hardware"
     assert len(winners) == 2
     assert len(document["routes"]) == 1
     assert set(document["routes"][0]["match"]) == ROUTE_FIELDS
@@ -212,12 +222,15 @@ def test_shared_route_conflict_keeps_the_common_exact_incumbent(
     padding_winner["execution_path"] = candidate_execution_path("padding")
     bind_workload_summaries(project_root, [full, padding])
 
-    document, deployments, _ = promote_tuning_summaries(
+    case_ids = ["mask_s512_full_fp16", "mask_s512_padding_fp16"]
+    document, deployments, _route_path, created = auto_promote_calibration(
         project_root,
         [full, padding],
-        route_path=tmp_path / "routes.json",
+        probe_result=routing_probe_result(),
+        full_workload_case_ids=case_ids,
     )
 
+    assert created is True
     assert [item["solution_policy"] for item in deployments] == ["auto", "auto"]
     assert len(document["routes"]) == 1
     assert document["routes"][0]["policy"] == "auto"
@@ -240,12 +253,15 @@ def test_weak_workload_does_not_block_independent_exact_route(
     strong["tuning_id"] = "strong-tuning"
     bind_workload_summaries(project_root, [weak, strong])
 
-    document, deployed, route_path = promote_tuning_summaries(
+    case_ids = ["weak_fixture", "strong_fixture"]
+    document, deployed, route_path, created = auto_promote_calibration(
         project_root,
         [weak, strong],
-        route_path=tmp_path / "routes.json",
+        probe_result=routing_probe_result(),
+        full_workload_case_ids=case_ids,
     )
 
+    assert created is True
     policies_by_causal = {
         route["match"]["causal"]: route["policy"] for route in document["routes"]
     }

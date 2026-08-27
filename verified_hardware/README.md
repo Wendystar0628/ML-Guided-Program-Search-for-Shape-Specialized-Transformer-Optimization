@@ -14,14 +14,13 @@ Each verified GPU uses one stable directory name and contains:
 ```text
 <device_id>/
   README.md                Human-readable conclusions, routes, and limitations
-  profile.json             Checked hardware and software identity
-  routes.json              Single machine-readable source of exact routes
-  manifest.json            Workload, Solution, route, and Formal provenance binding
+  profile.json             Most recently calibrated hardware and runtime profile
+  routes.json              Exact routes for measured runtime/workload keys
+  manifest.json            Official, Workload, Solution, route, and Formal binding
   run_verified.py          Thin entry into the shared Runner
   results/
-    reference_formal.json  One compact, curated formal result
-    runs/                  Generated per-case measurements, ignored by Git
-    summaries/             Generated sweep summaries, ignored by Git
+    reference_formal.json  The latest tracked unified Formal SweepSummary
+    sweeps/                Generated isolated sweeps, ignored by Git
 ```
 
 The package must not copy the Transformer implementation, kernels, workload,
@@ -32,8 +31,9 @@ inside the package.
 
 `routes.json` is the only machine-readable source for that device's deployed
 route decisions. `manifest.json` is the small trust boundary around those
-decisions: it binds the route-table hash to the exact Workload hash, current
-Solution implementation hash, Formal protocol, and compact Summary/Case IDs.
+decisions: it binds the route-table hash to the official snapshot, exact
+Workload hash, current Solution implementation hash, Formal protocol, and
+compact Summary/Route identities.
 The shared dispatcher discovers only current packages. A missing, invalid, or
 stale manifest causes that package to be skipped closed, so its routes cannot
 silently control changed code; unmatched inputs use the shared `auto` fallback.
@@ -42,9 +42,12 @@ performance result. Duplicate exact keys across accepted packages are rejected
 rather than resolved by directory order.
 
 `reference_formal.json` is a concise evidence snapshot, not raw history. It
-should identify the workload and software stack, list correctness and paired
-latency/speedup for every case, and report the fixed workload aggregates.
-Timestamped runs and summaries are useful locally but remain ignored.
+is the same unified `SweepSummary` written by the normal Sweep service; it is
+not converted into a second evidence schema. Case entries use stable `run_id`
+values rather than paths tied to the generated summary location. A later
+Formal run atomically replaces this one mutable reference; generated runs and
+sweep summaries remain immutable. Generated sweep directories are useful
+locally but remain ignored.
 
 ## Adding another GPU
 
@@ -56,8 +59,8 @@ python -m runner calibrate --preset formal --device cuda:0
 
 Runner probes the device once, measures the bounded candidates with the complete
 Transformer Workloads, applies every correctness and promotion gate, then
-automatically locates or creates the stable package for the measured
-hardware/software identity. Internally, the command uses one Probe, a
+automatically locates or creates the stable package for the measured GPU
+identity. Internally, the command uses one Probe, a
 deployable Smoke Top-3 screen by default, and a dynamically reduced Formal set.
 On a new device the Formal set contains at most `eager-auto` and the best valid
 Smoke challenger. If an exact specialized route already exists, that incumbent
@@ -65,30 +68,34 @@ is retained as a third possible Formal candidate. These controls are
 deduplicated before measurement.
 
 Formal publication uses only the strict remeasurements, not the Smoke ranking.
-Workloads that share one runtime route key are evaluated jointly. All accepted
-routes are published to `routes.json` with one atomic update, then the manifest
-is refreshed from those same Formal summaries. Any incomplete package fails
+Workloads that share one runtime route key are evaluated jointly. Every Runner
+CUDA measurement uses the same reentrant device lease, so calibration, tuning,
+sweeps, probes, and direct measurements cannot overlap on one GPU. Formal
+calibration holds that lease for its complete run, and publication separately
+holds one package lock.
+`profile.json`, `routes.json`, and `manifest.json` are validated before writing
+and restored together if publication fails. Any incomplete package fails
 closed. A challenger below the promotion margin keeps the measured incumbent,
 while a new exact key without a qualified specialized winner records the
 formally measured `auto` decision.
 
 Smoke calibration, plan-only calibration, and `tune` are non-deploying
 workflows. `tune` measures only an explicitly supplied `--candidate` list;
-automatic candidate planning and ranking belong to `calibrate`. The manual
-`promote` command exists only for replaying a compatible historical formal
-summary or recovering from an interrupted deployment; it is not part of normal
-calibration.
+automatic candidate planning, ranking, and publication belong to `calibrate`.
+An interrupted calibration retains one small checkpoint instead of exposing a
+second manual deployment path.
 
 After automatic publication, use the package launcher to reproduce the checked
 routes and retain one compact formal reference summary when needed.
 
-The package name is an index, not the complete match condition. Exact matching
-still uses the hardware, software, dtype, and Transformer shape fields inside
-`routes.json`. Changing a relevant software version or GPU architecture
-requires measurement again. Changing the Workload definition, Solution source,
-or route table also makes the previous manifest stale until a complete Formal
-calibration refreshes it. Another package's winner is only a candidate-ordering
-hint.
+The package name is a stable GPU index, not the complete route condition. One
+GPU directory may contain multiple measured runtime routes. Exact matching
+still uses platform, PyTorch, CUDA Runtime, Triton, NVIDIA driver, dtype, and
+Transformer shape fields inside `routes.json`. A new runtime therefore requires
+measurement but does not create a second suffixed directory for the same GPU.
+Changing the official snapshot, Workload definition, Solution source, or route
+table makes the previous manifest stale until a complete Formal calibration
+refreshes it. Another package's winner is only a candidate-ordering hint.
 
 ## Verified devices
 

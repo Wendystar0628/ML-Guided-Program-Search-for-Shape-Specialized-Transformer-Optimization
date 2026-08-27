@@ -9,6 +9,7 @@ from math import isfinite
 from pathlib import Path
 from typing import Any
 
+from project_identity import solution_implementation_hash
 from runner.candidates import (
     CandidateSpec,
     candidate_spec,
@@ -21,12 +22,12 @@ from runner.contracts import (
     WorkloadCase,
     atomic_write_json,
     new_run_id,
-    solution_implementation_hash,
     utc_now,
 )
-from runner.route_promotion import select_deployable_winner
+from runner.locking import device_measurement_lease
+from runner.route_promotion import TUNING_SCHEMA_VERSION, select_deployable_winner
 from runner.routing_contracts import workload_route_identity
-from runner.supervisor import run_managed_benchmark
+from runner.supervisor import CancellationToken, run_managed_benchmark
 
 _DEVICE_PROFILE_FIELDS = (
     "device_type",
@@ -268,6 +269,7 @@ def _eligible_smoke_observations(
         summary.get("complete") is not True
         or summary.get("source_consistent") is not True
         or summary.get("implementation_consistent") is not True
+        or summary.get("official_consistent") is not True
     ):
         raise ContractError(f"Smoke screening is incomplete for {case.case_id}")
     eligible: dict[str, Mapping[str, Any]] = {}
@@ -302,8 +304,12 @@ def build_formal_candidate_plans(
     source_hashes = {
         summary.get("source_solution_sha256") for summary in smoke_summaries
     }
+    official_hashes = {
+        summary.get("official_snapshot_sha256") for summary in smoke_summaries
+    }
     implementation_hash = next(iter(implementation_hashes), None)
     source_hash = next(iter(source_hashes), None)
+    official_hash = next(iter(official_hashes), None)
     if (
         len(implementation_hashes) != 1
         or not isinstance(implementation_hash, str)
@@ -311,8 +317,13 @@ def build_formal_candidate_plans(
         or len(source_hashes) != 1
         or not isinstance(source_hash, str)
         or not source_hash
+        or len(official_hashes) != 1
+        or not isinstance(official_hash, str)
+        or not official_hash
     ):
-        raise ContractError("Smoke cases do not share one Solution implementation")
+        raise ContractError(
+            "Smoke cases do not share one Solution and official snapshot"
+        )
     eligible_by_case = [
         _eligible_smoke_observations(case, summary)
         for case, summary in zip(cases, smoke_summaries, strict=True)
@@ -557,6 +568,9 @@ def _observation(
         "solution_sha256": (
             source.get("solution_sha256") if isinstance(source, dict) else None
         ),
+        "official_snapshot_sha256": (
+            source.get("official_sha256") if isinstance(source, dict) else None
+        ),
         "execution_path": execution_path,
         "result_path": str(result_path),
     }
@@ -573,11 +587,46 @@ def run_tuning_case(
     requested_candidates: Sequence[str],
     routing_plan: Mapping[str, Any] | None = None,
     device_profile: Mapping[str, Any] | None = None,
+    cancellation_token: CancellationToken | None = None,
+) -> dict[str, Any]:
+    with device_measurement_lease(
+        project_root,
+        device,
+        purpose=f"candidate tuning for {case.case_id}",
+    ):
+        return _run_tuning_case(
+            project_root,
+            workload_set_id=workload_set_id,
+            workload_sha256=workload_sha256,
+            case=case,
+            base_protocol=base_protocol,
+            device=device,
+            requested_candidates=requested_candidates,
+            routing_plan=routing_plan,
+            device_profile=device_profile,
+            cancellation_token=cancellation_token,
+        )
+
+
+def _run_tuning_case(
+    project_root: Path,
+    *,
+    workload_set_id: str,
+    workload_sha256: str,
+    case: WorkloadCase,
+    base_protocol: MeasurementProtocol,
+    device: str,
+    requested_candidates: Sequence[str],
+    routing_plan: Mapping[str, Any] | None = None,
+    device_profile: Mapping[str, Any] | None = None,
+    cancellation_token: CancellationToken | None = None,
 ) -> dict[str, Any]:
     """Run candidates serially and persist one compact screening summary."""
 
     observations: list[dict[str, Any]] = []
     tuning_id = new_run_id()
+    tuning_directory = project_root.resolve() / "results" / "tuning" / tuning_id
+    runs_directory = tuning_directory / "runs"
     compact_device_profile = _compact_device_profile(device_profile)
     solution_root = project_root / "solution"
     implementation_hash_before = (
@@ -598,8 +647,12 @@ def run_tuning_case(
             tuning_id=tuning_id,
             candidate_id=candidate.candidate_id,
             solution_policy=candidate.solution_policy,
+            cancellation_token=cancellation_token,
+            result_dir=runs_directory,
         )
-        observations.append(_observation(candidate, result, result_path))
+        observation = _observation(candidate, result, result_path)
+        observation["result_path"] = f"runs/{result_path.name}"
+        observations.append(observation)
         environment = result.get("environment")
         if compact_device_profile is None and isinstance(environment, dict):
             resolved_device = environment.get("device")
@@ -641,6 +694,14 @@ def run_tuning_case(
     source_consistent = len(solution_hashes) == 1 and all(
         item.get("solution_sha256") in solution_hashes for item in observations
     )
+    official_hashes = {
+        item["official_snapshot_sha256"]
+        for item in observations
+        if isinstance(item.get("official_snapshot_sha256"), str)
+    }
+    official_consistent = len(official_hashes) == 1 and all(
+        item.get("official_snapshot_sha256") in official_hashes for item in observations
+    )
     implementation_hash_after = (
         solution_implementation_hash(solution_root) if solution_root.is_dir() else None
     )
@@ -648,7 +709,7 @@ def run_tuning_case(
         implementation_hash_before is not None
         and implementation_hash_before == implementation_hash_after
     )
-    if not source_consistent:
+    if not source_consistent or not official_consistent:
         eligible = []
 
     def ranking_speedup(item: dict[str, Any]) -> float:
@@ -665,7 +726,7 @@ def run_tuning_case(
     ]
     deployable_winner = max(deployable, key=ranking_speedup) if deployable else None
     summary = {
-        "schema_version": 1,
+        "schema_version": TUNING_SCHEMA_VERSION,
         "tuning_id": tuning_id,
         "created_at": utc_now(),
         "complete": len(observations) == len(candidates)
@@ -690,6 +751,10 @@ def run_tuning_case(
             next(iter(solution_hashes)) if len(solution_hashes) == 1 else None
         ),
         "source_consistent": source_consistent,
+        "official_snapshot_sha256": (
+            next(iter(official_hashes)) if official_consistent else None
+        ),
+        "official_consistent": official_consistent,
         "source_implementation_sha256": (
             implementation_hash_before if implementation_consistent else None
         ),
@@ -700,7 +765,7 @@ def run_tuning_case(
         "winner": winner,
         "deployable_winner": deployable_winner,
     }
-    summary_path = project_root / "results" / "tuning" / f"{tuning_id}.json"
+    summary_path = tuning_directory / "summary.json"
     summary["summary_path"] = str(summary_path)
     atomic_write_json(summary_path, summary)
     return summary

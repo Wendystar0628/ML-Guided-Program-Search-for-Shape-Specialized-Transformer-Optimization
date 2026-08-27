@@ -15,18 +15,19 @@ from runner.calibration import (
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    load_json,
+    WorkloadCase,
     load_workload_set,
-    new_run_id,
     select_workload_case,
 )
-from runner.route_promotion import promote_tuning_summaries
 from runner.supervisor import (
     run_managed_benchmark,
     run_managed_probe,
     run_managed_profile,
 )
-from runner.sweep import summarize_sweep
+from runner.sweep import (
+    BenchmarkSweepRequest,
+    BenchmarkSweepService,
+)
 from runner.tuning import (
     candidates_for_case,
     run_tuning_case,
@@ -110,7 +111,10 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument(
         "--result-dir",
         type=Path,
-        help="write per-case JSON results to this directory",
+        help=(
+            "write a single-case result here, or create an isolated "
+            "<sweep_id> directory here for a full sweep"
+        ),
     )
     benchmark.add_argument(
         "--solution-policy",
@@ -219,22 +223,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
     )
 
-    promote = subparsers.add_parser(
-        "promote",
-        help="replay compatible Formal summaries for deployment recovery",
-    )
-    promote.add_argument(
-        "--tuning-id",
-        action="append",
-        required=True,
-        help="formal tuning summary to promote; repeat for a shared runtime key",
-    )
-    promote.add_argument(
-        "--route-table",
-        type=Path,
-        required=True,
-        help="verified device-package routes.json to update",
-    )
     return parser
 
 
@@ -317,9 +305,9 @@ def _print_sweep_summary(summary: dict[str, Any]) -> None:
 
 
 def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
-    workload_set = load_workload_set(project_root, args.workload_set)
     protocol = _protocol_from_args(args)
     if args.case_id is not None:
+        workload_set = load_workload_set(project_root, args.workload_set)
         case = select_workload_case(workload_set, args.case_id)
         result, result_path = run_managed_benchmark(
             project_root,
@@ -335,31 +323,30 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
         _print_run_summary(result, result_path)
         return _exit_code(result["outcome"])
 
-    runs: list[dict[str, Any]] = []
-    sweep_id = new_run_id()
-    for index, case in enumerate(workload_set.cases, start=1):
-        print(f"\n[{index}/{len(workload_set.cases)}] {case.case_id}")
-        result, result_path = run_managed_benchmark(
-            project_root,
+    def on_case_started(index: int, total: int, case: WorkloadCase) -> None:
+        print(f"\n[{index}/{total}] {case.case_id}")
+
+    def on_case_completed(result: dict[str, Any], result_path: Path) -> None:
+        _print_run_summary(result, result_path)
+
+    sweep = BenchmarkSweepService().run(
+        BenchmarkSweepRequest(
+            project_root=project_root,
             workload_set_id=args.workload_set,
-            case=case,
             protocol=protocol,
             device=args.device,
             target=args.target,
-            workload_sha256=workload_set.sha256,
-            sweep_id=sweep_id,
-            result_dir=args.result_dir,
             solution_policy=args.solution_policy,
-        )
-        runs.append(result)
-        _print_run_summary(result, result_path)
-        if result["outcome"] == "cancelled":
-            break
-    summary = summarize_sweep(workload_set, runs, target=args.target)
-    _print_sweep_summary(summary)
-    if any(run["outcome"] == "cancelled" for run in runs):
+            output_root=args.result_dir,
+        ),
+        on_case_started=on_case_started,
+        on_case_completed=on_case_completed,
+    )
+    _print_sweep_summary(sweep.summary)
+    print(f"sweep summary: {sweep.summary_path}")
+    if any(run["outcome"] == "cancelled" for run in sweep.runs):
         return 130
-    return 0 if summary["sweep_outcome"] == "complete" else 1
+    return 0 if sweep.summary["sweep_outcome"] == "complete" else 1
 
 
 def _run_profile(args: argparse.Namespace, project_root: Path) -> int:
@@ -633,28 +620,9 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
         request,
         on_event=_print_calibration_event,
     )
+    if result.exit_code == 130 and result.checkpoint_path is not None:
+        print(f"saved calibration checkpoint: {result.checkpoint_path}")
     return result.exit_code
-
-
-def _run_promote(args: argparse.Namespace, project_root: Path) -> int:
-    summaries: list[dict[str, Any]] = []
-    for tuning_id in args.tuning_id:
-        if Path(tuning_id).name != tuning_id:
-            raise ContractError("tuning-id must be a file-safe identifier")
-        summary_path = project_root / "results" / "tuning" / f"{tuning_id}.json"
-        summaries.append(load_json(summary_path))
-    route_path = args.route_table
-    if not route_path.is_absolute():
-        route_path = project_root / route_path
-    _, winners, route_path = promote_tuning_summaries(
-        project_root,
-        summaries,
-        route_path=route_path.resolve(),
-    )
-    for winner in winners:
-        print(f"promoted: {winner['candidate_id']} -> {winner['solution_policy']}")
-    print(f"dispatch routes: {route_path}")
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -671,8 +639,6 @@ def main(argv: list[str] | None = None) -> int:
             return _run_tune(args, project_root)
         if args.command == "calibrate":
             return _run_calibrate(args, project_root)
-        if args.command == "promote":
-            return _run_promote(args, project_root)
         raise ContractError(f"unsupported command: {args.command}")
     except ContractError as exc:
         print(f"configuration error: {exc}")

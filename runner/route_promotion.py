@@ -15,12 +15,17 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from project_identity import official_snapshot_hash, solution_implementation_hash
 from runner.candidates import candidate_spec, deployable_policy_ids
 from runner.contracts import (
     ContractError,
     load_json,
     load_workload_set,
-    solution_implementation_hash,
+)
+from runner.locking import (
+    bundle_lock_path,
+    exclusive_file_lock,
+    hardware_bundle_lock_path,
 )
 from runner.routing_contracts import (
     hardware_identity_from_verified_profile,
@@ -28,7 +33,6 @@ from runner.routing_contracts import (
     validate_selected_route_groups,
 )
 from solution.dispatch import (
-    HARDWARE_ROUTE_FIELDS,
     ROUTE_FIELDS,
     SCHEMA_VERSION,
     load_verified_bundle,
@@ -38,7 +42,7 @@ from solution.dispatch import (
     validate_verified_route_table,
 )
 
-TUNING_SCHEMA_VERSION = 1
+TUNING_SCHEMA_VERSION = 2
 DEFAULT_ROUTE_POLICY = "auto"
 MINIMUM_ROUTE_GAIN = 1.02
 _FORMAL_MINIMUM_COUNTS = {
@@ -49,6 +53,9 @@ _FORMAL_MINIMUM_COUNTS = {
 }
 _FORMAL_MAXIMUM_TOLERANCES = {"rtol": 0.01, "atol": 0.001}
 DEPLOYABLE_EAGER_POLICIES = deployable_policy_ids()
+_BUNDLE_HARDWARE_FIELDS = frozenset(
+    {"device_type", "device_name", "compute_capability"}
+)
 
 
 def _positive_number(value: Any) -> float | None:
@@ -214,7 +221,7 @@ def _verified_profile_identity(profile: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _verified_bundle_identity(profile: Mapping[str, Any]) -> dict[str, str]:
-    """Validate the package profile and return its route-visible identity."""
+    """Return the stable physical identity owned by one device directory."""
 
     identity = _verified_profile_identity(profile)
     hardware = profile.get("hardware_profile")
@@ -224,7 +231,7 @@ def _verified_bundle_identity(profile: Mapping[str, Any]) -> dict[str, str]:
     machine = platform_profile.get("machine")
     if not isinstance(machine, str) or not machine:
         raise ContractError("verified profile is missing platform_machine")
-    return identity
+    return {field: identity[field] for field in _BUNDLE_HARDWARE_FIELDS}
 
 
 def verified_profile_from_probe_result(
@@ -278,7 +285,7 @@ def find_matching_verified_route(
     workload_set_id: str | None = None,
     workload_sha256: str | None = None,
 ) -> Path | None:
-    """Find the unique verified route table for one exact runtime identity."""
+    """Find the stable bundle for one physical GPU identity."""
 
     expected = _verified_bundle_identity(profile)
     catalog_root = project_root.resolve() / "verified_hardware"
@@ -340,11 +347,8 @@ def find_matching_verified_route(
 def _find_recalibration_bundle(
     project_root: Path,
     profile: Mapping[str, Any],
-    *,
-    workload_set_id: str,
-    workload_sha256: str,
 ) -> Path | None:
-    """Locate one profile-matching bundle whose provenance needs replacement."""
+    """Locate the stable hardware directory whose contents need replacement."""
 
     expected = _verified_bundle_identity(profile)
     matches: list[Path] = []
@@ -366,18 +370,6 @@ def _find_recalibration_bundle(
             not path.is_file() for path in required_support
         ):
             continue
-        manifest_path = profile_path.with_name("manifest.json")
-        if manifest_path.is_file():
-            try:
-                manifest = validate_bundle_manifest(load_json(manifest_path))
-            except (ContractError, TypeError, ValueError):
-                matches.append(route_path)
-                continue
-            if (
-                manifest.workload_set_id != workload_set_id
-                or manifest.workload_set_sha256 != workload_sha256
-            ):
-                continue
         matches.append(route_path)
     if len(matches) > 1:
         names = ", ".join(path.parent.name for path in matches)
@@ -509,7 +501,7 @@ def _summary_workload_identity(
     return next(iter(identities))
 
 
-def auto_promote_calibration(
+def _auto_promote_calibration_locked(
     project_root: Path,
     summaries: Sequence[Mapping[str, Any]],
     *,
@@ -538,10 +530,11 @@ def auto_promote_calibration(
     )
 
     if existing_route is not None:
-        document, winners, destination = promote_tuning_summaries(
+        document, winners, destination = _publish_bundle_tuning_summaries(
             project_root,
             summaries,
             route_path=existing_route,
+            verified_profile=profile,
         )
         return document, winners, destination, False
 
@@ -554,15 +547,14 @@ def auto_promote_calibration(
     recalibration_route = _find_recalibration_bundle(
         project_root,
         profile,
-        workload_set_id=workload_set_id,
-        workload_sha256=workload_sha256,
     )
     if recalibration_route is not None:
-        document, winners, destination = promote_tuning_summaries(
+        document, winners, destination = _publish_bundle_tuning_summaries(
             project_root,
             summaries,
             route_path=recalibration_route,
             reset_verified_bundle=True,
+            verified_profile=profile,
         )
         return document, winners, destination, False
 
@@ -581,10 +573,11 @@ def auto_promote_calibration(
             profile,
             bundle_id=destination_root.name,
         )
-        document, winners, _ = promote_tuning_summaries(
+        document, winners, _ = _publish_bundle_tuning_summaries(
             project_root,
             summaries,
             route_path=staging_bundle / "routes.json",
+            verified_profile=profile,
         )
         if destination_root.exists():
             raise ContractError(
@@ -601,6 +594,30 @@ def auto_promote_calibration(
     return document, winners, destination_root / "routes.json", True
 
 
+def auto_promote_calibration(
+    project_root: Path,
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    probe_result: Mapping[str, Any],
+    full_workload_case_ids: Sequence[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]], Path, bool]:
+    """Discover and update one stable GPU bundle under a catalog lock."""
+
+    profile = verified_profile_from_probe_result(probe_result)
+    identity = _verified_bundle_identity(profile)
+    hardware_id = _safe_bundle_id(identity["device_name"])
+    with exclusive_file_lock(
+        hardware_bundle_lock_path(project_root, hardware_id),
+        purpose=f"verified bundle selection for {identity['device_name']}",
+    ):
+        return _auto_promote_calibration_locked(
+            project_root,
+            summaries,
+            probe_result=probe_result,
+            full_workload_case_ids=full_workload_case_ids,
+        )
+
+
 def _validate_verified_package_identity(
     destination: Path,
     existing: Mapping[str, Any] | None,
@@ -612,16 +629,14 @@ def _validate_verified_package_identity(
     is_verified_target = any(
         part.lower() == "verified_hardware" for part in resolved.parts
     )
-    if is_verified_target and resolved.name != "routes.json":
+    if not is_verified_target or resolved.name != "routes.json":
         raise ContractError(
-            "verified route-table destination must be named routes.json"
+            "route publication requires a verified_hardware bundle routes.json"
         )
     profile_path = resolved.with_name("profile.json")
-    if not is_verified_target and not profile_path.is_file():
-        return
     if not profile_path.is_file():
         raise ContractError("verified route table requires a sibling profile.json")
-    expected = _verified_profile_identity(load_json(profile_path))
+    expected = _verified_bundle_identity(load_json(profile_path))
 
     matches = [_route_match(summary) for summary in summaries]
     if existing is not None:
@@ -639,7 +654,7 @@ def _validate_verified_package_identity(
             raise ContractError("verified device packages require exact routes")
         mismatches = [
             field
-            for field in HARDWARE_ROUTE_FIELDS
+            for field in _BUNDLE_HARDWARE_FIELDS
             if match.get(field) != expected[field]
         ]
         if mismatches:
@@ -689,6 +704,11 @@ def build_promoted_route_document(
         raise ContractError("tuning candidates do not share one Solution source")
     if summary.get("implementation_consistent") is not True:
         raise ContractError("Solution implementation changed during tuning")
+    if summary.get("official_consistent") is not True:
+        raise ContractError("official snapshot changed during tuning")
+    official_hash = summary.get("official_snapshot_sha256")
+    if not isinstance(official_hash, str) or len(official_hash) != 64:
+        raise ContractError("tuning summary is missing its official snapshot hash")
     expected_implementation = summary.get("source_implementation_sha256")
     if not isinstance(expected_implementation, str) or not expected_implementation:
         raise ContractError("tuning summary is missing its implementation hash")
@@ -705,10 +725,11 @@ def build_promoted_route_document(
     if not observations or any(
         not isinstance(observation, Mapping)
         or observation.get("solution_sha256") != expected_source
+        or observation.get("official_snapshot_sha256") != official_hash
         for observation in observations
     ):
         raise ContractError(
-            "tuning observation source hashes are missing or inconsistent"
+            "tuning observation source identities are missing or inconsistent"
         )
     expected_rounds = int(protocol["rounds"])
     for observation in observations:
@@ -823,17 +844,26 @@ def _is_verified_route_destination(path: Path) -> bool:
     )
 
 
-def _write_verified_bundle_manifest(
+def _json_payload(document: Mapping[str, Any]) -> bytes:
+    return (
+        json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+
+
+def _route_match_sha256(match: Mapping[str, Any]) -> str:
+    return _canonical_document_sha256(match)
+
+
+def _build_verified_bundle_manifest(
     project_root: Path,
-    route_path: Path,
+    route_document: Mapping[str, Any],
     summaries: Sequence[Mapping[str, Any]],
     *,
+    previous_manifest: Mapping[str, Any] | None,
     reset_previous: bool = False,
-) -> None:
-    """Bind a verified route table to the exact inputs that justified it."""
+) -> dict[str, Any]:
+    """Build the manifest before either member of the bundle is replaced."""
 
-    if not _is_verified_route_destination(route_path):
-        return
     workload_set_id, workload_sha256 = _summary_workload_identity(summaries)
     protocols = {
         json.dumps(
@@ -854,12 +884,27 @@ def _write_verified_bundle_manifest(
     implementation_hash = solution_implementation_hash(
         project_root.resolve() / "solution"
     )
+    try:
+        current_official_hash = official_snapshot_hash(project_root)
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
+    summary_official_hashes = {
+        summary.get("official_snapshot_sha256") for summary in summaries
+    }
+    if summary_official_hashes != {current_official_hash} or any(
+        summary.get("official_consistent") is not True for summary in summaries
+    ):
+        raise ContractError(
+            "formal summaries do not share the current official snapshot"
+        )
     selected_case_ids = {_summary_case_id(summary) for summary in summaries}
+    selected_route_hashes = {
+        _route_match_sha256(_route_match(summary)) for summary in summaries
+    }
     source_summaries: list[dict[str, object]] = []
-    manifest_path = route_path.with_name("manifest.json")
-    if manifest_path.is_file() and not reset_previous:
+    if previous_manifest is not None and not reset_previous:
         try:
-            previous = validate_bundle_manifest(load_json(manifest_path))
+            previous = validate_bundle_manifest(previous_manifest)
         except (ContractError, TypeError, ValueError) as exc:
             raise ContractError(
                 "verified bundle manifest is invalid; rerun a complete calibration"
@@ -867,6 +912,7 @@ def _write_verified_bundle_manifest(
         if (
             previous.workload_set_id != workload_set_id
             or previous.workload_set_sha256 != workload_sha256
+            or previous.official_snapshot_sha256 != current_official_hash
             or previous.solution_implementation_sha256 != implementation_hash
             or _canonical_document_sha256(previous.formal_protocol) != protocol_digest
         ):
@@ -874,16 +920,12 @@ def _write_verified_bundle_manifest(
                 "verified bundle manifest is stale; rerun a complete calibration"
             )
         for source in previous.source_summaries:
-            remaining_case_ids = [
-                case_id
-                for case_id in source.case_ids
-                if case_id not in selected_case_ids
-            ]
-            if remaining_case_ids:
+            if source.route_sha256 not in selected_route_hashes:
                 source_summaries.append(
                     {
                         "summary_id": source.summary_id,
-                        "case_ids": remaining_case_ids,
+                        "case_id": source.case_id,
+                        "route_sha256": source.route_sha256,
                     }
                 )
     else:
@@ -902,17 +944,19 @@ def _write_verified_bundle_manifest(
         source_summaries.append(
             {
                 "summary_id": summary_id,
-                "case_ids": [_summary_case_id(summary)],
+                "case_id": _summary_case_id(summary),
+                "route_sha256": _route_match_sha256(_route_match(summary)),
             }
         )
 
-    route_digest = hashlib.sha256(route_path.read_bytes()).hexdigest()
+    route_digest = hashlib.sha256(_json_payload(route_document)).hexdigest()
     document: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "workload_set": {
             "set_id": workload_set_id,
             "sha256": workload_sha256,
         },
+        "official": {"snapshot_sha256": current_official_hash},
         "solution": {"implementation_sha256": implementation_hash},
         "route_table": {"sha256": route_digest},
         "formal": {
@@ -920,34 +964,46 @@ def _write_verified_bundle_manifest(
             "source_summaries": source_summaries,
         },
     }
+    table = validate_verified_route_table(route_document)
+    expected_route_hashes = {
+        _route_match_sha256(match) for match, _policy in table.routes
+    }
+    manifested_route_hashes = {
+        str(source["route_sha256"]) for source in source_summaries
+    }
+    if manifested_route_hashes != expected_route_hashes:
+        raise ContractError(
+            "verified bundle sources do not cover every published exact route"
+        )
+    workload_set = load_workload_set(project_root, workload_set_id)
+    expected_case_ids = {case.case_id for case in workload_set.cases}
+    manifested_case_ids = {str(source["case_id"]) for source in source_summaries}
+    if not expected_case_ids.issubset(manifested_case_ids):
+        raise ContractError("verified bundle sources do not cover every workload case")
     try:
         validate_bundle_manifest(document)
     except (TypeError, ValueError) as exc:
         raise ContractError(f"invalid verified bundle manifest: {exc}") from exc
-    _atomic_replace_json(
-        manifest_path,
-        document,
-        validate_as_route_table=False,
-    )
+    return document
 
 
-def promote_tuning_summaries(
+def _publish_bundle_tuning_summaries_locked(
     project_root: Path,
     summaries: Sequence[Mapping[str, Any]],
     *,
-    route_path: Path | None = None,
+    route_path: Path,
     reset_verified_bundle: bool = False,
+    verified_profile: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Path]:
     """Atomically promote one or more formal summaries with shared-key guards."""
 
     if not summaries:
         raise ContractError("at least one tuning summary is required")
-    if route_path is None:
-        raise ContractError(
-            "route_path is required; promote into an explicit verified device package"
-        )
-
     destination = route_path
+    if not _is_verified_route_destination(destination):
+        raise ContractError(
+            "route publication requires a complete verified_hardware bundle"
+        )
     current_implementation = solution_implementation_hash(
         project_root.resolve() / "solution"
     )
@@ -977,18 +1033,21 @@ def promote_tuning_summaries(
     )
     _validate_verified_package_identity(destination, existing, summaries)
     manifest_path = destination.with_name("manifest.json")
+    previous_manifest_document: Mapping[str, Any] | None = None
     if (
         _is_verified_route_destination(destination)
         and manifest_path.is_file()
         and not reset_verified_bundle
     ):
         try:
-            manifest = validate_bundle_manifest(load_json(manifest_path))
+            previous_manifest_document = load_json(manifest_path)
+            manifest = validate_bundle_manifest(previous_manifest_document)
         except (ContractError, TypeError, ValueError) as exc:
             raise ContractError("verified bundle manifest is invalid") from exc
         if (
             manifest.workload_set_id != workload_set_id
             or manifest.workload_set_sha256 != workload_sha256
+            or manifest.official_snapshot_sha256 != official_snapshot_hash(project_root)
             or manifest.solution_implementation_sha256 != current_implementation
         ):
             raise ContractError(
@@ -1031,38 +1090,59 @@ def promote_tuning_summaries(
         document = _upsert_exact_route(document, match, policy)
 
     winners = [deployments_by_index[index] for index in range(len(summaries))]
-    if _is_verified_route_destination(destination) and (
-        reset_verified_bundle or not destination.with_name("manifest.json").is_file()
-    ):
+    if reset_verified_bundle or not destination.with_name("manifest.json").is_file():
         full_case_ids = {case.case_id for case in workload_set.cases}
         if set(case_ids) != full_case_ids:
             raise ContractError(
                 "a verified bundle manifest requires one complete Formal workload "
                 "calibration"
             )
-    if existing is None or document != existing:
-        _atomic_replace_json(destination, document, validate_as_route_table=True)
-    _write_verified_bundle_manifest(
+    manifest_document = _build_verified_bundle_manifest(
         project_root,
-        destination,
+        document,
         summaries,
+        previous_manifest=previous_manifest_document,
         reset_previous=reset_verified_bundle,
+    )
+    _publish_verified_bundle(
+        destination,
+        document,
+        manifest_document,
+        profile_document=verified_profile,
     )
     return document, winners, destination
 
 
-def _atomic_replace_json(
-    path: Path,
-    document: Mapping[str, Any],
+def _publish_bundle_tuning_summaries(
+    project_root: Path,
+    summaries: Sequence[Mapping[str, Any]],
     *,
-    validate_as_route_table: bool,
-) -> None:
-    """Replace the mutable route table with a same-directory atomic rename."""
+    route_path: Path,
+    reset_verified_bundle: bool = False,
+    verified_profile: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], Path]:
+    """Publish one complete Bundle update under a cross-process lock."""
 
+    destination = route_path.resolve()
+    if not _is_verified_route_destination(destination):
+        raise ContractError(
+            "route publication requires a complete verified_hardware bundle"
+        )
+    with exclusive_file_lock(
+        bundle_lock_path(destination.parent),
+        purpose=f"route publication for {destination.parent.name}",
+    ):
+        return _publish_bundle_tuning_summaries_locked(
+            project_root,
+            summaries,
+            route_path=destination,
+            reset_verified_bundle=reset_verified_bundle,
+            verified_profile=verified_profile,
+        )
+
+
+def _atomic_replace_bytes(path: Path, payload: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (
-        json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
-    ).encode("utf-8")
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
         prefix=f".{path.name}.",
@@ -1074,13 +1154,84 @@ def _atomic_replace_json(
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        loaded = json.loads(temporary_path.read_text(encoding="utf-8"))
-        if validate_as_route_table:
-            validate_route_table(loaded)
         os.replace(temporary_path, path)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def _publish_verified_bundle(
+    route_path: Path,
+    route_document: Mapping[str, Any],
+    manifest_document: Mapping[str, Any],
+    *,
+    profile_document: Mapping[str, Any] | None = None,
+) -> None:
+    """Replace routes and manifest together, restoring both after any failure."""
+
+    try:
+        validate_verified_route_table(route_document)
+        validate_bundle_manifest(manifest_document)
+    except (TypeError, ValueError) as exc:
+        raise ContractError(f"invalid verified bundle publication: {exc}") from exc
+    manifest_path = route_path.with_name("manifest.json")
+    profile_path = route_path.with_name("profile.json")
+    route_payload = _json_payload(route_document)
+    manifest_payload = _json_payload(manifest_document)
+    if (
+        manifest_document["route_table"]["sha256"]
+        != hashlib.sha256(route_payload).hexdigest()
+    ):
+        raise ContractError("verified bundle manifest does not bind the route payload")
+
+    publications = {
+        route_path: route_payload,
+        manifest_path: manifest_payload,
+    }
+    if profile_document is not None:
+        _verified_bundle_identity(profile_document)
+        publications[profile_path] = _json_payload(profile_document)
+    previous = {
+        route_path: route_path.read_bytes() if route_path.is_file() else None,
+        manifest_path: manifest_path.read_bytes() if manifest_path.is_file() else None,
+    }
+    if profile_document is not None:
+        previous[profile_path] = (
+            profile_path.read_bytes() if profile_path.is_file() else None
+        )
+    try:
+        for path, payload in publications.items():
+            _atomic_replace_bytes(path, payload)
+    except BaseException as publication_error:
+        recovery_errors: list[BaseException] = []
+        for path, payload in previous.items():
+            try:
+                if payload is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _atomic_replace_bytes(path, payload)
+            except BaseException as recovery_error:  # noqa: BLE001
+                recovery_errors.append(recovery_error)
+        if recovery_errors:
+            raise ContractError(
+                "verified bundle publication failed and rollback was incomplete"
+            ) from publication_error
+        raise
+
+
+def _atomic_replace_json(
+    path: Path,
+    document: Mapping[str, Any],
+    *,
+    validate_as_route_table: bool,
+) -> None:
+    """Validate and atomically replace one standalone JSON document."""
+
+    payload = _json_payload(document)
+    loaded = json.loads(payload)
+    if validate_as_route_table:
+        validate_route_table(loaded)
+    _atomic_replace_bytes(path, payload)
 
 
 __all__ = [
@@ -1091,7 +1242,6 @@ __all__ = [
     "auto_promote_calibration",
     "build_promoted_route_document",
     "find_matching_verified_route",
-    "promote_tuning_summaries",
     "select_deployable_winner",
     "validate_promotion_case_set",
     "verified_profile_from_probe_result",

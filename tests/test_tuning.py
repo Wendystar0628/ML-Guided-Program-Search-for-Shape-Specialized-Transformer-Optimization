@@ -11,6 +11,8 @@ import pytest
 from runner import tuning
 from runner.contracts import ContractError, MeasurementProtocol, WorkloadCase
 
+_OFFICIAL_HASH = "a" * 64
+
 
 def _case(
     *,
@@ -90,6 +92,7 @@ def _smoke_observation(
         "target_round_medians_ms": [1.0, 1.0],
         "target_median_ms": 1.0,
         "target_p90_ms": 1.1,
+        "official_snapshot_sha256": _OFFICIAL_HASH,
         "execution_path": execution_path,
     }
 
@@ -105,6 +108,8 @@ def _smoke_summary(
         "protocol": {"preset": "smoke"},
         "source_consistent": True,
         "implementation_consistent": True,
+        "official_consistent": True,
+        "official_snapshot_sha256": _OFFICIAL_HASH,
         "source_solution_sha256": "fixture-source",
         "source_implementation_sha256": "fixture-implementation",
         "observations": observations,
@@ -440,7 +445,10 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
                 "requested_policy": policy,
                 "selected_policy": policy,
             },
-            "source": {"solution_sha256": "fixture-solution-hash"},
+            "source": {
+                "solution_sha256": "fixture-solution-hash",
+                "official_sha256": _OFFICIAL_HASH,
+            },
         }
         return result, tmp_path / f"{policy}-{protocol.compile_mode}.json"
 
@@ -487,6 +495,12 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
         },
     ]
     assert summary["tuning_id"] == calls[0]["sweep_id"]
+    assert summary["official_consistent"] is True
+    assert summary["official_snapshot_sha256"] == _OFFICIAL_HASH
+    assert all(
+        observation["official_snapshot_sha256"] == _OFFICIAL_HASH
+        for observation in summary["observations"]
+    )
     assert summary["winner"]["candidate_id"] == "compile-default"
     assert summary["winner_basis"] == ("full_transformer_correctness_and_paired_timing")
     assert len(summary["observations"]) == 2
@@ -496,6 +510,13 @@ def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
     assert summary["device_profile"] == device_profile
     summary_path = Path(summary["summary_path"])
     assert summary_path.is_file()
+    assert summary_path.name == "summary.json"
+    assert summary_path.parent.name == summary["tuning_id"]
+    assert summary_path.parent.parent.name == "tuning"
+    assert all(
+        observation["result_path"].startswith("runs/")
+        for observation in summary["observations"]
+    )
     assert json.loads(summary_path.read_text(encoding="utf-8")) == summary
 
 
@@ -552,7 +573,10 @@ def test_fallback_candidate_is_reported_but_not_ranked(
                         else "view_fallback"
                     ),
                 },
-                "source": {"solution_sha256": "fixture-solution-hash"},
+                "source": {
+                    "solution_sha256": "fixture-solution-hash",
+                    "official_sha256": _OFFICIAL_HASH,
+                },
             },
             tmp_path / f"{policy}.json",
         )
@@ -596,7 +620,10 @@ def test_padding_candidate_requires_the_triton_fusion_route(
                     "selected_policy": policy,
                     "block_fusion": "torch_residual_fallback",
                 },
-                "source": {"solution_sha256": "fixture-solution-hash"},
+                "source": {
+                    "solution_sha256": "fixture-solution-hash",
+                    "official_sha256": _OFFICIAL_HASH,
+                },
             },
             tmp_path / "padding-fallback.json",
         )

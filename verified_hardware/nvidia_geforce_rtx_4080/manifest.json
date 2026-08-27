@@ -1,14 +1,17 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "workload_set": {
     "set_id": "transformer_core_v1",
     "sha256": "f6a9d6265d53f198a041da687a928aedf524da9eb481b1e9a269242cd2cdec5f"
   },
+  "official": {
+    "snapshot_sha256": "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b"
+  },
   "solution": {
-    "implementation_sha256": "52e450fddb9a0f31d46a22b60f1c15ca89bbff59379f688b66f81bef3f20a971"
+    "implementation_sha256": "ec75008438f2d592d136c84bacd26fe8e8e8b4a6982c0b0ff01373f6718b0050"
   },
   "route_table": {
-    "sha256": "53e384279734fbf38de1667a752027f5935b9ad0fa858f7a06b9fe1faefade04"
+    "sha256": "bfe68b2c29872fb41eb4a33fc8cf0dea956f0a0d8086c89e80fd4e3c49e37822"
   },
   "formal": {
     "protocol": {
@@ -30,58 +33,49 @@
     },
     "source_summaries": [
       {
-        "summary_id": "20260827T114011.888071Z-63100568",
-        "case_ids": [
-          "launch_s64_fp16"
-        ]
+        "summary_id": "20260827T155849.519091Z-749ebfe3",
+        "case_id": "launch_s64_fp16",
+        "route_sha256": "3b82141b3dbbd17ad9468429eebac423f04088ce81762427ae3a8da0821a44ac"
       },
       {
-        "summary_id": "20260827T114019.556178Z-29c6c171",
-        "case_ids": [
-          "balanced_s128_fp32"
-        ]
+        "summary_id": "20260827T155857.064820Z-942d3882",
+        "case_id": "balanced_s128_fp32",
+        "route_sha256": "0aa6f296dcee98d4faa9306f2a1b519dec3c02c52b10395b2f9fc01b19ee8c6d"
       },
       {
-        "summary_id": "20260827T114028.290725Z-002e746f",
-        "case_ids": [
-          "balanced_s128_fp16"
-        ]
+        "summary_id": "20260827T155905.618342Z-4ae7b831",
+        "case_id": "balanced_s128_fp16",
+        "route_sha256": "d2b71057fb6600dac760bd4ddcf4322fbd079aa0c8b0f89269d18687f88ffa52"
       },
       {
-        "summary_id": "20260827T114037.115349Z-ae050b9c",
-        "case_ids": [
-          "attention_s2048_fp16"
-        ]
+        "summary_id": "20260827T155914.080379Z-02bdc239",
+        "case_id": "attention_s2048_fp16",
+        "route_sha256": "0b616463f28dc95b456ccd4bc70ce2c5cced7e33d40be786b21a78abf6c91a07"
       },
       {
-        "summary_id": "20260827T114054.338821Z-e1ad739b",
-        "case_ids": [
-          "attention_s2048_causal_fp16"
-        ]
+        "summary_id": "20260827T155931.449325Z-88ce6b8a",
+        "case_id": "attention_s2048_causal_fp16",
+        "route_sha256": "8b1541b2f32701db97954bba3575fb484d5b525523fb99e23fcb4dbcbbe7c3c7"
       },
       {
-        "summary_id": "20260827T114112.955164Z-de08ab6f",
-        "case_ids": [
-          "mask_s512_full_fp16"
-        ]
+        "summary_id": "20260827T155949.225577Z-ab73e65b",
+        "case_id": "mask_s512_full_fp16",
+        "route_sha256": "4a4ba444b699c81bf7c1fc98218b5d5c0f7f7f944f0850ad34454480d60881f7"
       },
       {
-        "summary_id": "20260827T114125.240006Z-18e7b334",
-        "case_ids": [
-          "mask_s512_padding_fp16"
-        ]
+        "summary_id": "20260827T160000.872431Z-079190cc",
+        "case_id": "mask_s512_padding_fp16",
+        "route_sha256": "4a4ba444b699c81bf7c1fc98218b5d5c0f7f7f944f0850ad34454480d60881f7"
       },
       {
-        "summary_id": "20260827T114137.504537Z-69320c78",
-        "case_ids": [
-          "mask_s512_causal_padding_fp16"
-        ]
+        "summary_id": "20260827T160012.488796Z-279e12e0",
+        "case_id": "mask_s512_causal_padding_fp16",
+        "route_sha256": "a7b990448ebecd1b47c08e263e0879e6d30b4e1c8b11a44120d047d1da788ed2"
       },
       {
-        "summary_id": "20260827T114150.026708Z-309e026e",
-        "case_ids": [
-          "wide_s256_bf16"
-        ]
+        "summary_id": "20260827T160024.471738Z-539adae7",
+        "case_id": "wide_s256_bf16",
+        "route_sha256": "ee06ac8325a9529be70f85d13b96a432598d4bdd7c823a29488d4f9445e376c9"
       }
     ]
   }

@@ -259,12 +259,15 @@ def test_causal_solution_accepts_a_sequence_shorter_than_config() -> None:
 @pytest.mark.parametrize(
     "policy",
     [
+        "triton",
         "preprocess",
         "s512-native-softmax",
         "long-tail-online",
         "wide-triton-inplace",
         "cuda-graph",
         "balanced-cuda-graph",
+        "padding",
+        "packed",
     ],
 )
 def test_specialized_gpu_policy_reports_cpu_fallback(
@@ -279,6 +282,8 @@ def test_specialized_gpu_policy_reports_cpu_fallback(
     assert execution_path["requested_policy"] == policy
     assert execution_path["selected_policy"] == "torch_fallback"
     assert execution_path["fallback_reason"]
+    assert execution_path["required_components"]
+    assert execution_path["missing_components"]
 
 
 def test_module_transform_invalidates_cuda_graph_state() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +23,9 @@ def test_managed_failure_persists_only_known_context(
         project_root: Path,
         request: dict[str, Any],
         timeout_seconds: float,
+        cancellation_token: supervisor.CancellationToken | None = None,
     ) -> dict[str, Any]:
-        del project_root, request, timeout_seconds
+        del project_root, request, timeout_seconds, cancellation_token
         return {
             "outcome": "timeout",
             "environment": None,
@@ -59,6 +61,7 @@ def test_managed_failure_persists_only_known_context(
         "type": "TimeoutExpired",
         "message": "worker exceeded its time limit",
     }
+    assert result_path.parent == tmp_path / "results" / "probes"
     assert json.loads(result_path.read_text(encoding="utf-8")) == result
 
 
@@ -70,8 +73,9 @@ def test_correctness_failure_persists_summary_not_trials(
         project_root: Path,
         request: dict[str, Any],
         timeout_seconds: float,
+        cancellation_token: supervisor.CancellationToken | None = None,
     ) -> dict[str, Any]:
-        del project_root, request, timeout_seconds
+        del project_root, request, timeout_seconds, cancellation_token
         return {
             "outcome": "invalid_output",
             "solution_source_sha256": "fixture-solution-hash",
@@ -144,8 +148,9 @@ def test_probe_rejects_failed_device_operation(
         project_root: Path,
         request: dict[str, Any],
         timeout_seconds: float,
+        cancellation_token: supervisor.CancellationToken | None = None,
     ) -> dict[str, Any]:
-        del project_root, request, timeout_seconds
+        del project_root, request, timeout_seconds, cancellation_token
         return {
             "outcome": "success",
             "environment": {"device": "cpu", "torch": torch.__version__},
@@ -193,3 +198,71 @@ def test_probe_rejects_invalid_mode_before_start(tmp_path: Path) -> None:
         )
 
     assert not (tmp_path / "results").exists()
+
+
+def test_cancelled_token_prevents_worker_start_and_persists_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token = supervisor.CancellationToken()
+    token.cancel()
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("a cancelled request must not start"),
+    )
+
+    result, result_path = supervisor.run_managed_probe(
+        tmp_path,
+        device="cuda:0",
+        cancellation_token=token,
+    )
+
+    assert result["outcome"] == "cancelled"
+    assert result["failure"]["type"] == "CancellationRequested"
+    assert result_path.parent == tmp_path / "results" / "probes"
+    assert json.loads(result_path.read_text(encoding="utf-8")) == result
+
+
+def test_active_worker_observes_cooperative_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token = supervisor.CancellationToken()
+    stopped: list[object] = []
+
+    class HangingProcess:
+        returncode: int | None = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+        @staticmethod
+        def communicate(timeout: float | None = None) -> tuple[str, str]:
+            raise subprocess.TimeoutExpired("runner.worker", timeout)
+
+    process = HangingProcess()
+
+    def fake_popen(*args: Any, **kwargs: Any) -> HangingProcess:
+        del args, kwargs
+        token.cancel()
+        return process
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        supervisor,
+        "_stop_process_tree",
+        lambda worker: stopped.append(worker),
+    )
+
+    result = supervisor._run_worker_inner(
+        tmp_path,
+        {"run_kind": "probe"},
+        1.0,
+        token,
+    )
+
+    assert result["outcome"] == "cancelled"
+    assert result["failure"]["type"] == "CancellationRequested"
+    assert stopped == [process]

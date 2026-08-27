@@ -8,13 +8,15 @@ from typing import Any
 import torch
 
 from .kernels import (
-    TRITON_ATTENTION_PREPROCESS_AVAILABLE,
-    TRITON_ATTENTION_SOFTMAX_AVAILABLE,
-    TRITON_ONLINE_ATTENTION_AVAILABLE,
-    TRITON_QKV_LAYOUT_AVAILABLE,
-    TRITON_RESIDUAL_AVAILABLE,
+    supports_s512_native_half_softmax,
+    supports_triton_attention_preprocess,
+    supports_triton_attention_softmax,
+    supports_triton_online_attention,
+    supports_triton_qkv_layout,
+    supports_triton_residual,
+    supports_wide_exact_gelu,
 )
-from .policies import PolicySpec
+from .policies import ExecutionComponent, PolicySpec
 
 _DIRECT_MASK_ATTENTION_PATHS = frozenset(
     {
@@ -68,6 +70,9 @@ class ExecutionPlan:
     requested_policy: str
     effective_policy: str
     selected_policy: str
+    required_components: tuple[str, ...]
+    resolved_components: tuple[str, ...]
+    missing_components: tuple[str, ...]
     requested_qkv_layout: str
     resolved_qkv_layout: str
     requested_attention: str
@@ -97,6 +102,9 @@ class ExecutionPlan:
         return {
             "requested_policy": self.requested_policy,
             "selected_policy": self.selected_policy,
+            "required_components": list(self.required_components),
+            "resolved_components": list(self.resolved_components),
+            "missing_components": list(self.missing_components),
             "dispatch_source": dispatch_source,
             "dispatch_table_sha256": dispatch_table_sha256,
             "dispatch_policy": dispatch_policy,
@@ -115,7 +123,15 @@ class ExecutionPlan:
             "layer_attention": [layer.attention for layer in self.layers],
             "attention_candidate_status": (
                 "experimental_requires_correctness_gate"
-                if self.effective_policy == "long-tail-online"
+                if bool(
+                    {
+                        ExecutionComponent.TRITON_ATTENTION_SOFTMAX.value,
+                        ExecutionComponent.TRITON_ATTENTION_PREPROCESS.value,
+                        ExecutionComponent.S512_NATIVE_HALF_SOFTMAX.value,
+                        ExecutionComponent.TAIL_ONLINE_ATTENTION.value,
+                    }
+                    & set(self.required_components)
+                )
                 or self.requested_attention
                 in {
                     "triton_softmax",
@@ -159,29 +175,6 @@ class ExecutionPlan:
         }
 
 
-def _supports_online_attention(context: ExecutionContext) -> bool:
-    if not (
-        TRITON_ONLINE_ATTENTION_AVAILABLE
-        and context.device.type == "cuda"
-        and context.dtype == torch.float16
-        and context.batch_size == 1
-        and context.sequence_length == 2048
-        and context.d_model == 512
-        and context.num_heads == 8
-        and context.head_dim == 64
-        and not context.training
-        and not context.grad_enabled
-        and context.mask_compatible
-    ):
-        return False
-    if torch.version.cuda is None:
-        return False
-    try:
-        return torch.cuda.get_device_capability(context.device)[0] >= 8
-    except (AssertionError, RuntimeError):
-        return False
-
-
 @dataclass(frozen=True, slots=True)
 class _ExecutionCapabilities:
     fp32_sdpa: bool
@@ -190,7 +183,6 @@ class _ExecutionCapabilities:
     s512_native_softmax: bool
     triton_preprocess: bool
     triton_online: bool
-    tail_online: bool
     wide_inplace: bool
     triton_residual: bool
     cuda_graph: bool
@@ -198,236 +190,252 @@ class _ExecutionCapabilities:
 
 def _resolve_capabilities(
     context: ExecutionContext,
-    effective_policy: str,
+    spec: PolicySpec,
 ) -> _ExecutionCapabilities:
     """Collect the static side of the exact tensor guards used by kernels."""
 
-    head_dim = context.head_dim
-    cuda = context.device.type == "cuda"
-    mask_compatible = context.mask_compatible
-    triton_softmax = (
-        TRITON_ATTENTION_SOFTMAX_AVAILABLE
-        and cuda
-        and context.dtype == torch.float16
-        and context.sequence_length in (512, 2048)
-        and head_dim == 64
-        and mask_compatible
+    triton_softmax = supports_triton_attention_softmax(
+        device_type=context.device.type,
+        dtype=context.dtype,
+        sequence_length=context.sequence_length,
+        head_dim=context.head_dim,
+        mask_compatible=context.mask_compatible,
     )
-    triton_preprocess = (
-        TRITON_ATTENTION_PREPROCESS_AVAILABLE
-        and cuda
-        and context.dtype == torch.float16
-        and (context.sequence_length, head_dim) in {(64, 32), (2048, 64)}
-        and mask_compatible
+    triton_preprocess = supports_triton_attention_preprocess(
+        device_type=context.device.type,
+        dtype=context.dtype,
+        sequence_length=context.sequence_length,
+        head_dim=context.head_dim,
+        mask_compatible=context.mask_compatible,
     )
-    triton_online = _supports_online_attention(context)
-    tail_online = (
-        effective_policy == "long-tail-online"
-        and triton_online
-        and context.ffn_dim == 2048
-        and context.num_layers == 4
+    triton_online = supports_triton_online_attention(
+        device=context.device,
+        dtype=context.dtype,
+        batch_size=context.batch_size,
+        num_heads=context.num_heads,
+        sequence_length=context.sequence_length,
+        head_dim=context.head_dim,
+        grad_or_training=context.training or context.grad_enabled,
+        mask_compatible=context.mask_compatible,
     )
-    launch_graph = (
-        context.input_contiguous
-        and mask_compatible
+    workload_shape = (
+        context.batch_size,
+        context.sequence_length,
+        context.d_model,
+        context.num_heads,
+        context.ffn_dim,
+        context.num_layers,
+    )
+    cuda_graph = (
+        spec.cuda_graph_shape is not None
+        and workload_shape == spec.cuda_graph_shape
+        and context.input_contiguous
+        and context.mask_compatible
         and not context.causal
         and not context.training
         and not context.grad_enabled
         and context.dtype == torch.float16
-        and cuda
-        and (
-            context.batch_size,
-            context.sequence_length,
-            context.d_model,
-            context.num_heads,
-            context.ffn_dim,
-            context.num_layers,
-        )
-        == (1, 64, 256, 8, 1024, 4)
-    )
-    balanced_graph = (
-        context.input_contiguous
-        and mask_compatible
-        and not context.causal
-        and not context.training
-        and not context.grad_enabled
-        and context.dtype == torch.float16
-        and cuda
-        and (
-            context.batch_size,
-            context.sequence_length,
-            context.d_model,
-            context.num_heads,
-            context.ffn_dim,
-            context.num_layers,
-        )
-        == (8, 128, 512, 8, 2048, 6)
+        and context.device.type == "cuda"
     )
     return _ExecutionCapabilities(
         fp32_sdpa=(
-            cuda
+            context.device.type == "cuda"
             and context.dtype == torch.float32
             and not context.causal
             and context.sequence_length <= 128
         ),
-        triton_layout=(
-            TRITON_QKV_LAYOUT_AVAILABLE
-            and cuda
-            and context.dtype in (torch.float16, torch.bfloat16, torch.float32)
-            and 16 <= head_dim <= 128
-            and head_dim & (head_dim - 1) == 0
+        triton_layout=supports_triton_qkv_layout(
+            device_type=context.device.type,
+            dtype=context.dtype,
+            model_width=context.d_model,
+            num_heads=context.num_heads,
         ),
         triton_softmax=triton_softmax,
-        s512_native_softmax=(
-            triton_softmax
-            and context.batch_size == 8
-            and context.sequence_length == 512
-            and context.d_model == 512
-            and context.num_heads == 8
+        s512_native_softmax=supports_s512_native_half_softmax(
+            device_type=context.device.type,
+            dtype=context.dtype,
+            batch_size=context.batch_size,
+            num_heads=context.num_heads,
+            sequence_length=context.sequence_length,
+            head_dim=context.head_dim,
+            mask_compatible=context.mask_compatible,
         ),
         triton_preprocess=triton_preprocess,
         triton_online=triton_online,
-        tail_online=tail_online,
-        wide_inplace=(
-            cuda
-            and context.dtype == torch.bfloat16
-            and context.batch_size == 16
-            and context.sequence_length == 256
-            and context.d_model == 1024
-            and context.num_heads == 8
-            and context.ffn_dim == 4096
-            and context.num_layers == 6
-            and not context.causal
-            and not context.training
-            and not context.grad_enabled
+        wide_inplace=supports_wide_exact_gelu(
+            device_type=context.device.type,
+            dtype=context.dtype,
+            input_shape=(
+                context.batch_size,
+                context.sequence_length,
+                context.d_model,
+            ),
+            weight_shape=(context.ffn_dim, context.d_model),
+            bias_shape=(context.ffn_dim,),
+            grad_enabled=context.training or context.grad_enabled,
         ),
-        triton_residual=(
-            TRITON_RESIDUAL_AVAILABLE
-            and cuda
-            and context.dtype in (torch.float16, torch.bfloat16, torch.float32)
-            and context.has_valid_token_mask
-            and mask_compatible
+        triton_residual=supports_triton_residual(
+            device_type=context.device.type,
+            dtype=context.dtype,
+            has_valid_token_mask=context.has_valid_token_mask,
+            mask_compatible=context.mask_compatible,
         ),
-        cuda_graph=(effective_policy == "cuda-graph" and launch_graph)
-        or (effective_policy == "balanced-cuda-graph" and balanced_graph),
+        cuda_graph=cuda_graph,
     )
 
 
 def _resolve_qkv_layout(
     spec: PolicySpec,
     capabilities: _ExecutionCapabilities,
-) -> tuple[str, str | None]:
+) -> str:
     if spec.qkv_layout == "triton":
         if capabilities.triton_layout:
-            return "triton_single_pass", None
-        return "view_fallback", "triton_qkv_layout_not_available_or_compatible"
+            return "triton_single_pass"
+        return "view_fallback"
     if spec.qkv_layout == "torch_contiguous":
-        return "torch_three_contiguous_copies", None
-    return "torch_zero_copy_view", None
+        return "torch_three_contiguous_copies"
+    return "torch_zero_copy_view"
 
 
 def _resolve_attention(
     requested_attention: str,
     context: ExecutionContext,
     capabilities: _ExecutionCapabilities,
-) -> tuple[str, str | None]:
+) -> str:
     use_fp32_sdpa = (
         requested_attention in {"auto", "fp32_sdpa"} and capabilities.fp32_sdpa
     )
     if requested_attention == "triton_online" and capabilities.triton_online:
-        return "triton_two_pass_online_attention", None
+        return "triton_two_pass_online_attention"
     if (
         requested_attention == "s512_native_half_softmax"
         and capabilities.s512_native_softmax
     ):
-        return "explicit_qk_triton_scale_mask_native_half_softmax_pv", None
+        return "explicit_qk_triton_scale_mask_native_half_softmax_pv"
     if requested_attention == "triton_softmax" and capabilities.triton_softmax:
-        return "explicit_qk_triton_softmax_pv", None
+        return "explicit_qk_triton_softmax_pv"
     if use_fp32_sdpa:
-        return "fp32_sdpa", None
+        return "fp32_sdpa"
     if (
         requested_attention == "triton_preprocess"
         or (requested_attention == "auto" and context.sequence_length == 2048)
     ) and capabilities.triton_preprocess:
-        return "explicit_qk_triton_preprocess_native_softmax_pv", None
+        return "explicit_qk_triton_preprocess_native_softmax_pv"
     if (
         requested_attention in {"auto", "explicit", "triton_preprocess"}
         and context.dtype in (torch.float16, torch.bfloat16)
         and context.sequence_length <= 512
     ):
-        return "explicit_qk_native_fp32_dtype_softmax_pv", None
-    reason = {
-        "fp32_sdpa": "fp32_sdpa_not_eligible",
-        "s512_native_half_softmax": "s512_native_half_softmax_not_eligible",
-        "triton_softmax": "triton_attention_softmax_not_eligible",
-        "triton_preprocess": "triton_attention_preprocess_not_eligible",
-        "triton_online": "triton_online_attention_not_eligible",
-    }.get(requested_attention)
-    return "explicit_reference_order", reason
+        return "explicit_qk_native_fp32_dtype_softmax_pv"
+    return "explicit_reference_order"
+
+
+_ATTENTION_COMPONENTS = {
+    "explicit_qk_triton_softmax_pv": (
+        ExecutionComponent.TRITON_ATTENTION_SOFTMAX
+    ),
+    "explicit_qk_triton_preprocess_native_softmax_pv": (
+        ExecutionComponent.TRITON_ATTENTION_PREPROCESS
+    ),
+    "explicit_qk_triton_scale_mask_native_half_softmax_pv": (
+        ExecutionComponent.S512_NATIVE_HALF_SOFTMAX
+    ),
+}
+
+_COMPONENT_FALLBACK_REASONS = {
+    ExecutionComponent.TRITON_QKV_LAYOUT: (
+        "triton_qkv_layout_not_available_or_compatible"
+    ),
+    ExecutionComponent.TRITON_ATTENTION_SOFTMAX: (
+        "triton_attention_softmax_not_eligible"
+    ),
+    ExecutionComponent.TRITON_ATTENTION_PREPROCESS: (
+        "triton_attention_preprocess_not_eligible"
+    ),
+    ExecutionComponent.S512_NATIVE_HALF_SOFTMAX: (
+        "s512_native_half_softmax_not_eligible"
+    ),
+    ExecutionComponent.TAIL_ONLINE_ATTENTION: (
+        "triton_tail_online_attention_not_eligible"
+    ),
+    ExecutionComponent.WIDE_INPLACE_FFN: "wide_ffn_epilogue_not_eligible",
+    ExecutionComponent.PACKED_FFN: "packed_ffn_requires_valid_token_mask",
+    ExecutionComponent.TRITON_RESIDUAL: (
+        "triton_residual_fusion_not_eligible"
+    ),
+    ExecutionComponent.CUDA_GRAPH: "cuda_graph_policy_not_eligible",
+}
+
+
+def _resolved_components(
+    *,
+    qkv_layout: str,
+    layer_attention: list[str],
+    resolved_ffn: str,
+    use_packed_ffn: bool,
+    use_triton_residual: bool,
+    use_cuda_graph: bool,
+) -> frozenset[ExecutionComponent]:
+    """Describe specialized components in the exact plan being returned."""
+
+    components: set[ExecutionComponent] = set()
+    if qkv_layout == "triton_single_pass":
+        components.add(ExecutionComponent.TRITON_QKV_LAYOUT)
+    components.update(
+        component
+        for attention in layer_attention
+        if (component := _ATTENTION_COMPONENTS.get(attention)) is not None
+    )
+    if "triton_two_pass_online_attention" in layer_attention:
+        components.add(ExecutionComponent.TAIL_ONLINE_ATTENTION)
+    if resolved_ffn == "torch_inplace_exact_gelu":
+        components.add(ExecutionComponent.WIDE_INPLACE_FFN)
+    if use_packed_ffn:
+        components.add(ExecutionComponent.PACKED_FFN)
+    if use_triton_residual:
+        components.add(ExecutionComponent.TRITON_RESIDUAL)
+    if use_cuda_graph:
+        components.add(ExecutionComponent.CUDA_GRAPH)
+    return frozenset(components)
+
+
+def _selected_policy(
+    spec: PolicySpec,
+    resolved_components: frozenset[ExecutionComponent],
+) -> str:
+    missing = spec.required_components - resolved_components
+    if not missing:
+        return spec.policy_id
+    if spec.allow_partial_application and (
+        spec.required_components & resolved_components
+    ):
+        return f"{spec.policy_id}_partial"
+    return "torch_fallback"
 
 
 def _fallback_reasons(
-    spec: PolicySpec,
-    effective_policy: str,
-    context: ExecutionContext,
-    capabilities: _ExecutionCapabilities,
-    qkv_reason: str | None,
-    attention_reason: str | None,
+    missing_components: frozenset[ExecutionComponent],
+    *,
+    partial_application_disallowed: bool,
 ) -> tuple[str, ...]:
     reasons = [
-        reason for reason in (qkv_reason, attention_reason) if reason is not None
+        _COMPONENT_FALLBACK_REASONS[component]
+        for component in sorted(missing_components, key=str)
     ]
-    if spec.use_packed_ffn and not context.has_valid_token_mask:
-        reasons.append("packed_ffn_requires_valid_token_mask")
-    if spec.use_triton_residual and not capabilities.triton_residual:
-        reasons.append("triton_residual_fusion_not_eligible")
-    if effective_policy == "long-tail-online" and not capabilities.tail_online:
-        reasons.append("triton_tail_online_attention_not_eligible")
-    if spec.ffn == "inplace_exact_gelu" and not capabilities.wide_inplace:
-        reasons.append("wide_ffn_epilogue_not_eligible")
-    if spec.use_cuda_graph and not capabilities.cuda_graph:
-        reasons.append("cuda_graph_policy_not_eligible")
+    if partial_application_disallowed:
+        reasons.append("policy_requires_complete_application")
     return tuple(reasons)
 
 
-def _resolve_selected_policy(
-    effective_policy: str,
-    capabilities: _ExecutionCapabilities,
-) -> str:
-    if effective_policy == "triton" and not (
-        capabilities.triton_layout and capabilities.triton_softmax
-    ):
-        if capabilities.triton_layout or capabilities.triton_softmax:
-            return "triton_partial"
-        return "torch_fallback"
-    specialized_policy_eligible = {
-        "preprocess": capabilities.triton_preprocess,
-        "s512-native-softmax": capabilities.s512_native_softmax,
-        "long-tail-online": capabilities.tail_online,
-        "wide-triton-inplace": (
-            capabilities.wide_inplace and capabilities.triton_layout
-        ),
-        "cuda-graph": capabilities.cuda_graph,
-        "balanced-cuda-graph": capabilities.cuda_graph,
-    }
-    if (
-        effective_policy in specialized_policy_eligible
-        and not specialized_policy_eligible[effective_policy]
-    ):
-        return "torch_fallback"
-    return effective_policy
-
-
 def _shape_route(
-    effective_policy: str,
+    spec: PolicySpec,
     resolved_attention: str,
     context: ExecutionContext,
-    capabilities: _ExecutionCapabilities,
+    use_cuda_graph: bool,
 ) -> str:
-    if effective_policy == "cuda-graph" and capabilities.cuda_graph:
-        return "launch_fp16_eager_cuda_graph"
-    if effective_policy == "balanced-cuda-graph" and capabilities.cuda_graph:
-        return "balanced_fp16_eager_cuda_graph"
+    if use_cuda_graph:
+        assert spec.cuda_graph_route is not None
+        return spec.cuda_graph_route
     attention_routes = {
         "three_explicit_layers_tail_online_attention": (
             "long_fp16_tail_layer_online_attention"
@@ -482,16 +490,16 @@ def resolve_execution_plan(
     """Resolve one policy without mutating the model or global runtime state."""
 
     effective_policy = dispatch_policy or requested_policy
-    capabilities = _resolve_capabilities(context, effective_policy)
-    resolved_qkv_layout, qkv_reason = _resolve_qkv_layout(spec, capabilities)
-    base_attention, attention_reason = _resolve_attention(
+    capabilities = _resolve_capabilities(context, spec)
+    resolved_qkv_layout = _resolve_qkv_layout(spec, capabilities)
+    base_attention = _resolve_attention(
         spec.attention,
         context,
         capabilities,
     )
     layer_attention = [base_attention] * context.num_layers
     resolved_attention = base_attention
-    if capabilities.tail_online and spec.tail_attention == "triton_online":
+    if capabilities.triton_online and spec.tail_attention == "triton_online":
         layer_attention[-1] = "triton_two_pass_online_attention"
         resolved_attention = "three_explicit_layers_tail_online_attention"
 
@@ -500,6 +508,42 @@ def resolve_execution_plan(
         resolved_ffn = "torch_inplace_exact_gelu"
     use_packed_ffn = spec.use_packed_ffn and context.has_valid_token_mask
     use_triton_residual = spec.use_triton_residual and capabilities.triton_residual
+    use_cuda_graph = spec.use_cuda_graph and capabilities.cuda_graph
+    resolved_components = _resolved_components(
+        qkv_layout=resolved_qkv_layout,
+        layer_attention=layer_attention,
+        resolved_ffn=resolved_ffn,
+        use_packed_ffn=use_packed_ffn,
+        use_triton_residual=use_triton_residual,
+        use_cuda_graph=use_cuda_graph,
+    )
+    unavailable_components = spec.required_components - resolved_components
+    partial_application_disallowed = bool(
+        unavailable_components
+        and spec.required_components & resolved_components
+        and not spec.allow_partial_application
+    )
+    if partial_application_disallowed:
+        # A policy that requires all of its specialized pieces falls back as a
+        # unit. This avoids reporting one policy while silently running a
+        # hybrid that was never registered or measured.
+        resolved_qkv_layout = "torch_zero_copy_view"
+        base_attention = _resolve_attention("auto", context, capabilities)
+        layer_attention = [base_attention] * context.num_layers
+        resolved_attention = base_attention
+        resolved_ffn = "torch_exact_gelu"
+        use_packed_ffn = False
+        use_triton_residual = False
+        use_cuda_graph = False
+        resolved_components = _resolved_components(
+            qkv_layout=resolved_qkv_layout,
+            layer_attention=layer_attention,
+            resolved_ffn=resolved_ffn,
+            use_packed_ffn=use_packed_ffn,
+            use_triton_residual=use_triton_residual,
+            use_cuda_graph=use_cuda_graph,
+        )
+
     layer_plans = tuple(
         LayerExecutionPlan(
             qkv_layout=resolved_qkv_layout,
@@ -510,19 +554,19 @@ def resolve_execution_plan(
         )
         for attention in layer_attention
     )
+    missing_components = spec.required_components - resolved_components
     fallback_reasons = _fallback_reasons(
-        spec,
-        effective_policy,
-        context,
-        capabilities,
-        qkv_reason,
-        attention_reason,
+        unavailable_components,
+        partial_application_disallowed=partial_application_disallowed,
     )
 
     return ExecutionPlan(
         requested_policy=requested_policy,
         effective_policy=effective_policy,
-        selected_policy=_resolve_selected_policy(effective_policy, capabilities),
+        selected_policy=_selected_policy(spec, resolved_components),
+        required_components=tuple(sorted(map(str, spec.required_components))),
+        resolved_components=tuple(sorted(map(str, resolved_components))),
+        missing_components=tuple(sorted(map(str, missing_components))),
         requested_qkv_layout=spec.qkv_layout,
         resolved_qkv_layout=resolved_qkv_layout,
         requested_attention=spec.attention,
@@ -531,14 +575,14 @@ def resolve_execution_plan(
         requested_ffn=spec.ffn,
         resolved_ffn=resolved_ffn,
         shape_route=_shape_route(
-            effective_policy,
+            spec,
             resolved_attention,
             context,
-            capabilities,
+            use_cuda_graph,
         ),
         use_packed_ffn=use_packed_ffn,
         use_triton_residual=use_triton_residual,
-        use_cuda_graph=spec.use_cuda_graph and capabilities.cuda_graph,
+        use_cuda_graph=use_cuda_graph,
         direct_score_masking=all(
             layer.attention in _DIRECT_MASK_ATTENTION_PATHS for layer in layer_plans
         ),

@@ -1,0 +1,10 @@
+--index-url https://pypi.org/simple
+--extra-index-url https://download.pytorch.org/whl/cu132
+
+# Validated local Windows RTX 4080 runtime.
+-r requirements.txt
+torch==2.12.1+cu132
+
+# Native Windows uses the third-party Triton port. Other platforms should use
+# the Triton distribution selected by their PyTorch/CUDA stack instead.
+triton-windows==3.7.1.post27

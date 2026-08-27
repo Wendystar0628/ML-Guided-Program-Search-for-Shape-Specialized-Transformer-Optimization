@@ -35,6 +35,7 @@ def _resolve(
         torch_version=str(torch.__version__),
         cuda_runtime=cuda_runtime or str(torch.version.cuda),
         triton_version=str(triton.__version__),
+        driver="fixture-driver",
     )
 
 

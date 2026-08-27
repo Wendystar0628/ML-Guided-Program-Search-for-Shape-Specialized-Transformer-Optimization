@@ -13,10 +13,11 @@ from typing import Any
 import torch
 import triton
 
+from project_identity import official_snapshot_hash, solution_implementation_hash
 from runner.candidates import CANDIDATE_SPECS
-from runner.contracts import load_workload_set, solution_implementation_hash
+from runner.contracts import load_workload_set
 from runner.route_promotion import verified_profile_from_probe_result
-from solution.dispatch import ROUTE_FIELDS
+from solution.dispatch import ROUTE_FIELDS, SCHEMA_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_WORKLOAD_SET_ID = "fixture_transformer_v1"
@@ -47,6 +48,7 @@ def route_runtime_identity(
         "torch": str(torch.__version__),
         "cuda_runtime": str(torch.version.cuda),
         "triton": str(triton.__version__),
+        "driver": "fixture-driver",
     }
 
 
@@ -82,7 +84,7 @@ def exact_route_document(
     seq_len: int = 2048,
 ) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "default_policy": "auto",
         "routes": [
             {
@@ -123,6 +125,7 @@ def routing_probe_result() -> dict[str, object]:
                     "torch": str(torch.__version__),
                     "cuda_runtime": str(torch.version.cuda),
                     "triton": str(triton.__version__),
+                    "driver": "fixture-driver",
                 },
                 "gpu": {
                     "available": True,
@@ -190,7 +193,7 @@ def candidate_observation(
 def formal_summary() -> dict[str, Any]:
     implementation_hash = "fixture-implementation-hash"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "tuning_id": "fixture-tuning",
         "complete": True,
         "protocol": {
@@ -209,6 +212,8 @@ def formal_summary() -> dict[str, Any]:
         "source_solution_sha256": implementation_hash,
         "implementation_consistent": True,
         "source_implementation_sha256": implementation_hash,
+        "official_consistent": True,
+        "official_snapshot_sha256": "0" * 64,
         "device_profile": {
             "device_type": "cuda",
             "device_name": "Fixture GPU",
@@ -217,6 +222,7 @@ def formal_summary() -> dict[str, Any]:
             "torch": str(torch.__version__),
             "cuda_runtime": str(torch.version.cuda),
             "triton": str(triton.__version__),
+            "driver": "fixture-driver",
         },
         "workload": {
             "set_id": FIXTURE_WORKLOAD_SET_ID,
@@ -251,6 +257,7 @@ def formal_summary() -> dict[str, Any]:
                 "target_median_ms": 0.9,
                 "target_p90_ms": 1.0,
                 "solution_sha256": implementation_hash,
+                "official_snapshot_sha256": "0" * 64,
                 "execution_path": {
                     "requested_policy": "auto",
                     "selected_policy": "auto",
@@ -272,6 +279,7 @@ def formal_summary() -> dict[str, Any]:
                 "target_median_ms": 6.5,
                 "target_p90_ms": 6.8,
                 "solution_sha256": implementation_hash,
+                "official_snapshot_sha256": "0" * 64,
                 "execution_path": {
                     "requested_policy": "auto",
                     "selected_policy": "auto",
@@ -293,6 +301,7 @@ def formal_summary() -> dict[str, Any]:
                 "target_median_ms": 6.1,
                 "target_p90_ms": 6.4,
                 "solution_sha256": implementation_hash,
+                "official_snapshot_sha256": "0" * 64,
                 "execution_path": candidate_execution_path("long-tail-online"),
             },
         ],
@@ -303,13 +312,36 @@ def promotion_project(tmp_path: Path) -> Path:
     solution_root = tmp_path / "solution"
     solution_root.mkdir()
     (solution_root / "transformer.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _write_official_snapshot(tmp_path)
     return tmp_path
+
+
+def _write_official_snapshot(project_root: Path) -> str:
+    official_root = project_root / "official"
+    official_root.mkdir(parents=True, exist_ok=True)
+    snapshot_path = official_root / "fixture_benchmark.py"
+    if not snapshot_path.exists():
+        snapshot_path.write_text("# official fixture\n", encoding="utf-8")
+    digest = hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+    (official_root / "snapshot.json").write_text(
+        json.dumps(
+            {
+                "snapshot_path": "official/fixture_benchmark.py",
+                "byte_count": snapshot_path.stat().st_size,
+                "sha256": digest,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return digest
 
 
 def bind_workload_summaries(
     project_root: Path,
     summaries: list[dict[str, Any]],
 ) -> str:
+    official_hash = _write_official_snapshot(project_root)
     cases: list[dict[str, Any]] = []
     for summary in summaries:
         case = summary["workload"]["case"]
@@ -341,8 +373,11 @@ def bind_workload_summaries(
         summary["workload"]["sha256"] = workload_set.sha256
         summary["source_solution_sha256"] = implementation_hash
         summary["source_implementation_sha256"] = implementation_hash
+        summary["official_snapshot_sha256"] = official_hash
+        summary["official_consistent"] = True
         for observation in summary["observations"]:
             observation["solution_sha256"] = implementation_hash
+            observation["official_snapshot_sha256"] = official_hash
     return workload_set.sha256
 
 
@@ -363,6 +398,7 @@ def promotable_summary(
 
 def s512_summary(case_id: str, *, padding_ratio: float) -> dict[str, Any]:
     summary = formal_summary()
+    summary["tuning_id"] = f"fixture-tuning-{case_id}"
     case = summary["workload"]["case"]
     case.update(
         {
@@ -387,15 +423,31 @@ def write_bundle_manifest(
 ) -> Path:
     workload_set = load_workload_set(project_root, workload_set_id)
     implementation_hash = solution_implementation_hash(project_root / "solution")
+    official_hash = official_snapshot_hash(project_root)
+    route_document = json.loads(route_path.read_text(encoding="utf-8"))
+    route_matches = [entry["match"] for entry in route_document["routes"]]
+    route_hashes = [
+        hashlib.sha256(
+            json.dumps(
+                match,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        for match in route_matches
+    ]
     manifest_path = route_path.with_name("manifest.json")
     manifest_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "workload_set": {
                     "set_id": workload_set_id,
                     "sha256": workload_set.sha256,
                 },
+                "official": {"snapshot_sha256": official_hash},
                 "solution": {"implementation_sha256": implementation_hash},
                 "route_table": {
                     "sha256": hashlib.sha256(route_path.read_bytes()).hexdigest()
@@ -404,9 +456,13 @@ def write_bundle_manifest(
                     "protocol": {"preset": "formal"},
                     "source_summaries": [
                         {
-                            "summary_id": "fixture-summary",
-                            "case_ids": [case.case_id for case in workload_set.cases],
+                            "summary_id": f"fixture-summary-{case.case_id}",
+                            "case_id": case.case_id,
+                            "route_sha256": route_hashes[
+                                min(index, len(route_hashes) - 1)
+                            ],
                         }
+                        for index, case in enumerate(workload_set.cases)
                     ],
                 },
             },

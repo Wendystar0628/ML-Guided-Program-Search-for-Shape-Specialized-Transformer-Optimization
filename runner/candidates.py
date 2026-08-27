@@ -79,10 +79,13 @@ class ExecutionEvidence:
         *,
         solution_policy: str,
         execution_path: Mapping[str, Any],
+        expected_request_policy: str | None = None,
     ) -> bool:
         """Return whether a worker report proves the intended route ran."""
 
-        if execution_path.get("requested_policy") != solution_policy:
+        if execution_path.get("requested_policy") != (
+            expected_request_policy or solution_policy
+        ):
             return False
         selected = execution_path.get("selected_policy")
         accepted = self.selected_policies or frozenset({solution_policy})
@@ -152,6 +155,18 @@ class CandidateSpec:
         return self.evidence.matches(
             solution_policy=self.solution_policy,
             execution_path=execution_path,
+        )
+
+    def dispatch_evidence_matches(self, execution_path: Mapping[str, Any]) -> bool:
+        """Prove this policy was both dispatched and executed without fallback."""
+
+        return (
+            execution_path.get("dispatch_policy") == self.solution_policy
+            and self.evidence.matches(
+                solution_policy=self.solution_policy,
+                execution_path=execution_path,
+                expected_request_policy="dispatch",
+            )
         )
 
 

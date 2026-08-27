@@ -15,9 +15,21 @@ import pytest
 import torch
 
 from runner.candidates import candidate_spec_for_policy
-from runner.contracts import MeasurementProtocol, WorkloadCase
+from runner.contracts import (
+    MeasurementProtocol,
+    WorkloadCase,
+    load_json,
+    load_workload_set,
+)
 from runner.execution import execute_benchmark
 from runner.result_contracts import WorkerRequest
+from runner.supervisor import run_managed_benchmark
+from runner.verified_hardware import (
+    VerifiedHardwareError,
+    collect_runtime_identity,
+    expected_hardware_identity,
+    validate_hardware_identity,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -161,3 +173,57 @@ def test_fp16_solution_cuda_graph_captures_and_replays() -> None:
     assert execution_path["selected_policy"] == "cuda-graph"
     assert execution_path["runtime_wrapper"] == "solution_eager_cuda_graph"
     assert execution_path["shape_route"] == "launch_fp16_eager_cuda_graph"
+
+
+@pytest.mark.parametrize(
+    ("case_id", "expected_policy"),
+    (
+        ("launch_s64_fp16", "cuda-graph"),
+        ("balanced_s128_fp32", "auto"),
+        ("balanced_s128_fp16", "balanced-cuda-graph"),
+        ("attention_s2048_fp16", "long-tail-online"),
+        ("mask_s512_full_fp16", "s512-native-softmax"),
+        ("wide_s256_bf16", "wide-triton-inplace"),
+    ),
+)
+def test_default_dispatch_runs_deployed_policy_through_a_managed_worker(
+    tmp_path: Path,
+    case_id: str,
+    expected_policy: str,
+) -> None:
+    """Exercise the checked-in device route through the real process boundary."""
+
+    bundle_root = PROJECT_ROOT / "verified_hardware" / "nvidia_geforce_rtx_4080"
+    expected_identity = expected_hardware_identity(
+        load_json(bundle_root / "profile.json")
+    )
+    actual_identity = collect_runtime_identity("cuda:0")
+    try:
+        validate_hardware_identity(expected_identity, actual_identity)
+    except VerifiedHardwareError as exc:
+        pytest.skip(f"checked-in RTX 4080 Bundle does not target this GPU: {exc}")
+
+    workload_set = load_workload_set(PROJECT_ROOT, "transformer_core_v1")
+    case = next(case for case in workload_set.cases if case.case_id == case_id)
+    result, result_path = run_managed_benchmark(
+        PROJECT_ROOT,
+        workload_set_id=workload_set.workload_set_id,
+        workload_sha256=workload_set.sha256,
+        case=case,
+        protocol=_smoke_protocol(),
+        device="cuda:0",
+        target="solution",
+        solution_policy="dispatch",
+        result_dir=tmp_path,
+    )
+
+    assert result_path.parent == tmp_path
+    assert result["outcome"] == "success", result.get("failure")
+    assert result["correctness"]["passed"] is True
+    execution_path = result["execution_path"]
+    assert isinstance(execution_path, dict)
+    assert execution_path["route_origin"] == "calibrated"
+    assert execution_path["dispatch_policy"] == expected_policy
+    spec = candidate_spec_for_policy(case, expected_policy, deployable_only=True)
+    assert spec is not None
+    assert spec.dispatch_evidence_matches(execution_path), execution_path

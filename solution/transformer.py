@@ -96,19 +96,6 @@ class _SelfAttention(nn.Module):
 
         return self._split_heads_view(value).contiguous()
 
-    def _can_use_fp32_sdpa(
-        self,
-        value: torch.Tensor,
-        sequence_length: int,
-        causal: bool,
-    ) -> bool:
-        return (
-            value.is_cuda
-            and value.dtype == torch.float32
-            and not causal
-            and sequence_length <= 128
-        )
-
     def _project_heads(
         self,
         value: torch.Tensor,
@@ -322,11 +309,7 @@ class _SelfAttention(nn.Module):
         batch_size, sequence_length, _ = value.shape
         query, key, projected_value = self._project_heads(value, plan, observation)
 
-        use_fp32_sdpa = plan.attention == "fp32_sdpa" and self._can_use_fp32_sdpa(
-            value,
-            sequence_length,
-            causal,
-        )
+        use_fp32_sdpa = plan.attention == "fp32_sdpa"
         if use_fp32_sdpa:
             if observation is not None:
                 observation.attention_backends.append("fp32_sdpa")
@@ -647,7 +630,7 @@ class UserOptimizedTransformer(nn.Module):
                 self.config.d_model,
             )
             input_contiguous = True
-            has_valid_token_mask = True
+            has_valid_token_mask = False
             mask_compatible = True
             # Execution-path reporting describes the inference benchmark route.
             grad_enabled = False

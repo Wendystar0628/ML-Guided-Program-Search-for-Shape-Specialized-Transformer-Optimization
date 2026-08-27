@@ -7,12 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from project_identity import solution_implementation_hash
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
+    atomic_replace_json,
+    atomic_write_json,
+    load_json,
     load_workload_set,
-    solution_implementation_hash,
-    solution_source_hash,
     validate_official_snapshot,
 )
 from tests.support.runner_fixtures import (
@@ -70,7 +72,6 @@ def test_solution_hash_excludes_external_route_tables(tmp_path: Path) -> None:
         '{"schema_version":1,"default_policy":"auto","routes":[]}\n',
         encoding="utf-8",
     )
-    original_source = solution_source_hash(solution_root)
     original_implementation = solution_implementation_hash(solution_root)
 
     route_path.write_text(
@@ -78,7 +79,6 @@ def test_solution_hash_excludes_external_route_tables(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    assert solution_source_hash(solution_root) == original_source
     assert solution_implementation_hash(solution_root) == original_implementation
 
 
@@ -91,3 +91,18 @@ def test_compile_and_cuda_graph_candidates_are_mutually_exclusive() -> None:
 
     with pytest.raises(ContractError, match="cannot combine"):
         protocol.validate()
+
+
+def test_immutable_results_and_mutable_references_have_distinct_writers(
+    tmp_path: Path,
+) -> None:
+    immutable = tmp_path / "run.json"
+    atomic_write_json(immutable, {"version": 1})
+    with pytest.raises(ContractError, match="refusing to overwrite"):
+        atomic_write_json(immutable, {"version": 2})
+    assert load_json(immutable) == {"version": 1}
+
+    reference = tmp_path / "reference.json"
+    atomic_replace_json(reference, {"version": 1})
+    atomic_replace_json(reference, {"version": 2})
+    assert load_json(reference) == {"version": 2}

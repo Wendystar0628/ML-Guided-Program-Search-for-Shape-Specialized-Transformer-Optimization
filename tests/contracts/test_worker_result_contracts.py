@@ -84,6 +84,7 @@ def test_managed_benchmark_forwards_explicit_policy(
         _project_root: Path,
         request: dict[str, Any],
         _timeout_seconds: float,
+        **_kwargs: Any,
     ) -> dict[str, Any]:
         captured_request.update(request)
         return {

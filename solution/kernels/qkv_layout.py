@@ -22,6 +22,27 @@ except (ImportError, OSError):
 TRITON_QKV_LAYOUT_AVAILABLE = triton is not None and tl is not None
 
 
+def supports_triton_qkv_layout(
+    *,
+    device_type: str,
+    dtype: torch.dtype,
+    model_width: int,
+    num_heads: int,
+) -> bool:
+    """Return whether static context can use the bounded layout kernel."""
+
+    if (
+        not TRITON_QKV_LAYOUT_AVAILABLE
+        or device_type != "cuda"
+        or dtype not in (torch.float16, torch.bfloat16, torch.float32)
+        or num_heads <= 0
+        or model_width % num_heads
+    ):
+        return False
+    head_dim = model_width // num_heads
+    return 16 <= head_dim <= 128 and head_dim & (head_dim - 1) == 0
+
+
 if TRITON_QKV_LAYOUT_AVAILABLE:
 
     @triton.jit
@@ -81,20 +102,18 @@ def can_use_triton_qkv_layout(
 ) -> bool:
     """Return whether the project-specialized Triton layout path is applicable."""
 
-    if not TRITON_QKV_LAYOUT_AVAILABLE:
-        return False
     if not packed_qkv.is_cuda or not packed_qkv.is_contiguous():
-        return False
-    if packed_qkv.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         return False
     if packed_qkv.ndim != 3 or packed_qkv.shape[-1] % 3:
         return False
 
     model_width = packed_qkv.shape[-1] // 3
-    if model_width % num_heads:
-        return False
-    head_dim = model_width // num_heads
-    return 16 <= head_dim <= 128 and head_dim & (head_dim - 1) == 0
+    return supports_triton_qkv_layout(
+        device_type=packed_qkv.device.type,
+        dtype=packed_qkv.dtype,
+        model_width=model_width,
+        num_heads=num_heads,
+    )
 
 
 def triton_qkv_to_bhsd(
