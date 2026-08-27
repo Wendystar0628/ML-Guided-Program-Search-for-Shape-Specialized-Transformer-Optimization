@@ -527,7 +527,7 @@ def build_routing_plan(
     limit: int = 4,
     required_candidate_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Rank a bounded candidate set for short calibration on new hardware.
+    """Rank a bounded candidate set for Smoke screening on new hardware.
 
     Only caller-supplied candidate IDs can be returned.  The general ``auto``
     candidate is retained when supplied; the resulting order is a prior for

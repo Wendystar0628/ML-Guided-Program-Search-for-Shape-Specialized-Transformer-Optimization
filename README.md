@@ -21,11 +21,12 @@ workflow is:
 
 1. probe the target GPU and software stack;
 2. analyze each workload shape with the white-box hardware cost model;
-3. screen a small eligible candidate set with the full correctness comparator
-   and end-to-end timer;
-4. automatically publish a stable formal winner into an exact device route;
-   and
-5. use deterministic dispatch at runtime, with `auto` as the safe fallback.
+3. Smoke-screen at most three eligible candidates per workload with the full
+   correctness comparator and end-to-end timer;
+4. formally remeasure only the dynamically selected controls and finalist;
+5. apply the correctness, execution-path, incumbent, gain, and shared-route
+   gates before publishing every accepted route atomically; and
+6. use deterministic dispatch at runtime, with `auto` as the safe fallback.
 
 The workload and optimization code stay shared. Only an exact, measured route
 table and its evidence belong to a device package.
@@ -69,16 +70,20 @@ candidate benchmark:
 python -m runner calibrate --plan-only --device cuda:0
 ```
 
-Run bounded candidate calibration on the target device:
+Run a bounded, non-deploying Smoke screen on the target device. The default
+candidate limit is three per Workload:
 
 ```powershell
 python -m runner calibrate --preset smoke --device cuda:0
 ```
 
-Run the complete formal calibration to deploy measured routes. After every
-selected Workload passes the formal correctness and measurement gates, Runner
-locates or creates the matching verified-device package and atomically updates
-its `routes.json` in one transaction:
+Run the complete formal calibration to deploy measured routes. This one command
+performs its own Probe, deployable Smoke Top-3 screen, dynamic Formal finalist
+remeasurement, and promotion gates. A new device formally compares at most
+`eager-auto` and its best Smoke challenger. A device with a specialized current
+route also retains that incumbent, so Formal measures at most three distinct
+candidates. Runner then locates or creates the exact verified-device package
+and publishes all accepted routes with one atomic `routes.json` update:
 
 ```powershell
 python -m runner calibrate --preset formal --device cuda:0
@@ -124,7 +129,10 @@ python -m runner profile --case-id attention_s2048_fp16
 ```
 
 The CLI defaults to `--target solution`, `--solution-policy dispatch`,
-`--workload-set transformer_core_v1`, and `--device cuda:0`. Use
+`--workload-set transformer_core_v1`, and `--device cuda:0`. For `calibrate`,
+`--candidate-limit` defaults to three and limits the Smoke screening pool; the
+smaller Formal set is selected automatically rather than controlled by a
+second user-facing limit. Use
 `python -m runner <command> --help` for policies, compile modes, TF32 controls,
 timeouts, result directories, and baseline-only diagnostics.
 
@@ -158,11 +166,15 @@ The timing is explicit:
 1. load and validate the selected Workload definitions;
 2. run one routing probe for the whole command;
 3. combine the shared hardware profile with each Workload shape to produce a
-   coarse Top-K candidate plan;
-4. run the complete Transformer comparator and paired end-to-end timing only
-   for those candidates; and
-5. use formal measured winners, never probe predictions, to atomically update
-   the matching verified device route table.
+   deployable Smoke plan of at most three candidates, retaining `eager-auto`
+   and any exact current incumbent;
+4. run the complete Transformer comparator and short paired end-to-end timing
+   for that bounded pool;
+5. select the best valid new challenger from measured Smoke results;
+6. formally remeasure `eager-auto`, the challenger, and any distinct
+   specialized incumbent; and
+7. use formal measurements, never probe predictions or Smoke rankings alone,
+   to atomically update the matching verified-device route table.
 
 The routing probe deliberately skips the broader SDPA backend diagnostic
 because that output is not consumed by the current cost model. The standalone
@@ -173,12 +185,16 @@ performance measurement.
 
 Candidate measurement remains authoritative. `calibrate` and `tune` reuse the
 same fresh-worker comparator and full-forward timing protocol as `benchmark`.
-Only a complete formal `calibrate` run deploys: after all safety gates pass, it
-automatically resolves or creates the verified package and atomically publishes
-all route changes together. Smoke calibration, plan-only calibration, and
-`tune` never modify deployed routes. The manual `promote` command is a
-replay/recovery tool and applies the same fail-closed implementation, execution,
-correctness, conservative-gain, incumbent, and shared-route checks.
+Only a complete formal `calibrate` run deploys. Smoke calibration only exposes
+the quick screening results; plan-only calibration stops after the white-box
+plan; and `tune` remains a focused, non-deploying experiment even with a Formal
+preset. Workloads that share one runtime route key are screened and formally
+decided together, so one incompatible per-case winner cannot overwrite the
+other. After all fail-closed implementation, execution, correctness,
+conservative-gain, incumbent, and shared-route gates pass, Runner resolves or
+creates the verified package and publishes all route changes together. The
+manual `promote` command is retained only for compatible history replay or
+deployment recovery and applies the same gates.
 
 At inference time, [`solution/dispatch.py`](solution/dispatch.py) loads the
 verified device-route catalog once, matches the exact hardware/software/shape

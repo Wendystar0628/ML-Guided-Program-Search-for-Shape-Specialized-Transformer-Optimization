@@ -415,8 +415,11 @@ def test_cli_parses_probe_benchmark_profile_and_tune() -> None:
     assert tune.command == "tune"
     assert tune.case_id == ["launch_s64_fp16"]
     assert tune.candidate is None
-    assert tune.candidate_limit == runner_cli.DEFAULT_CANDIDATE_LIMIT
+    assert tune.candidate_limit == 4
     assert tune.preset == "smoke"
+
+    default_calibrate = parser.parse_args(["calibrate"])
+    assert default_calibrate.candidate_limit == 3
 
     calibrate = parser.parse_args(
         [
@@ -562,6 +565,75 @@ def _successful_tuning_summary(
         "summary_path": str(tmp_path / f"tuning-{case_id}.json"),
         "observations": [],
         "winner": {"candidate_id": candidate_order[0]},
+    }
+
+
+def _staged_tuning_summary(
+    case: WorkloadCase,
+    candidate_order: list[str],
+    preset: str,
+    tmp_path: Path,
+    *,
+    speedups: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    candidates = {
+        candidate.candidate_id: candidate
+        for candidate in runner_cli.candidates_for_case(case)
+    }
+    resolved_speedups = speedups or {
+        candidate_id: 1.0 + (index * 0.1)
+        for index, candidate_id in enumerate(candidate_order)
+    }
+    observations: list[dict[str, Any]] = []
+    for candidate_id in candidate_order:
+        candidate = candidates[candidate_id]
+        speedup = resolved_speedups[candidate_id]
+        target = 2.0 / speedup
+        observations.append(
+            {
+                "candidate_id": candidate_id,
+                "solution_policy": candidate.solution_policy,
+                "compile_solution": candidate.compile_solution,
+                "cuda_graph_solution": candidate.cuda_graph_solution,
+                "outcome": "success",
+                "correctness_passed": True,
+                "failed_elements": 0,
+                "policy_applied": True,
+                "speedup": speedup,
+                "conservative_speedup": speedup,
+                "baseline_round_medians_ms": [2.0, 2.0],
+                "target_round_medians_ms": [target, target],
+                "target_median_ms": target,
+                "target_p90_ms": target * 1.01,
+                "execution_path": {"shape_route": candidate.solution_policy},
+            }
+        )
+    winner = max(observations, key=lambda item: item["conservative_speedup"])
+    deployable = [
+        item
+        for item in observations
+        if item["compile_solution"] is False
+        and item["cuda_graph_solution"] is False
+    ]
+    return {
+        "case_id": case.case_id,
+        "tuning_id": f"{preset}-{case.case_id}",
+        "summary_path": str(tmp_path / f"{preset}-{case.case_id}.json"),
+        "complete": True,
+        "protocol": {"preset": preset},
+        "source_consistent": True,
+        "implementation_consistent": True,
+        "source_solution_sha256": solution_source_hash(PROJECT_ROOT / "solution"),
+        "source_implementation_sha256": solution_implementation_hash(
+            PROJECT_ROOT / "solution"
+        ),
+        "observations": observations,
+        "winner": winner,
+        "deployable_winner": (
+            max(deployable, key=lambda item: item["conservative_speedup"])
+            if deployable
+            else None
+        ),
     }
 
 
@@ -797,6 +869,50 @@ def test_formal_plan_only_allows_one_shared_case_on_a_new_device(
     assert exit_code == 0
 
 
+def test_cpu_plan_only_does_not_require_a_verified_gpu_profile(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        runner_cli,
+        "run_managed_probe",
+        lambda *args, **kwargs: (_routing_probe_result(), tmp_path / "probe.json"),
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "_hardware_profile_from_probe",
+        lambda result: {"device_type": "cpu", "platform_system": "Windows"},
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "verified_profile_from_probe_result",
+        lambda result: pytest.fail("CPU planning must not build a GPU package"),
+    )
+    monkeypatch.setattr(
+        runner_cli,
+        "build_routing_plan",
+        lambda *args, **kwargs: {
+            "source": "hardware_cost_model",
+            "candidate_order": ["eager-auto"],
+        },
+    )
+    monkeypatch.setattr(runner_cli, "_print_run_summary", lambda *args: None)
+    monkeypatch.setattr(runner_cli, "_print_routing_plan", lambda *args: None)
+
+    exit_code = runner_cli.main(
+        [
+            "calibrate",
+            "--device",
+            "cpu",
+            "--plan-only",
+            "--candidate-limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -857,7 +973,10 @@ def test_calibrate_probes_once_then_plans_then_runs_full_workloads(
         events.append(f"tune:{case_id}")
         assert kwargs["requested_candidates"] == ["eager-auto"]
         assert kwargs["device_profile"] is profiles[0]
-        return _successful_tuning_summary(case_id, ["eager-auto"], tmp_path)
+        return {
+            **_successful_tuning_summary(case_id, ["eager-auto"], tmp_path),
+            "complete": True,
+        }
 
     monkeypatch.setattr(runner_cli, "run_managed_probe", fake_probe)
     monkeypatch.setattr(runner_cli, "build_routing_plan", fake_plan)
@@ -895,7 +1014,7 @@ def test_calibrate_probes_once_then_plans_then_runs_full_workloads(
     assert profiles[0] is profiles[1]
 
 
-def test_formal_calibration_auto_promotes_after_all_selected_cases(
+def test_formal_calibration_runs_all_smoke_before_formal_and_promotes_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -926,18 +1045,16 @@ def test_formal_calibration_auto_promotes_after_all_selected_cases(
 
     def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
         del args
-        case_id = kwargs["case"].case_id
-        events.append(f"tune:{case_id}")
-        winner = {
-            "candidate_id": "eager-auto",
-            "solution_policy": "auto",
-        }
-        return {
-            **_successful_tuning_summary(case_id, ["eager-auto"], tmp_path),
-            "complete": True,
-            "winner": winner,
-            "deployable_winner": winner,
-        }
+        case = kwargs["case"]
+        preset = kwargs["base_protocol"].preset
+        events.append(f"{preset}:{case.case_id}")
+        assert kwargs["requested_candidates"] == ["eager-auto"]
+        return _staged_tuning_summary(
+            case,
+            kwargs["requested_candidates"],
+            preset,
+            tmp_path,
+        )
 
     def fake_auto_promote(
         project_root: Path,
@@ -954,6 +1071,7 @@ def test_formal_calibration_auto_promotes_after_all_selected_cases(
             "launch_s64_fp16",
             "wide_s256_bf16",
         ]
+        assert all(summary["protocol"]["preset"] == "formal" for summary in summaries)
         winners = [dict(summary["deployable_winner"]) for summary in summaries]
         return {"schema_version": 2}, winners, route_path, False
 
@@ -989,8 +1107,10 @@ def test_formal_calibration_auto_promotes_after_all_selected_cases(
         "probe",
         "plan:launch_s64_fp16",
         "plan:wide_s256_bf16",
-        "tune:launch_s64_fp16",
-        "tune:wide_s256_bf16",
+        "smoke:launch_s64_fp16",
+        "smoke:wide_s256_bf16",
+        "formal:launch_s64_fp16",
+        "formal:wide_s256_bf16",
         "auto-promote",
     ]
 
@@ -1015,19 +1135,20 @@ def test_formal_calibration_does_not_publish_without_deployable_winner(
             "candidate_order": ["eager-auto"],
         },
     )
-    monkeypatch.setattr(
-        runner_cli,
-        "run_tuning_case",
-        lambda *args, **kwargs: {
-            **_successful_tuning_summary(
-                kwargs["case"].case_id,
-                ["eager-auto"],
-                tmp_path,
-            ),
-            "complete": True,
-            "deployable_winner": None,
-        },
-    )
+    def fake_tuning(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        del args
+        summary = _staged_tuning_summary(
+            kwargs["case"],
+            ["eager-auto"],
+            kwargs["base_protocol"].preset,
+            tmp_path,
+        )
+        if kwargs["base_protocol"].preset == "formal":
+            summary["winner"] = None
+            summary["deployable_winner"] = None
+        return summary
+
+    monkeypatch.setattr(runner_cli, "run_tuning_case", fake_tuning)
     monkeypatch.setattr(
         runner_cli,
         "find_matching_verified_route",

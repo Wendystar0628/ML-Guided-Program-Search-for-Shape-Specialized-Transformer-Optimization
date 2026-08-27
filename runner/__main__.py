@@ -17,6 +17,7 @@ from runner.contracts import (
     load_workload_set,
     new_run_id,
     select_workload_case,
+    solution_implementation_hash,
 )
 from runner.hardware_router import build_routing_plan
 from runner.route_promotion import (
@@ -34,8 +35,11 @@ from runner.supervisor import (
 from runner.sweep import summarize_sweep
 from runner.tuning import (
     SOLUTION_POLICIES,
+    align_shared_smoke_plans,
+    build_formal_candidate_plans,
     candidates_for_case,
     deployable_candidate_id_for_policy,
+    is_deployable_candidate,
     run_tuning_case,
     select_candidates,
     solution_policy,
@@ -43,7 +47,8 @@ from runner.tuning import (
 from solution.dispatch import load_route_table, make_route_key, resolve_route_result
 
 DEFAULT_WORKLOAD_SET = "transformer_core_v1"
-DEFAULT_CANDIDATE_LIMIT = 4
+DEFAULT_TUNE_CANDIDATE_LIMIT = 4
+DEFAULT_CALIBRATION_SMOKE_LIMIT = 3
 
 
 @dataclass(frozen=True)
@@ -177,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     tune.add_argument(
         "--candidate-limit",
         type=_positive_int,
-        default=DEFAULT_CANDIDATE_LIMIT,
+        default=DEFAULT_TUNE_CANDIDATE_LIMIT,
         help="maximum hardware-ranked candidates, including eager-auto",
     )
     tune.add_argument("--device", default="cuda:0")
@@ -197,8 +202,8 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate = subparsers.add_parser(
         "calibrate",
         help=(
-            "probe once, measure bounded candidates, and automatically publish "
-            "complete Formal routes"
+            "probe once, Smoke-screen candidates, formally verify finalists, "
+            "and automatically publish complete routes"
         ),
     )
     calibrate.add_argument("--workload-set", default=DEFAULT_WORKLOAD_SET)
@@ -209,12 +214,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibrate.add_argument("--device", default="cuda:0")
     calibrate.add_argument("--preset", choices=("smoke", "formal"), default="smoke")
-    calibrate.add_argument("--timeout", type=float)
+    calibrate.add_argument(
+        "--timeout",
+        type=float,
+        help="per-candidate worker timeout override for both calibration stages",
+    )
     calibrate.add_argument(
         "--candidate-limit",
         type=_positive_int,
-        default=DEFAULT_CANDIDATE_LIMIT,
-        help="maximum hardware-ranked candidates, including eager-auto",
+        default=DEFAULT_CALIBRATION_SMOKE_LIMIT,
+        help=(
+            "maximum deployable candidates in the Smoke screening pool, "
+            "including eager-auto and the current incumbent (default: 3)"
+        ),
     )
     calibrate.add_argument(
         "--plan-only",
@@ -237,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     promote = subparsers.add_parser(
         "promote",
-        help="promote formal tuning winners into the offline dispatcher",
+        help="replay compatible Formal summaries for deployment recovery",
     )
     promote.add_argument(
         "--tuning-id",
@@ -602,8 +614,13 @@ def _routing_plan_for_case(
     candidate_limit: int,
     *,
     incumbent_candidate_id: str | None = None,
+    deployable_only: bool = False,
 ) -> dict[str, Any]:
-    applicable = tuple(item.candidate_id for item in candidates_for_case(case))
+    applicable = tuple(
+        item.candidate_id
+        for item in candidates_for_case(case)
+        if not deployable_only or is_deployable_candidate(item)
+    )
     try:
         options: dict[str, Any] = {}
         if incumbent_candidate_id is not None:
@@ -691,7 +708,10 @@ def _print_routing_plan(case_id: str, plan: Mapping[str, Any]) -> None:
 
 
 def _print_tuning_summary(summary: dict[str, Any]) -> None:
-    print(f"\n=== Candidate screening: {summary['case_id']} ===")
+    protocol = summary.get("protocol")
+    preset = protocol.get("preset") if isinstance(protocol, Mapping) else None
+    stage = "Formal finalist verification" if preset == "formal" else "Smoke screening"
+    print(f"\n=== {stage}: {summary['case_id']} ===")
     print(f"tuning id: {summary['tuning_id']}")
     summary_path = summary.get("summary_path")
     if isinstance(summary_path, str):
@@ -837,29 +857,46 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
     full_case_ids = [case.case_id for case in workload_set["cases"]]
     selected_case_ids = [case.case_id for case in cases]
     existing_route: Path | None = None
-    if args.preset == "formal":
+    if str(hardware_profile["device_type"]).lower() == "cuda":
         verified_profile = verified_profile_from_probe_result(probe_context.raw_result)
         existing_route = find_matching_verified_route(project_root, verified_profile)
-
-    plans = [
+    elif args.preset == "formal" and not args.plan_only:
+        raise ContractError("formal calibration deployment requires a CUDA device")
+    incumbent_candidate_ids = [
+        _incumbent_candidate_id(
+            case,
+            hardware_profile,
+            existing_route,
+        )
+        for case in cases
+    ]
+    smoke_plans = [
         _routing_plan_for_case(
             case,
             hardware_profile,
             args.candidate_limit,
-            incumbent_candidate_id=_incumbent_candidate_id(
-                case,
-                hardware_profile,
-                existing_route,
-            ),
+            incumbent_candidate_id=incumbent_candidate_id,
+            deployable_only=True,
         )
-        for case in cases
+        for case, incumbent_candidate_id in zip(
+            cases,
+            incumbent_candidate_ids,
+            strict=True,
+        )
     ]
-    for case, plan in zip(cases, plans, strict=True):
+    smoke_plans = align_shared_smoke_plans(
+        cases,
+        smoke_plans,
+        incumbent_candidate_ids,
+        candidate_limit=args.candidate_limit,
+    )
+    for case, plan in zip(cases, smoke_plans, strict=True):
         _print_routing_plan(case.case_id, plan)
     if args.plan_only:
         print(
             "\nplan-only: the routing probe and coarse candidate plans completed; "
-            "no full Transformer candidate benchmarks were run"
+            "candidate-limit describes the future Smoke pool, and no full "
+            "Transformer candidate benchmarks were run"
         )
         return 0
 
@@ -871,85 +908,42 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
                 "workload calibration"
             )
 
-    protocol = MeasurementProtocol.for_preset(
-        args.preset,
+    smoke_protocol = MeasurementProtocol.for_preset(
+        "smoke",
         matmul_precision=args.matmul_precision,
         allow_tf32=args.allow_tf32,
         timeout_seconds=args.timeout,
     )
-    summaries: list[dict[str, Any]] = []
-    for case, plan in zip(cases, plans, strict=True):
-        print(f"\n=== Full-workload candidate measurement: {case.case_id} ===")
+    smoke_summaries: list[dict[str, Any]] = []
+    print("\n=== Smoke screening stage ===")
+    for case, plan in zip(cases, smoke_plans, strict=True):
         summary = run_tuning_case(
             project_root,
             workload_set_id=args.workload_set,
             workload_sha256=workload_set["sha256"],
             case=case,
-            base_protocol=protocol,
+            base_protocol=smoke_protocol,
             device=args.device,
             requested_candidates=plan["candidate_order"],
             routing_plan=plan,
             device_profile=hardware_profile,
         )
-        summaries.append(summary)
+        smoke_summaries.append(summary)
         _print_tuning_summary(summary)
         if any(item["outcome"] == "cancelled" for item in summary["observations"]):
             return 130
 
-    print("\n=== Calibration outputs ===")
-    for summary in summaries:
+    print("\n=== Screening outputs ===")
+    for summary in smoke_summaries:
         print(
             f"{summary['case_id']}: tuning-id={summary['tuning_id']} | "
             f"summary={summary['summary_path']}"
         )
-    if args.preset == "formal":
+    if args.preset == "smoke":
         if any(
-            summary.get("complete") is not True
-            or summary.get("winner") is None
-            or summary.get("deployable_winner") is None
-            for summary in summaries
+            summary.get("complete") is not True or summary.get("winner") is None
+            for summary in smoke_summaries
         ):
-            print(
-                "automatic route update skipped: calibration has no complete "
-                "deployable winner"
-            )
-            return 1
-        print("\n=== Automatic route update ===")
-        try:
-            previous_route_bytes = (
-                existing_route.read_bytes()
-                if existing_route is not None and existing_route.is_file()
-                else None
-            )
-            _, winners, route_path, created = auto_promote_calibration(
-                project_root,
-                summaries,
-                probe_result=probe_context.raw_result,
-                full_workload_case_ids=full_case_ids,
-            )
-        except (ContractError, OSError) as exc:
-            print(f"automatic route update failed: {exc}")
-            return 1
-        for case, winner in zip(cases, winners, strict=True):
-            print(
-                f"{case.case_id}: deployed {winner['candidate_id']} -> "
-                f"{winner['solution_policy']}"
-            )
-        route_changed = (
-            previous_route_bytes is not None
-            and route_path.is_file()
-            and route_path.read_bytes() != previous_route_bytes
-        )
-        if created:
-            action = "created verified package"
-        elif route_changed:
-            action = "updated verified package"
-        else:
-            action = "verified package already has the selected routes"
-        print(f"{action}: {route_path.parent}")
-        print(f"dispatch routes: {route_path}")
-    else:
-        if any(summary.get("winner") is None for summary in summaries):
             return 1
         print("smoke calibration is screening-only and cannot be promoted")
         case_arguments = " ".join(f"--case-id {case.case_id}" for case in cases)
@@ -957,6 +951,109 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
             "formal calibration: python -m runner calibrate --preset formal "
             f"{case_arguments}"
         )
+        return 0
+
+    try:
+        formal_plans = build_formal_candidate_plans(
+            cases,
+            smoke_summaries,
+            incumbent_candidate_ids,
+        )
+    except ContractError as exc:
+        print(f"Formal finalist selection skipped: {exc}")
+        return 1
+    expected_implementation = smoke_summaries[0][
+        "source_implementation_sha256"
+    ]
+    if solution_implementation_hash(project_root / "solution") != expected_implementation:
+        print(
+            "Formal finalist verification skipped: Solution implementation "
+            "changed after Smoke screening"
+        )
+        return 1
+
+    print("\n=== Formal finalists selected from Smoke measurements ===")
+    for case, plan in zip(cases, formal_plans, strict=True):
+        candidates = ", ".join(plan["candidate_order"])
+        print(f"{case.case_id}: {candidates}")
+
+    formal_protocol = MeasurementProtocol.for_preset(
+        "formal",
+        matmul_precision=args.matmul_precision,
+        allow_tf32=args.allow_tf32,
+        timeout_seconds=args.timeout,
+    )
+    formal_summaries: list[dict[str, Any]] = []
+    print("\n=== Formal finalist verification stage ===")
+    for case, plan in zip(cases, formal_plans, strict=True):
+        summary = run_tuning_case(
+            project_root,
+            workload_set_id=args.workload_set,
+            workload_sha256=workload_set["sha256"],
+            case=case,
+            base_protocol=formal_protocol,
+            device=args.device,
+            requested_candidates=plan["candidate_order"],
+            routing_plan=plan,
+            device_profile=hardware_profile,
+        )
+        formal_summaries.append(summary)
+        _print_tuning_summary(summary)
+        if any(item["outcome"] == "cancelled" for item in summary["observations"]):
+            return 130
+
+    print("\n=== Formal calibration outputs ===")
+    for summary in formal_summaries:
+        print(
+            f"{summary['case_id']}: tuning-id={summary['tuning_id']} | "
+            f"summary={summary['summary_path']}"
+        )
+    if any(
+        summary.get("complete") is not True
+        or summary.get("winner") is None
+        or summary.get("deployable_winner") is None
+        for summary in formal_summaries
+    ):
+        print(
+            "automatic route update skipped: Formal calibration has no complete "
+            "deployable winner"
+        )
+        return 1
+
+    print("\n=== Automatic route update ===")
+    try:
+        previous_route_bytes = (
+            existing_route.read_bytes()
+            if existing_route is not None and existing_route.is_file()
+            else None
+        )
+        _, winners, route_path, created = auto_promote_calibration(
+            project_root,
+            formal_summaries,
+            probe_result=probe_context.raw_result,
+            full_workload_case_ids=full_case_ids,
+        )
+    except (ContractError, OSError) as exc:
+        print(f"automatic route update failed: {exc}")
+        return 1
+    for case, winner in zip(cases, winners, strict=True):
+        print(
+            f"{case.case_id}: deployed {winner['candidate_id']} -> "
+            f"{winner['solution_policy']}"
+        )
+    route_changed = (
+        previous_route_bytes is not None
+        and route_path.is_file()
+        and route_path.read_bytes() != previous_route_bytes
+    )
+    if created:
+        action = "created verified package"
+    elif route_changed:
+        action = "updated verified package"
+    else:
+        action = "verified package already has the selected routes"
+    print(f"{action}: {route_path.parent}")
+    print(f"dispatch routes: {route_path}")
     return 0
 
 

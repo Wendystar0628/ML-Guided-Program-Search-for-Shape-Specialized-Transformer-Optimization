@@ -33,6 +33,68 @@ def _case(
     )
 
 
+def _s512_case(case_id: str, *, padding_ratio: float) -> WorkloadCase:
+    return WorkloadCase(
+        case_id=case_id,
+        batch_size=8,
+        seq_len=512,
+        d_model=512,
+        num_heads=8,
+        ffn_dim=2048,
+        num_layers=4,
+        dtype="float16",
+        causal=False,
+        padding_ratio=padding_ratio,
+    )
+
+
+def _smoke_observation(
+    case: WorkloadCase,
+    candidate_id: str,
+    speedup: float,
+    *,
+    correctness_passed: bool = True,
+) -> dict[str, Any]:
+    candidate = next(
+        item
+        for item in tuning.candidates_for_case(case)
+        if item.candidate_id == candidate_id
+    )
+    return {
+        "candidate_id": candidate.candidate_id,
+        "solution_policy": candidate.solution_policy,
+        "compile_solution": candidate.compile_solution,
+        "cuda_graph_solution": candidate.cuda_graph_solution,
+        "outcome": "success",
+        "correctness_passed": correctness_passed,
+        "failed_elements": 0 if correctness_passed else 1,
+        "policy_applied": True,
+        "conservative_speedup": speedup,
+        "baseline_round_medians_ms": [speedup, speedup],
+        "target_round_medians_ms": [1.0, 1.0],
+        "target_median_ms": 1.0,
+        "target_p90_ms": 1.1,
+        "execution_path": {"shape_route": candidate.solution_policy},
+    }
+
+
+def _smoke_summary(
+    case: WorkloadCase,
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "case_id": case.case_id,
+        "tuning_id": f"smoke-{case.case_id}",
+        "complete": True,
+        "protocol": {"preset": "smoke"},
+        "source_consistent": True,
+        "implementation_consistent": True,
+        "source_solution_sha256": "fixture-source",
+        "source_implementation_sha256": "fixture-implementation",
+        "observations": observations,
+    }
+
+
 def test_candidates_add_only_relevant_specialized_routes() -> None:
     common = {item.candidate_id for item in tuning.candidates_for_case(_case())}
     padded = {
@@ -151,6 +213,157 @@ def test_candidates_add_only_relevant_specialized_routes() -> None:
     assert "wide-gelu-epilogue" not in wide
     assert "wide-gelu-epilogue" not in exact_wide
     assert "wide-triton-inplace" in exact_wide
+
+
+def test_shared_smoke_plans_keep_one_common_deployable_shortlist() -> None:
+    full = _s512_case("mask_s512_full_fp16", padding_ratio=0.0)
+    padding = _s512_case("mask_s512_padding_fp16", padding_ratio=0.75)
+    plans = [
+        {
+            "candidate_order": [
+                "s512-native-softmax",
+                "padding-fused",
+                "eager-auto",
+            ]
+        },
+        {
+            "candidate_order": [
+                "s512-native-softmax",
+                "eager-auto",
+                "padding-fused",
+            ]
+        },
+    ]
+
+    aligned = tuning.align_shared_smoke_plans(
+        [full, padding],
+        plans,
+        [None, None],
+        candidate_limit=2,
+    )
+
+    assert [plan["candidate_order"] for plan in aligned] == [
+        ["eager-auto", "s512-native-softmax"],
+        ["eager-auto", "s512-native-softmax"],
+    ]
+    assert all(
+        plan["decision_scope"] == "shared_route_smoke_shortlist"
+        for plan in aligned
+    )
+
+
+def test_new_device_formal_plan_keeps_auto_and_best_deployable_challenger() -> None:
+    case = _case()
+    summary = _smoke_summary(
+        case,
+        [
+            _smoke_observation(case, "eager-auto", 1.0),
+            _smoke_observation(case, "compile-default", 2.0),
+            _smoke_observation(case, "eager-torch", 1.3),
+        ],
+    )
+
+    plans = tuning.build_formal_candidate_plans([case], [summary], [None])
+
+    assert plans[0]["candidate_order"] == ["eager-auto", "eager-torch"]
+    assert "compile-default" not in plans[0]["candidate_order"]
+    assert plans[0]["screening_tuning_ids"] == ["smoke-fixture"]
+
+
+def test_verified_device_formal_plan_keeps_all_three_candidate_roles() -> None:
+    case = _case()
+    summary = _smoke_summary(
+        case,
+        [
+            _smoke_observation(case, "eager-auto", 1.0),
+            _smoke_observation(case, "eager-reference", 1.2),
+            _smoke_observation(case, "eager-torch", 1.4),
+        ],
+    )
+
+    plans = tuning.build_formal_candidate_plans(
+        [case],
+        [summary],
+        ["eager-reference"],
+    )
+
+    assert plans[0]["candidate_order"] == [
+        "eager-auto",
+        "eager-reference",
+        "eager-torch",
+    ]
+
+
+def test_shared_formal_plans_choose_one_common_maximin_challenger() -> None:
+    full = _s512_case("mask_s512_full_fp16", padding_ratio=0.0)
+    padding = _s512_case("mask_s512_padding_fp16", padding_ratio=0.75)
+    summaries = [
+        _smoke_summary(
+            full,
+            [
+                _smoke_observation(full, "eager-auto", 1.0),
+                _smoke_observation(full, "s512-native-softmax", 2.0),
+                _smoke_observation(full, "padding-fused", 1.2),
+            ],
+        ),
+        _smoke_summary(
+            padding,
+            [
+                _smoke_observation(padding, "eager-auto", 1.0),
+                _smoke_observation(padding, "s512-native-softmax", 1.05),
+                _smoke_observation(padding, "padding-fused", 1.2),
+            ],
+        ),
+    ]
+
+    plans = tuning.build_formal_candidate_plans(
+        [full, padding],
+        summaries,
+        [None, None],
+    )
+
+    assert [plan["candidate_order"] for plan in plans] == [
+        ["eager-auto", "padding-fused"],
+        ["eager-auto", "padding-fused"],
+    ]
+    assert all(
+        plan["screening_tuning_ids"]
+        == ["smoke-mask_s512_full_fp16", "smoke-mask_s512_padding_fp16"]
+        for plan in plans
+    )
+
+
+@pytest.mark.parametrize(
+    ("incumbent_candidate_id", "failed_candidate_id", "failed_policy"),
+    [
+        (None, "eager-auto", "auto"),
+        ("eager-reference", "eager-reference", "reference"),
+    ],
+)
+def test_formal_plan_rejects_a_failed_smoke_control(
+    incumbent_candidate_id: str | None,
+    failed_candidate_id: str,
+    failed_policy: str,
+) -> None:
+    case = _case()
+    observations = [
+        _smoke_observation(case, "eager-auto", 1.0),
+        _smoke_observation(case, "eager-reference", 1.1),
+        _smoke_observation(case, "eager-torch", 1.2),
+    ]
+    failed = next(
+        item for item in observations if item["candidate_id"] == failed_candidate_id
+    )
+    failed["correctness_passed"] = False
+    failed["failed_elements"] = 1
+    summary = _smoke_summary(case, observations)
+
+    with pytest.raises(ContractError, match=rf"Smoke controls failed.*{failed_policy}"):
+        tuning.build_formal_candidate_plans(
+            [case],
+            [summary],
+            [incumbent_candidate_id],
+        )
 
 
 def test_deployed_policy_maps_back_to_an_available_retest_candidate() -> None:

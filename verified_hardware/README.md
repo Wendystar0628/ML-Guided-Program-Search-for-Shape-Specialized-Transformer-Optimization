@@ -50,10 +50,19 @@ python -m runner calibrate --preset formal --device cuda:0
 Runner probes the device once, measures the bounded candidates with the complete
 Transformer Workloads, applies every correctness and promotion gate, then
 automatically locates or creates the stable package for the measured
-hardware/software identity. All accepted routes are published to `routes.json`
-with one atomic update; a failure leaves the prior table unchanged. A challenger
-below the promotion margin keeps the measured incumbent; a new exact key without
-a qualified specialized winner records the formally measured `auto` decision.
+hardware/software identity. Internally, the command uses one Probe, a
+deployable Smoke Top-3 screen by default, and a dynamically reduced Formal set.
+On a new device the Formal set contains at most `eager-auto` and the best valid
+Smoke challenger. If an exact specialized route already exists, that incumbent
+is retained as a third possible Formal candidate. These controls are
+deduplicated before measurement.
+
+Formal publication uses only the strict remeasurements, not the Smoke ranking.
+Workloads that share one runtime route key are evaluated jointly. All accepted
+routes are published to `routes.json` with one atomic update; any failed case or
+gate leaves the prior table unchanged. A challenger below the promotion margin
+keeps the measured incumbent, while a new exact key without a qualified
+specialized winner records the formally measured `auto` decision.
 
 Smoke calibration, plan-only calibration, and `tune` are non-deploying
 workflows. The manual `promote` command exists only for replaying a compatible

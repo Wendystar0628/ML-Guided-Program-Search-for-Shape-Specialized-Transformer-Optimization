@@ -20,6 +20,10 @@ from runner.contracts import (
     solution_implementation_hash,
     utc_now,
 )
+from runner.route_promotion import (
+    DEPLOYABLE_EAGER_POLICIES,
+    select_deployable_winner,
+)
 from runner.supervisor import run_managed_benchmark
 
 SOLUTION_POLICY_ENV = "TRANSFORMER_OPT_POLICY"
@@ -119,6 +123,7 @@ _DEVICE_PROFILE_FIELDS = (
 )
 _ROUTING_PLAN_FIELDS = (
     "source",
+    "calibration_stage",
     "decision_scope",
     "requires_full_workload_measurement",
     "bottleneck_class",
@@ -126,6 +131,18 @@ _ROUTING_PLAN_FIELDS = (
     "candidate_order",
     "selection_reasons",
     "capability_rejections",
+    "screening_tuning_ids",
+)
+
+_ROUTE_VISIBLE_CASE_FIELDS = (
+    "dtype",
+    "batch_size",
+    "seq_len",
+    "d_model",
+    "num_heads",
+    "ffn_dim",
+    "num_layers",
+    "causal",
 )
 
 
@@ -251,6 +268,352 @@ def candidates_for_case(case: WorkloadCase) -> tuple[TuningCandidate, ...]:
         ):
             candidates.extend((_WIDE_TRITON_INPLACE_CANDIDATE,))
     return tuple(candidates)
+
+
+def is_deployable_candidate(candidate: TuningCandidate) -> bool:
+    """Return whether a candidate can be represented by the static dispatcher."""
+
+    return (
+        not candidate.compile_solution
+        and not candidate.cuda_graph_solution
+        and candidate.solution_policy in DEPLOYABLE_EAGER_POLICIES
+    )
+
+
+def _deployable_candidates_by_policy(
+    case: WorkloadCase,
+    *,
+    rejected_ids: set[str] | None = None,
+) -> dict[str, TuningCandidate]:
+    rejected = rejected_ids or set()
+    by_policy: dict[str, TuningCandidate] = {}
+    for candidate in candidates_for_case(case):
+        if not is_deployable_candidate(candidate) or candidate.candidate_id in rejected:
+            continue
+        if candidate.solution_policy in by_policy:
+            raise ContractError(
+                f"multiple deployable candidates map to policy "
+                f"{candidate.solution_policy!r} for {case.case_id}"
+            )
+        by_policy[candidate.solution_policy] = candidate
+    return by_policy
+
+
+def calibration_route_key(case: WorkloadCase) -> tuple[Any, ...]:
+    """Return the workload fields visible to one calibrated dispatch route."""
+
+    return tuple(getattr(case, field) for field in _ROUTE_VISIBLE_CASE_FIELDS)
+
+
+def align_shared_smoke_plans(
+    cases: Sequence[WorkloadCase],
+    plans: Sequence[Mapping[str, Any]],
+    incumbent_candidate_ids: Sequence[str | None],
+    *,
+    candidate_limit: int,
+) -> list[dict[str, Any]]:
+    """Give cases sharing one route key a common deployable Smoke shortlist."""
+
+    if len(cases) != len(plans) or len(cases) != len(incumbent_candidate_ids):
+        raise ContractError("Smoke plan inputs must have the same length")
+    aligned = [dict(plan) for plan in plans]
+    groups: dict[tuple[Any, ...], list[int]] = {}
+    for index, case in enumerate(cases):
+        groups.setdefault(calibration_route_key(case), []).append(index)
+
+    for indices in groups.values():
+        if len(indices) == 1:
+            continue
+        policy_candidates: list[dict[str, TuningCandidate]] = []
+        ordered_policies: list[list[str]] = []
+        for index in indices:
+            case = cases[index]
+            rejections = aligned[index].get("capability_rejections", {})
+            rejected_ids = set(rejections) if isinstance(rejections, Mapping) else set()
+            by_policy = _deployable_candidates_by_policy(
+                case,
+                rejected_ids=rejected_ids,
+            )
+            by_id = {
+                candidate.candidate_id: candidate for candidate in by_policy.values()
+            }
+            raw_order = aligned[index].get("candidate_order")
+            if (
+                not isinstance(raw_order, Sequence)
+                or isinstance(raw_order, (str, bytes))
+            ):
+                raise ContractError(f"Smoke plan for {case.case_id} has no order")
+            order: list[str] = []
+            for candidate_id in raw_order:
+                candidate = by_id.get(candidate_id)
+                if candidate is not None and candidate.solution_policy not in order:
+                    order.append(candidate.solution_policy)
+            policy_candidates.append(by_policy)
+            ordered_policies.append(order)
+
+        common_policies = set(policy_candidates[0])
+        for by_policy in policy_candidates[1:]:
+            common_policies.intersection_update(by_policy)
+        if "auto" not in common_policies:
+            raise ContractError("a shared Smoke route group has no eager-auto control")
+
+        incumbents: list[str] = []
+        for index, by_policy in zip(indices, policy_candidates, strict=True):
+            incumbent_id = incumbent_candidate_ids[index]
+            if incumbent_id is None:
+                continue
+            candidate = next(
+                (
+                    item
+                    for item in by_policy.values()
+                    if item.candidate_id == incumbent_id
+                ),
+                None,
+            )
+            if candidate is None:
+                raise ContractError(
+                    f"incumbent {incumbent_id!r} is unavailable for "
+                    f"{cases[index].case_id}"
+                )
+            if candidate.solution_policy not in incumbents:
+                incumbents.append(candidate.solution_policy)
+        non_auto_incumbents = [policy for policy in incumbents if policy != "auto"]
+        if len(non_auto_incumbents) > 1:
+            raise ContractError("cases sharing one route key have different incumbents")
+
+        required_policies = ["auto", *non_auto_incumbents]
+        if len(required_policies) > candidate_limit:
+            raise ContractError(
+                "candidate limit is too small to retain auto and the current incumbent"
+            )
+        union_order = {
+            policy for order in ordered_policies for policy in order
+        } & common_policies
+        registry_order = list(policy_candidates[0])
+        pool = union_order
+
+        def ordinal_score(
+            policy: str,
+            orders: tuple[tuple[str, ...], ...] = tuple(
+                tuple(order) for order in ordered_policies
+            ),
+            registry: tuple[str, ...] = tuple(registry_order),
+        ) -> tuple[int, int, str]:
+            ranks: list[int] = []
+            for order in orders:
+                if policy in order:
+                    ranks.append(order.index(policy))
+                else:
+                    ranks.append(len(order) + registry.index(policy))
+            return max(ranks), sum(ranks), policy
+
+        extras = sorted(
+            pool - set(required_policies),
+            key=ordinal_score,
+        )[: candidate_limit - len(required_policies)]
+        selected_policies = [*required_policies, *extras]
+        for member_offset, index in enumerate(indices):
+            by_policy = policy_candidates[member_offset]
+            candidate_order = [
+                by_policy[policy].candidate_id for policy in selected_policies
+            ]
+            raw_reasons = aligned[index].get("selection_reasons", {})
+            reasons = {
+                candidate_id: list(raw_reasons[candidate_id])
+                for candidate_id in candidate_order
+                if isinstance(raw_reasons, Mapping)
+                and isinstance(raw_reasons.get(candidate_id), Sequence)
+                and not isinstance(raw_reasons[candidate_id], (str, bytes))
+            }
+            for candidate_id in candidate_order:
+                reasons.setdefault(
+                    candidate_id,
+                    ["selected jointly for cases sharing one dispatch route"],
+                )
+            aligned[index]["candidate_order"] = candidate_order
+            aligned[index]["selection_reasons"] = reasons
+            aligned[index]["decision_scope"] = "shared_route_smoke_shortlist"
+    return aligned
+
+
+def _eligible_smoke_observations(
+    case: WorkloadCase,
+    summary: Mapping[str, Any],
+) -> dict[str, Mapping[str, Any]]:
+    if summary.get("case_id") != case.case_id:
+        raise ContractError(f"Smoke summary does not match {case.case_id}")
+    protocol = summary.get("protocol")
+    if not isinstance(protocol, Mapping) or protocol.get("preset") != "smoke":
+        raise ContractError(f"{case.case_id} finalist selection requires Smoke results")
+    if (
+        summary.get("complete") is not True
+        or summary.get("source_consistent") is not True
+        or summary.get("implementation_consistent") is not True
+    ):
+        raise ContractError(f"Smoke screening is incomplete for {case.case_id}")
+    eligible: dict[str, Mapping[str, Any]] = {}
+    for policy, candidate in _deployable_candidates_by_policy(case).items():
+        try:
+            observation = select_deployable_winner(
+                summary,
+                allowed_policies=frozenset({policy}),
+            )
+        except ContractError:
+            continue
+        if observation.get("candidate_id") != candidate.candidate_id:
+            raise ContractError(
+                f"Smoke observation candidate does not match policy {policy!r}"
+            )
+        eligible[policy] = observation
+    return eligible
+
+
+def build_formal_candidate_plans(
+    cases: Sequence[WorkloadCase],
+    smoke_summaries: Sequence[Mapping[str, Any]],
+    incumbent_candidate_ids: Sequence[str | None],
+) -> list[dict[str, Any]]:
+    """Build measured Formal controls and one shared deployable challenger."""
+
+    if (
+        len(cases) != len(smoke_summaries)
+        or len(cases) != len(incumbent_candidate_ids)
+    ):
+        raise ContractError("Formal finalist inputs must have the same length")
+    implementation_hashes = {
+        summary.get("source_implementation_sha256") for summary in smoke_summaries
+    }
+    source_hashes = {
+        summary.get("source_solution_sha256") for summary in smoke_summaries
+    }
+    implementation_hash = next(iter(implementation_hashes), None)
+    source_hash = next(iter(source_hashes), None)
+    if (
+        len(implementation_hashes) != 1
+        or not isinstance(implementation_hash, str)
+        or not implementation_hash
+        or len(source_hashes) != 1
+        or not isinstance(source_hash, str)
+        or not source_hash
+    ):
+        raise ContractError("Smoke cases do not share one Solution implementation")
+    eligible_by_case = [
+        _eligible_smoke_observations(case, summary)
+        for case, summary in zip(cases, smoke_summaries, strict=True)
+    ]
+    plans: list[dict[str, Any] | None] = [None] * len(cases)
+    groups: dict[tuple[Any, ...], list[int]] = {}
+    for index, case in enumerate(cases):
+        groups.setdefault(calibration_route_key(case), []).append(index)
+
+    for indices in groups.values():
+        incumbent_policies: list[str] = []
+        candidate_maps: list[dict[str, TuningCandidate]] = []
+        for index in indices:
+            candidates = _deployable_candidates_by_policy(cases[index])
+            candidate_maps.append(candidates)
+            incumbent_id = incumbent_candidate_ids[index]
+            if incumbent_id is not None:
+                incumbent = next(
+                    (
+                        candidate
+                        for candidate in candidates.values()
+                        if candidate.candidate_id == incumbent_id
+                    ),
+                    None,
+                )
+                if incumbent is None:
+                    raise ContractError(
+                        f"incumbent {incumbent_id!r} is unavailable for "
+                        f"{cases[index].case_id}"
+                    )
+                if incumbent.solution_policy not in incumbent_policies:
+                    incumbent_policies.append(incumbent.solution_policy)
+        non_auto_incumbents = [
+            policy for policy in incumbent_policies if policy != "auto"
+        ]
+        if len(non_auto_incumbents) > 1:
+            raise ContractError("cases sharing one route key have different incumbents")
+        control_policies = ["auto", *non_auto_incumbents]
+        for index in indices:
+            missing = set(control_policies) - set(eligible_by_case[index])
+            if missing:
+                raise ContractError(
+                    f"Smoke controls failed for {cases[index].case_id}: "
+                    f"{', '.join(sorted(missing))}"
+                )
+
+        common_policies = set(eligible_by_case[indices[0]])
+        for index in indices[1:]:
+            common_policies.intersection_update(eligible_by_case[index])
+        challenger_policies = common_policies - set(control_policies)
+
+        def challenger_rank(
+            policy: str,
+            group_indices: tuple[int, ...] = tuple(indices),
+            controls: tuple[str, ...] = tuple(control_policies),
+        ) -> tuple[float, float, float, str]:
+            relative_gains: list[float] = []
+            p90_values: list[float] = []
+            for index in group_indices:
+                observations = eligible_by_case[index]
+                control_speedup = max(
+                    float(observations[control]["conservative_speedup"])
+                    for control in controls
+                )
+                challenger = observations[policy]
+                relative_gains.append(
+                    float(challenger["conservative_speedup"]) / control_speedup
+                )
+                p90_values.append(float(challenger["target_p90_ms"]))
+            return (
+                -min(relative_gains),
+                -(sum(relative_gains) / len(relative_gains)),
+                max(p90_values),
+                policy,
+            )
+
+        challenger_policy = (
+            min(challenger_policies, key=challenger_rank)
+            if challenger_policies
+            else None
+        )
+        selected_policies = [
+            *control_policies,
+            *([challenger_policy] if challenger_policy is not None else []),
+        ]
+        screening_ids: list[str] = []
+        for index in indices:
+            tuning_id = smoke_summaries[index].get("tuning_id")
+            if not isinstance(tuning_id, str) or not tuning_id:
+                raise ContractError(
+                    f"Smoke summary is missing tuning_id for {cases[index].case_id}"
+                )
+            screening_ids.append(tuning_id)
+        for member_offset, index in enumerate(indices):
+            by_policy = candidate_maps[member_offset]
+            candidate_order = [
+                by_policy[policy].candidate_id for policy in selected_policies
+            ]
+            reasons = {candidate_order[0]: ["required eager-auto control"]}
+            if non_auto_incumbents:
+                reasons[candidate_order[1]] = ["current calibrated incumbent"]
+            if challenger_policy is not None:
+                reasons[candidate_order[-1]] = [
+                    "best common deployable challenger from Smoke measurements"
+                ]
+            plans[index] = {
+                "source": "smoke_measured_finalists",
+                "calibration_stage": "formal",
+                "decision_scope": "formal_route_selection",
+                "requires_full_workload_measurement": True,
+                "candidate_order": candidate_order,
+                "selection_reasons": reasons,
+                "screening_tuning_ids": screening_ids,
+            }
+    if any(plan is None for plan in plans):
+        raise ContractError("unable to build all Formal finalist plans")
+    return [dict(plan) for plan in plans if plan is not None]
 
 
 def deployable_candidate_id_for_policy(
