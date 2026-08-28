@@ -48,8 +48,10 @@ agent_state/
 # Generated measurement state
 /results/intermediate/
 
-# Internal planning, competition research, and development notes
-/docs/
+# Curated Markdown documentation is tracked. Raw meeting captures stay local.
+/docs/*.mkv
+/docs/*.wav
+/docs/*.txt
 
 # Editor and operating-system files
 .idea/

@@ -19,10 +19,13 @@ winner for that exact hardware and software stack.
 
 Start with the [final machine-readable result](results/final/nvidia_geforce_rtx_4080.json),
 the [technical report](TECHNICAL_REPORT.md), or the
-[reproduction commands](#reproduce-the-checked-rtx-4080-results). AI assisted
-development and bounded parallel review; the deployed benchmark path itself is
-deterministic and has no LLM dependency. The exact disclosure and representative
-interaction history are in [Technical Report section 9](TECHNICAL_REPORT.md#9-ai-assisted-development).
+[reproduction commands](#reproduce-the-checked-rtx-4080-results). A Chinese
+[submission package](docs/04_最终交付物/README.md) organizes the project
+description, technical report, AI collaboration record, reproduction guide,
+result summary, and final checklist. AI assisted development and bounded
+parallel review; the deployed benchmark path itself is deterministic and has
+no LLM dependency. The exact disclosure and representative interaction history
+are in [Technical Report section 9](TECHNICAL_REPORT.md#9-ai-assisted-development).
 
 The current competition workload is split by execution reality:
 
@@ -169,6 +172,7 @@ torch_transformer_benchmark.py
 TECHNICAL_REPORT.md          Results, interpretation, and evaluation narrative
 results/final/               One tracked final performance file per hardware ID
 results/intermediate/        Generated local experiments; ignored by Git
+docs/04_最终交付物/            Chinese submission-facing document package
 ```
 
 Performance code stays in `solution/`; a verified hardware package never
