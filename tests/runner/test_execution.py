@@ -19,8 +19,8 @@ from runner.contracts import (
 )
 from runner.execution import (
     PreparedExecution,
-    _validate_cuda_graph_composition,
     _validate_profile_execution_path,
+    _validate_solution_runtime_composition,
     execute_benchmark,
     execute_profile,
     measure_solution_peak_allocated_bytes,
@@ -58,17 +58,27 @@ def _request(run_kind: str, protocol: MeasurementProtocol) -> WorkerRequest:
     )
 
 
-def test_solution_graph_rejects_torch_compile() -> None:
-    with pytest.raises(ContractError, match="graph policy"):
-        _validate_cuda_graph_composition(
-            {"runtime_wrapper": "cuda_graph"},
+@pytest.mark.parametrize(
+    "runtime_wrapper",
+    ["cuda_graph", "batch_tiled_cuda_graph", "compiled_forward"],
+)
+def test_solution_owned_runtime_rejects_torch_compile(runtime_wrapper: str) -> None:
+    with pytest.raises(ContractError, match="selected Solution runtime"):
+        _validate_solution_runtime_composition(
+            {"runtime_wrapper": runtime_wrapper},
             MeasurementProtocol(preset="smoke", compile_solution=True),
         )
 
 
-def test_operator_profile_rejects_the_solution_graph_wrapper() -> None:
+@pytest.mark.parametrize(
+    "runtime_wrapper",
+    ["cuda_graph", "batch_tiled_cuda_graph", "compiled_forward"],
+)
+def test_operator_profile_rejects_solution_owned_runtime(
+    runtime_wrapper: str,
+) -> None:
     with pytest.raises(ContractError, match="hides per-operator"):
-        _validate_profile_execution_path({"runtime_wrapper": "cuda_graph"})
+        _validate_profile_execution_path({"runtime_wrapper": runtime_wrapper})
 
 
 def test_solution_peak_measurement_is_cuda_only() -> None:

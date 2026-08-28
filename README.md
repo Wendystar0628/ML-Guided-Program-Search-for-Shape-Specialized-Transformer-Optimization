@@ -19,16 +19,16 @@ The current competition workload is split by execution reality:
 The checked RTX 4080 performance record is the only numeric source for this
 summary:
 
-- Resident Formal: **13/13 successful**, **10.980x** unweighted geometric-mean
-  speedup, per-shape speedups from **1.746x** to **33.089x**, zero failed output
-  elements, and maximum absolute error **0.00177722**.
-- Streamed Shape 14 Formal: **15.9879 s** target median, **15.9885 s** target
-  P90, **19.3331 s** host-streamed end-to-end time, **87.02 useful TFLOP/s**,
-  **92.84% project-estimated MFU**, **6.927 GiB** peak device allocation, and
-  **0 / 102,400,000** failed output elements.
-- Shape 14 selected `mixed-fp16-core-cudnn` with timing microbatch `2`, so the
-  logical `B=32` workload ran as 16 sequential microbatches. The schedule is a
-  measured choice, not a hard-coded assumption.
+- Resident Formal: **13/13 successful**, **8.220830719x** unweighted
+  geometric-mean speedup, per-shape speedups from **2.196x** to **28.841x**,
+  zero failed output elements, and maximum absolute error **0.00188206**.
+- Streamed Shape 14 Formal: **17.136172 s** target median, **17.158589 s**
+  target P90, **18.821000 s** host-streamed end-to-end time, **81.1887 useful
+  TFLOP/s**, **94.0529% project-estimated MFU**, and **7.307 GiB**
+  (**7,845,867,008 bytes**) peak device allocation.
+- The streamed artifact selected `mixed-fp16-core-cudnn`, timing microbatch
+  size `2`, and microbatch count `16`. These are measured outputs of the joint
+  policy/schedule screen, not hard-coded Shape 14 properties.
 
 Authoritative machine-readable records:
 
@@ -59,13 +59,19 @@ replay; they are not unrelated model implementations.
 | Graph | `graph`, `graph-fused-norm` | Remove repeated launch overhead; optionally compile residual + LayerNorm |
 | Mixed attention | `mixed-fp16-efficient`, `mixed-fp16-cudnn` | Run selected FP32-model attention in FP16 with an explicit SDPA backend |
 | Mixed core | `mixed-fp16-core-efficient`, `mixed-fp16-core-cudnn` | Extend FP16 execution to attention and linear compute for throughput-bound shapes |
-| Graph + mixed core | `graph-mixed-fp16-efficient`, `graph-mixed-fp16-efficient-compiled-norm` | Compose mixed attention, graph replay, and optional compiled normalization |
+| Graph compositions | `graph-mixed-fp16-efficient`, `graph-mixed-fp16-efficient-compiled-norm`, `graph-mixed-fp16-core-efficient-compiled-norm` | Compose full-forward graph replay with mixed attention or mixed core and optional compiled residual-to-normalization boundaries |
+| Batch-tiled Graph | `batch-tiled-mixed-fp16-core-efficient-compiled-norm` | Split the exact high-batch resident shape into independent fixed batch tiles and replay one captured full-model graph per tile |
+| Compiled forward | `compiled-mixed-fp16-core-efficient` | Compile and cache one full fixed-plan forward for the guarded wide or long resident shapes |
 | Custom Triton | `mixed-fp16-core-efficient-triton-norm` | Fuse residual add + LayerNorm for the guarded high-row, width-128 path |
-| Streamed execution | dynamic policy and microbatch screen | Cover memory-bounded Shape 14 as one logical batch without constructing a dense full-batch reference |
 
 `safe` is an internal, non-routable diagnostic fallback. A specialized policy
 is accepted only when its requested backend is observed during execution;
 silent fallback cannot be promoted as a successful candidate.
+
+Streamed execution is a workload schedule rather than another policy. It
+screens the same eligible policies together with memory-safe microbatch
+divisors, then covers Shape 14 as one logical batch without constructing a
+dense full-batch reference.
 
 ## Architecture flow
 
@@ -77,6 +83,8 @@ silent fallback cannot be promoted as a successful candidate.
    signals; the white-box router ranks a bounded eligible candidate set.
 4. [`solution/execution_plan.py`](solution/execution_plan.py) resolves one
    immutable plan from policy, shape, dtype, device, and available backends.
+   The plan selects one outer runtime: eager execution, full-forward CUDA
+   Graph, batch-tiled CUDA Graph, or fixed-plan compiled forward.
 5. Fresh GPU workers run correctness first and then complete-forward CUDA Event
    timing. Observed execution evidence prevents a fallback from masquerading as
    a specialized policy.
@@ -86,8 +94,16 @@ silent fallback cannot be promoted as a successful candidate.
 Shape 14 follows the same policy and kernel registry but a separate executor.
 It validates a complete `B=1`, long-sequence reference scope, then screens
 eligible policy and memory-safe microbatch combinations. The selected schedule
-covers all 32 logical batch elements and reports both device target time and
-host-streamed end-to-end time.
+covers the complete logical batch and reports both device target time and
+host-streamed end-to-end time; neither the microbatch size nor count is part of
+the static workload definition.
+
+Inside the Transformer, residual and normalization boundaries are scheduled as
+one pipeline. An attention residual is paired with the same block's `norm2`,
+while an FFN residual is paired with the next block's `norm1` or the final
+normalization. Compiled and Triton backends can therefore return both the
+updated residual stream and its normalized view without changing the supplied
+pre-normalization mathematics.
 
 ## Contribution boundary
 
@@ -97,8 +113,9 @@ Project-owned work includes:
   execution planning, and exact dispatch;
 - hardware probing, explainable candidate ranking, real-GPU calibration,
   observed-path checks, and atomic route promotion;
-- mixed-core integration, dynamic Shape 14 scheduling, and the guarded Triton
-  residual + LayerNorm kernel;
+- mixed-core integration, full-forward compilation, batch-tiled Graph replay,
+  dynamic Shape 14 scheduling, and guarded compiled/Triton residual-to-norm
+  implementations;
 - paired/streamed measurement services, correctness checks, compact metrics,
   and verified-hardware artifacts.
 

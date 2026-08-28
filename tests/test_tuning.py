@@ -169,6 +169,45 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "runtime_wrappers": ["cuda_graph"],
             },
         },
+        "graph-mixed-fp16-core-efficient-compiled-norm": {
+            "requested_policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+            "selected_policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "cuda_graph",
+            "residual_norm_backend": "compiled_residual_layer_norm",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["compiled_residual_layer_norm"],
+                "runtime_wrappers": ["cuda_graph"],
+            },
+        },
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm": {
+            "requested_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
+            "selected_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "batch_tiled_cuda_graph",
+            "batch_tile_size": 128,
+            "residual_norm_backend": "compiled_residual_layer_norm",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["compiled_residual_layer_norm"],
+                "runtime_wrappers": ["batch_tiled_cuda_graph"],
+            },
+        },
     }
     return paths[candidate_id]
 
@@ -183,6 +222,7 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
         "official_01": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-compiled-norm",
         ],
         "official_02": ["graph-fused-norm"],
         "official_03": ["graph-fused-norm"],
@@ -190,32 +230,42 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
         "official_05": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-compiled-norm",
         ],
         "official_06": [
             "mixed-fp16-core-efficient",
             "mixed-fp16-core-efficient-triton-norm",
+            "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         ],
         "official_07": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-compiled-norm",
         ],
-        "official_08": ["mixed-fp16-core-efficient"],
+        "official_08": [
+            "mixed-fp16-core-efficient",
+            "compiled-mixed-fp16-core-efficient",
+        ],
         "official_09": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-compiled-norm",
         ],
         "official_10": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-compiled-norm",
         ],
         "official_11": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-compiled-norm",
         ],
         "official_12": ["graph-fused-norm"],
         "official_13": [
             "mixed-fp16-efficient",
             "mixed-fp16-core-efficient",
+            "compiled-mixed-fp16-core-efficient",
         ],
     }
 

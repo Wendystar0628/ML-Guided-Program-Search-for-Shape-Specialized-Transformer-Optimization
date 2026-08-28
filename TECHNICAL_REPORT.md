@@ -15,12 +15,14 @@ project therefore treats optimization as a measured routing problem:
 5. dispatch deterministically at runtime with no online search.
 
 On the recorded NVIDIA GeForce RTX 4080 stack, all 13 resident shapes pass the
-official-style comparator. Their unweighted geometric-mean speedup is **10.98x**.
+official-style comparator. Their unweighted geometric-mean speedup is
+**8.220830719x**.
 The independent Shape 14 path also runs the complete logical workload without a
-dense `S x S` attention matrix: its measured Target median is **15,987.85 ms** at
-**87.02 useful TFLOP/s**, with **6.93 GiB** peak device allocation. Shape 14 is
-reported separately because its current correctness reference is provisional
-and no executable dense Baseline result exists.
+dense `S x S` attention matrix: its measured Target median is **17,136.172 ms**
+at **81.1887 useful TFLOP/s**, with **7.307 GiB**
+(**7,845,867,008 bytes**) peak device allocation. Shape 14 is reported
+separately because its current correctness reference is provisional and no
+executable dense Baseline result exists.
 
 The [unified RTX 4080 performance result](results/final/nvidia_geforce_rtx_4080.json)
 is bound to the current workload, official snapshot, Solution implementation,
@@ -44,10 +46,11 @@ route table, runtime and measurement protocol recorded by the
 | Runtime math policy | `matmul_precision=high`, TF32 allowed |
 
 The current [hardware profile](verified_hardware/nvidia_geforce_rtx_4080/profile.json)
-also records measured anchors: 93.73 FP16 TFLOP/s, 93.91 BF16 TFLOP/s,
-47.22 FP32/TF32 TFLOP/s, 270.88 GB/s bounded device-copy bandwidth, and
-8.02 microseconds eager launch latency. These are local runtime anchors, not
-vendor peak specifications.
+also records saturated `4096 x 4096` GEMM anchors: **86.3223 FP16 TFLOP/s**,
+**94.5265 BF16 TFLOP/s**, and **47.3050 FP32/TF32 TFLOP/s**. The bounded
+device-copy anchor is **272.031 GB/s**, and the eager-launch anchor is
+**6.841 microseconds**. These are local runtime anchors, not vendor peak
+specifications.
 
 ### 1.2 Resident protocol: Shapes 1–13
 
@@ -63,7 +66,7 @@ vendor peak specifications.
 
 The paired rows are stored in the
 [unified performance result](results/final/nvidia_geforce_rtx_4080.json). They
-bind Solution implementation `07882d07...` and route table `abe29c3f...`.
+bind Solution implementation `017f6028...` and route table `1ed68576...`.
 
 ### 1.3 Streamed protocol: Shape 14
 
@@ -103,16 +106,26 @@ responsibilities:
 | Layer | Responsibility |
 | --- | --- |
 | Official contract | Supplied Transformer behavior, published shapes and source identity |
-| Solution data plane | Packed QKV, attention backend, linear precision, residual-normalization backend, CUDA Graph replay and custom kernels |
+| Solution data plane | Packed QKV, attention backend, linear precision, cross-layer residual-to-normalization scheduling, full/batch-tiled CUDA Graph replay, compiled forward and custom kernels |
 | Measurement control plane | Hardware probe, workload analysis, candidate eligibility, correctness, GPU timing and observed-path validation |
 | Deployment | Formal winner promotion, exact verified-hardware bundle and deterministic offline dispatcher |
 
 [`policy_registry.py`](policy_registry.py) is the single source for execution
 compositions. A policy describes orthogonal choices—attention backend, linear
-compute dtype, residual-normalization backend and CUDA Graph wrapper—rather than
-embedding shape decisions inside the Transformer. An immutable execution plan
-resolves eligibility once; the forward pass consumes that plan and reports what
-actually ran.
+compute dtype, residual-normalization backend and outer runtime—rather than
+embedding shape decisions inside the Transformer. The outer runtime can be
+eager execution, one full-forward CUDA Graph, batch-tiled CUDA Graph replay, or
+a cached fixed-plan compiled forward. An immutable execution plan resolves
+eligibility once; the forward pass consumes that plan and reports what actually
+ran.
+
+The Transformer forward is organized as a normalization pipeline. Attention's
+residual update is paired with the current block's `norm2`; the FFN residual is
+paired with the next block's `norm1`, or with the final normalization after the
+last block. Compiled and Triton residual-to-norm implementations return both the
+updated residual stream and normalized stream. This exposes a useful fusion
+boundary across Transformer blocks while preserving the supplied pre-norm
+calculation.
 
 The calibration flow is:
 
@@ -131,7 +144,9 @@ The calibration flow is:
 
 Shape 14 deliberately does not enter this resident route table. Its streamed
 executor independently selects an eligible policy and a memory-safe timing
-microbatch, while reusing the same Solution components and result metrics.
+microbatch divisor, while reusing the same Solution components and result
+metrics. The selected microbatch size and resulting count are measured runtime
+outputs, not fixed properties of Shape 14.
 
 ## 3. Contribution boundary
 
@@ -146,10 +161,12 @@ project-specific optimization are composed in the same execution plan.
   evidence that prevents a fallback from being reported as a specialized win;
 - packed QKV projection with official-weight conversion;
 - FP32 interface with measured internal FP16 attention and linear execution;
-- composition and guarding of CUDA Graph, compiled residual-plus-LayerNorm,
-  attention backend and precision choices;
-- a custom Triton residual-add plus LayerNorm kernel for the measured large-row,
-  width-128 Shape 6 family;
+- composition and guarding of full-forward CUDA Graph, batch-tiled Graph,
+  fixed-plan compiled forward, attention backend and precision choices;
+- cross-layer residual-to-normalization scheduling, with compiled and Triton
+  implementations sharing the same mathematical boundary;
+- a custom Triton residual-add plus LayerNorm candidate guarded to the
+  high-row, width-128 Shape 6 family;
 - Shape 14 logical-batch streaming, memory guard, policy/microbatch screening,
   complete-workload scheduling and independent Target-only evidence;
 - compact per-shape metrics, verified hardware bundles and deterministic
@@ -164,8 +181,9 @@ project-specific optimization are composed in the same execution plan.
 - the Triton language and compiler used to build the project's residual-norm
   kernel.
 
-The project invokes PyTorch's `CUDNN_ATTENTION` backend for the winning Shape 14
-policy. NVIDIA documents cuDNN SDPA as using a FlashAttention-2 algorithm
+The final Shape 14 artifact selected a policy that invokes PyTorch's
+`CUDNN_ATTENTION` backend. NVIDIA documents cuDNN SDPA as using a
+FlashAttention-2 algorithm
 ([cuDNN Attention documentation](https://docs.nvidia.com/deeplearning/cudnn/v1.22.0/operations/Attention.html)).
 This is therefore a **library-provided FlashAttention-class backend**, not a
 custom project attention kernel. The external `flash-attn` package is not an
@@ -179,26 +197,26 @@ unpublished official weighting formula.
 
 | Shape | Target median (ms) | Target P90 (ms) | Speedup | Achieved TFLOP/s | Project MFU | Peak GiB | Actual policy |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 01 | 0.492 | 0.493 | 9.25x | 15.31 | 30.1% | 0.084 | `graph-mixed-fp16-efficient-compiled-norm` |
-| 02 | 0.140 | 0.143 | 33.09x | 0.84 | 1.8% | 0.018 | `graph-fused-norm` |
-| 03 | 0.148 | 0.148 | 30.49x | 3.17 | 6.7% | 0.022 | `graph-fused-norm` |
-| 04 | 0.238 | 0.238 | 18.87x | 7.92 | 16.8% | 0.034 | `graph-fused-norm` |
-| 05 | 0.929 | 1.146 | 4.54x | 16.20 | 31.9% | 0.150 | `graph-mixed-fp16-efficient-compiled-norm` |
-| 06 | 104.440 | 106.300 | 4.31x | 11.26 | 12.0% | 4.900 | `mixed-fp16-core-efficient-triton-norm` |
-| 07 | 0.295 | 0.296 | 14.93x | 2.28 | 3.9% | 0.033 | `graph-mixed-fp16-efficient-compiled-norm` |
-| 08 | 7.565 | 7.775 | 1.75x | 55.65 | 59.4% | 0.352 | `mixed-fp16-core-efficient` |
-| 09 | 0.479 | 0.480 | 8.12x | 15.70 | 30.9% | 0.084 | `graph-mixed-fp16-efficient-compiled-norm` |
-| 10 | 0.469 | 0.470 | 9.23x | 16.04 | 31.6% | 0.084 | `graph-mixed-fp16-efficient-compiled-norm` |
-| 11 | 0.609 | 0.611 | 11.66x | 12.35 | 24.3% | 0.084 | `graph-mixed-fp16-efficient-compiled-norm` |
-| 12 | 0.214 | 0.214 | 21.02x | 7.85 | 16.6% | 0.034 | `graph-fused-norm` |
-| 13 | 5.302 | 5.482 | 20.45x | 22.69 | 24.2% | 0.259 | `mixed-fp16-core-efficient` |
+| 01 | 0.363520 | 0.398234 | 5.022x | 20.70 | 23.98% | 0.080 | `graph-mixed-fp16-core-efficient-compiled-norm` |
+| 02 | 0.133120 | 0.133248 | 14.940x | 0.88 | 1.87% | 0.018 | `graph-fused-norm` |
+| 03 | 0.139264 | 0.139264 | 14.279x | 3.38 | 7.14% | 0.021 | `graph-fused-norm` |
+| 04 | 0.221184 | 0.222208 | 8.865x | 8.50 | 17.98% | 0.033 | `graph-fused-norm` |
+| 05 | 0.685056 | 1.122509 | 3.442x | 21.97 | 25.45% | 0.142 | `graph-mixed-fp16-core-efficient-compiled-norm` |
+| 06 | 105.774719 | 117.979649 | 10.820x | 11.12 | 12.88% | 4.973 | `batch-tiled-mixed-fp16-core-efficient-compiled-norm` |
+| 07 | 0.195584 | 0.197632 | 9.481x | 3.44 | 3.99% | 0.032 | `graph-mixed-fp16-core-efficient-compiled-norm` |
+| 08 | 6.416384 | 6.649037 | 2.196x | 65.61 | 76.00% | 0.401 | `compiled-mixed-fp16-core-efficient` |
+| 09 | 0.353280 | 0.365568 | 4.531x | 21.30 | 24.67% | 0.080 | `graph-mixed-fp16-core-efficient-compiled-norm` |
+| 10 | 0.344064 | 0.363622 | 5.225x | 21.87 | 25.33% | 0.080 | `graph-mixed-fp16-core-efficient-compiled-norm` |
+| 11 | 0.484352 | 0.618496 | 15.529x | 15.54 | 18.00% | 0.080 | `graph-mixed-fp16-core-efficient-compiled-norm` |
+| 12 | 0.198656 | 0.199680 | 10.031x | 8.46 | 17.88% | 0.033 | `graph-fused-norm` |
+| 13 | 4.060672 | 4.133069 | 28.841x | 29.63 | 34.33% | 0.197 | `compiled-mixed-fp16-core-efficient` |
 
 Summary:
 
 - 13/13 cases completed successfully;
-- 10.98x unweighted geometric-mean speedup;
+- 8.220830719x unweighted geometric-mean speedup;
 - zero failed output elements across 65 correctness trials;
-- largest observed absolute error: 0.00177722;
+- largest observed absolute error: 0.00188206;
 - selected policies were observed as fully applied in every result.
 
 Large relative-error maxima occur only where the reference value is close to
@@ -208,7 +226,7 @@ zero; pass/fail uses the specified combined `atol + rtol * |reference|` rule.
 
 | Shape | Target median (ms) | Target P90 (ms) | End-to-end (ms) | Achieved TFLOP/s | Project MFU | Peak GiB | Actual policy | Timing schedule |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| 14 | 15,987.85 | 15,988.45 | 19,333.10 | 87.02 | 92.8% | 6.93 | `mixed-fp16-core-cudnn` | microbatch 2 x 16 |
+| 14 | 17,136.172 | 17,158.589 | 18,821.000 | 81.1887 | 94.0529% | 7.307 | `mixed-fp16-core-cudnn` | microbatch 2 x 16 |
 
 The full `B=1, S=100000, D=1024` comparator checks 102.4 million elements.
 It passed with zero failed elements and maximum absolute error 0.000833869.
@@ -220,30 +238,35 @@ Target, but it is not yet evidence for an official Baseline speedup.
 
 ### Insight Card 1 — Small fixed shapes are launch-bound
 
-- **Observation:** Shapes 2–4 and 12 complete in 0.140–0.238 ms after
-  optimization, yet project MFU remains only 1.8–16.8%. Their arithmetic volume
-  is too small to saturate the GPU; framework and launch costs dominate.
+- **Observation:** Shapes 2–4 and 12 complete in 0.133120–0.221184 ms, yet
+  project MFU remains only 1.87–17.98%. Their arithmetic volume is too small to
+  saturate the GPU; framework and launch costs dominate.
 - **Mechanism:** capture the complete fixed-shape forward in a CUDA Graph and
-  fuse residual-add plus LayerNorm at a local compiler boundary.
+  expose each residual-to-normalization pair as one local compiler boundary.
 - **Candidates:** `eager-sdpa`, `graph`, `graph-fused-norm`, and the mixed
-  attention graph compositions where eligible.
-- **Measured decision:** `graph-fused-norm` wins Shapes 2–4 and 12; the compiled
-  mixed-attention graph wins Shapes 1, 5, 7 and 9–11.
+  attention or mixed-core Graph compositions where eligible.
+- **Measured decision:** `graph-fused-norm` serves Shapes 2–4 and 12;
+  `graph-mixed-fp16-core-efficient-compiled-norm` serves Shapes 1, 5, 7 and
+  9–11.
 - **Boundary:** these routes are exact to shape and runtime. Low MFU here does
   not imply that a larger custom GEMM would help.
 
 ### Insight Card 2 — Throughput and fusion must be composed selectively
 
-- **Observation:** Shape 8 reaches 55.65 useful TFLOP/s and 59.4% project MFU,
+- **Observation:** Shape 8 reaches 65.61 useful TFLOP/s and 76.00% project MFU,
   while Shape 6 has enough rows for residual-normalization traffic to become a
   material repeated cost.
 - **Mechanism:** move attention and linear compute to an accuracy-checked FP16
-  core; add a custom one-pass Triton residual-add plus LayerNorm only where the
-  measured row count and width make it useful.
+  core; expose cross-layer residual-to-normalization fusion; use batch-tiled
+  Graph replay for the exact independent high-batch case or compile a complete
+  fixed-plan forward for guarded wide/long cases.
 - **Candidates:** Efficient and cuDNN mixed-FP16 attention, FP16 core execution,
-  compiled norm, and the project Triton norm kernel.
-- **Measured decision:** `mixed-fp16-core-efficient` wins Shapes 8 and 13;
-  `mixed-fp16-core-efficient-triton-norm` wins Shape 6.
+  compiled or Triton residual-to-norm, batch-tiled Graph, and compiled forward.
+- **Measured decision:** Shapes 8 and 13 use
+  `compiled-mixed-fp16-core-efficient`. Shape 6 uses
+  `batch-tiled-mixed-fp16-core-efficient-compiled-norm`; its final Target
+  median is **105.774719 ms**. This is the bound Formal result, without a claim
+  of stable improvement over an earlier revision.
 - **Boundary:** the Triton kernel is guarded to its measured width-128,
   large-row family. Library GEMMs are retained instead of being rewritten
   without evidence of headroom.
@@ -251,16 +274,15 @@ Target, but it is not yet evidence for an official Baseline speedup.
 ### Insight Card 3 — Shape 14 is a capacity problem before it is a routing problem
 
 - **Observation:** dense attention scales as `S^2`, and the full `B=32` inputs,
-  outputs and intermediates cannot reside together on a 16 GiB GPU. Attention
-  represents 94.2% of the project's useful matmul FLOPs for this shape.
+  outputs and intermediates cannot reside together on a 16 GiB GPU.
 - **Mechanism:** validate one complete long-sequence sample, use a memory-efficient
   SDPA backend that does not expose the dense attention matrix, and stream the
   logical batch through a measured microbatch schedule.
 - **Candidates:** PyTorch Efficient SDPA and cuDNN SDPA combined with eligible
   microbatch divisors.
-- **Measured decision:** cuDNN SDPA with FP16 core and microbatch 2 wins the
-  current screen, completing 16 microbatches at 87.02 useful TFLOP/s and
-  6.93 GiB peak allocation.
+- **Measured decision:** the streamed Formal run selected
+  `mixed-fp16-core-cudnn`, microbatch size 2, and 16 microbatches. Its Target
+  median is 17,136.172 ms at 81.1887 useful TFLOP/s and 94.0529% project MFU.
 - **Boundary:** cuDNN supplies the attention kernel; the project's contribution
   is the correctness, scheduling, screening and evidence path. The current
   reference is provisional and no dense Baseline speedup is claimed.
@@ -334,11 +356,11 @@ The collaboration followed a repeatable pattern:
    GPU timing and route promotion.
 4. Measured outcomes decided whether to keep, specialize or reject a candidate.
 
-Representative outcomes include retaining library GEMMs, adding the Shape 6
-Triton residual-norm kernel, promoting the graph-plus-compiled-norm composition
-for several small shapes, and choosing cuDNN plus microbatch 2 for Shape 14.
-This report summarizes decisions rather than reproducing raw conversations or
-private machine paths.
+Representative outcomes include retaining library GEMMs, adding guarded
+compiled and Triton residual-to-norm paths, and introducing batch-tiled Graph
+and fixed-plan compiled-forward candidates without bypassing the shared
+correctness and measurement path. This report summarizes decisions rather than
+reproducing raw conversations or private machine paths.
 
 The planned in-project hardware-aware Agent runtime is **deferred and not
 implemented**. It is not required in the inference hot path and is not claimed

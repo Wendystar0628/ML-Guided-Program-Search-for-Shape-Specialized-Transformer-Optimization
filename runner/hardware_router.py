@@ -16,6 +16,7 @@ from typing import Any
 from policy_registry import (
     ExecutionComponent,
     ResidualNormBackend,
+    RuntimeWrapper,
     get_policy_spec,
 )
 from runner.candidates import candidate_spec
@@ -323,6 +324,11 @@ def _capability_rejection(
         and profile.get("triton_available") is not True
     ):
         return "custom Triton fusion requires a positively established Triton runtime"
+    if (
+        ExecutionComponent.COMPILED_FORWARD in spec.required_components
+        and profile.get("triton_available") is not True
+    ):
+        return "full-stack compilation requires a positively established Triton runtime"
     if ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION in spec.required_components:
         capability = _version_pair(profile.get("compute_capability"))
         if capability is None or capability < (8, 0):
@@ -487,7 +493,11 @@ def _incremental_prior(
             or copy_bandwidth is None
         ):
             return float("-inf"), ["graph cost anchors are incomplete"]
-        saved_node_timing = (
+        graph_replays = 1
+        if policy.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
+            assert policy.batch_tile_size is not None
+            graph_replays = math.ceil(analysis.batch_size / policy.batch_tile_size)
+        saved_node_timing = graph_replays * (
             analysis.estimated_kernel_nodes
             * max(launch_latency_us - replay_node_us, 0.0)
             * 1e-6
@@ -498,15 +508,13 @@ def _incremental_prior(
             net_seconds / eager_cost_estimate if eager_cost_estimate else net_seconds
         )
         relative += graph_relative
-        reasons.extend(
-            [
-                (
-                    "estimated graph benefit is measured eager-versus-replay node "
-                    "timing saved minus static input/output copy cost"
-                ),
-                f"estimated relative cost gain={graph_relative:.6f}",
-            ]
+        reasons.append(
+            "estimated graph benefit is measured eager-versus-replay node "
+            "timing saved minus static input/output copy cost"
         )
+        if policy.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
+            reasons.append(f"estimated graph replay groups={graph_replays}")
+        reasons.append(f"estimated relative cost gain={graph_relative:.6f}")
         has_incremental_model = True
 
     if policy.residual_norm is not ResidualNormBackend.TORCH:
@@ -518,7 +526,26 @@ def _incremental_prior(
         reasons.append("adds the measured residual-plus-LayerNorm fusion opportunity")
         has_incremental_model = True
 
-    if policy.attention in {"mixed_fp16_efficient", "mixed_fp16_cudnn"}:
+    if policy.runtime is RuntimeWrapper.COMPILED_FORWARD:
+        launch_fraction = (
+            signals.eager_node_timing_seconds / eager_cost_estimate
+            if signals.eager_node_timing_seconds is not None and eager_cost_estimate
+            else 0.1
+        )
+        compile_relative = max(0.05, min(launch_fraction, 0.5))
+        relative += compile_relative
+        reasons.extend(
+            [
+                "adds a fixed-plan whole-stack fusion and launch-reduction opportunity",
+                f"heuristic compilation opportunity={compile_relative:.6f}",
+            ]
+        )
+        has_incremental_model = True
+
+    if policy.attention in {
+        "mixed_fp16_efficient",
+        "mixed_fp16_cudnn",
+    }:
         # The candidate halves Q/K/V element width around the measured
         # Attention family. Attention share is a transparent ordering signal;
         # Formal measurement, not this prior, decides whether conversion pays.

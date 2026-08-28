@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from ..shape_families import is_mixed_fp16_core_efficient_attention_family
+from ..shape_families import is_mixed_fp16_core_efficient_runtime_family
 
 MIXED_FP16_EFFICIENT_BACKEND = "mixed_fp16_efficient"
 MIXED_FP16_CUDNN_BACKEND = "mixed_fp16_cudnn"
@@ -86,13 +86,13 @@ def can_use_mixed_fp16_efficient_attention(
         and sequence_length == _SHORT_SEQUENCE_LENGTH
         and query.shape[1] * head_dim in _SHORT_MODEL_DIMS
     )
-    measured_mixed_core_family = is_mixed_fp16_core_efficient_attention_family(
+    mixed_core_runtime_family = is_mixed_fp16_core_efficient_runtime_family(
         batch_size=query.shape[0],
         seq_len=sequence_length,
         num_heads=query.shape[1],
         head_dim=head_dim,
     )
-    if not (long_family or short_family or measured_mixed_core_family):
+    if not (long_family or short_family or mixed_core_runtime_family):
         return False
     if not torch.backends.cuda.mem_efficient_sdp_enabled():
         return False
@@ -158,6 +158,23 @@ def mixed_fp16_efficient_attention(
         raise ValueError(
             "attention tensors are incompatible with mixed FP16 Efficient SDPA"
         )
+
+    return prevalidated_mixed_fp16_efficient_attention(
+        query,
+        key,
+        value,
+        scale=scale,
+    )
+
+
+def prevalidated_mixed_fp16_efficient_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    scale: float | None = None,
+) -> tuple[torch.Tensor, str]:
+    """Run the forced kernel after an immutable ExecutionPlan validated it."""
 
     try:
         with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
@@ -230,4 +247,5 @@ __all__ = [
     "can_use_mixed_fp16_efficient_attention",
     "mixed_fp16_cudnn_attention",
     "mixed_fp16_efficient_attention",
+    "prevalidated_mixed_fp16_efficient_attention",
 ]

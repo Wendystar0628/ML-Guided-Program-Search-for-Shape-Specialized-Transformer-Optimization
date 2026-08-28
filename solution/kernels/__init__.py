@@ -12,6 +12,7 @@ from .mixed_attention import (
     can_use_mixed_fp16_efficient_attention,
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
+    prevalidated_mixed_fp16_efficient_attention,
 )
 from .norm_residual import can_use_residual_add, residual_add
 from .qkv import can_split_qkv, split_qkv
@@ -37,6 +38,7 @@ __all__ = [
     "causal_sdpa",
     "mixed_fp16_cudnn_attention",
     "mixed_fp16_efficient_attention",
+    "prevalidated_mixed_fp16_efficient_attention",
     "reference_causal_attention",
     "residual_add",
     "residual_layer_norm",

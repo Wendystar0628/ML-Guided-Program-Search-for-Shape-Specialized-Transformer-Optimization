@@ -7,11 +7,18 @@ from typing import Any
 
 import torch
 
-from policy_registry import ExecutionComponent, PolicySpec, ResidualNormBackend
+from policy_registry import (
+    ExecutionComponent,
+    PolicySpec,
+    ResidualNormBackend,
+    RuntimeWrapper,
+)
 
 from .kernels import triton_residual_layer_norm_available
 from .shape_families import (
-    is_mixed_fp16_core_efficient_attention_family,
+    is_compiled_forward_candidate_workload,
+    is_mixed_fp16_core_efficient_runtime_family,
+    is_shape06_batch_tiled_workload,
     is_streamed_mixed_fp16_core_cudnn_slice,
 )
 
@@ -47,6 +54,7 @@ class ExecutionPlan:
     linear_backend: str
     linear_compute_dtype: str
     runtime_wrapper: str
+    batch_tile_size: int | None
     residual_norm_backend: str
     has_valid_token_mask: bool
     required_components: tuple[str, ...]
@@ -57,6 +65,14 @@ class ExecutionPlan:
     @property
     def use_cuda_graph(self) -> bool:
         return self.runtime_wrapper == "cuda_graph"
+
+    @property
+    def use_batch_tiled_cuda_graph(self) -> bool:
+        return self.runtime_wrapper == "batch_tiled_cuda_graph"
+
+    @property
+    def use_compiled_forward(self) -> bool:
+        return self.runtime_wrapper == "compiled_forward"
 
     def describe(
         self,
@@ -79,7 +95,7 @@ class ExecutionPlan:
             causal_mask = "implicit_sdpa"
         else:
             causal_mask = "query_block"
-        return {
+        description = {
             "requested_policy": self.requested_policy,
             "selected_policy": self.selected_policy,
             "required_components": list(self.required_components),
@@ -102,12 +118,17 @@ class ExecutionPlan:
             ),
             "fallback_reasons": list(self.fallback_reasons),
         }
+        if self.batch_tile_size is not None:
+            description["batch_tile_size"] = self.batch_tile_size
+        return description
 
 
 @dataclass(frozen=True, slots=True)
 class _Capabilities:
     causal_sdpa: bool
     cuda_graph: bool
+    batch_tiled_cuda_graph: bool
+    compiled_forward: bool
     compiled_residual_layer_norm: bool
     triton_residual_layer_norm: bool
     mixed_fp16_cudnn_attention: bool
@@ -127,7 +148,7 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and context.device.type in {"cpu", "cuda"}
     )
     head_dim = context.d_model // context.num_heads
-    efficient_core_shape = is_mixed_fp16_core_efficient_attention_family(
+    efficient_core_shape = is_mixed_fp16_core_efficient_runtime_family(
         batch_size=context.batch_size,
         seq_len=context.seq_len,
         num_heads=context.num_heads,
@@ -187,6 +208,44 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and not torch.compiler.is_compiling()
         and triton_residual_layer_norm_available()
     )
+    batch_tiled_cuda_graph = bool(
+        causal_sdpa
+        and inference
+        and context.device.type == "cuda"
+        and context.dtype == torch.float32
+        and context.input_contiguous
+        and not context.has_valid_token_mask
+        and context.mask_compatible
+        and not torch.compiler.is_compiling()
+        and is_shape06_batch_tiled_workload(
+            batch_size=context.batch_size,
+            seq_len=context.seq_len,
+            d_model=context.d_model,
+            num_heads=context.num_heads,
+            ffn_dim=context.ffn_dim or 0,
+            num_layers=context.num_layers or 0,
+        )
+    )
+    exact_shape = {
+        "batch_size": context.batch_size,
+        "seq_len": context.seq_len,
+        "d_model": context.d_model,
+        "num_heads": context.num_heads,
+        "ffn_dim": context.ffn_dim or 0,
+        "num_layers": context.num_layers or 0,
+    }
+    compiled_forward = bool(
+        causal_sdpa
+        and inference
+        and context.device.type == "cuda"
+        and context.dtype == torch.float32
+        and context.input_contiguous
+        and not context.has_valid_token_mask
+        and context.mask_compatible
+        and callable(compiler)
+        and not torch.compiler.is_compiling()
+        and is_compiled_forward_candidate_workload(**exact_shape)
+    )
     return _Capabilities(
         causal_sdpa=causal_sdpa,
         cuda_graph=(
@@ -195,6 +254,8 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             and context.device.type == "cuda"
             and context.input_contiguous
         ),
+        batch_tiled_cuda_graph=batch_tiled_cuda_graph,
+        compiled_forward=compiled_forward,
         compiled_residual_layer_norm=compiled_residual_base,
         triton_residual_layer_norm=triton_residual_base,
         mixed_fp16_cudnn_attention=(
@@ -241,6 +302,16 @@ def _resolved_components(
         resolved.add(ExecutionComponent.CAUSAL_SDPA)
     if spec.use_cuda_graph and capabilities.cuda_graph:
         resolved.add(ExecutionComponent.CUDA_GRAPH)
+    if (
+        spec.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH
+        and capabilities.batch_tiled_cuda_graph
+    ):
+        resolved.add(ExecutionComponent.BATCH_TILED_CUDA_GRAPH)
+    if (
+        spec.runtime is RuntimeWrapper.COMPILED_FORWARD
+        and capabilities.compiled_forward
+    ):
+        resolved.add(ExecutionComponent.COMPILED_FORWARD)
     if (
         spec.residual_norm is ResidualNormBackend.COMPILED
         and capabilities.compiled_residual_layer_norm
@@ -292,7 +363,11 @@ def resolve_execution_plan(
         )
         attention_compute_dtype = (
             "float16"
-            if spec.attention in {"mixed_fp16_cudnn", "mixed_fp16_efficient"}
+            if spec.attention
+            in {
+                "mixed_fp16_cudnn",
+                "mixed_fp16_efficient",
+            }
             else str(context.dtype).removeprefix("torch.")
         )
     else:
@@ -303,7 +378,9 @@ def resolve_execution_plan(
         linear_compute_dtype = str(context.dtype).removeprefix("torch.")
         resolved = frozenset()
 
-    use_cuda_graph = fully_applied and spec.use_cuda_graph
+    runtime_wrapper = (
+        spec.runtime.value if fully_applied else RuntimeWrapper.EAGER.value
+    )
     return ExecutionPlan(
         requested_policy=requested_policy,
         selected_policy=selected_policy,
@@ -311,7 +388,8 @@ def resolve_execution_plan(
         attention_compute_dtype=attention_compute_dtype,
         linear_backend=linear_backend,
         linear_compute_dtype=linear_compute_dtype,
-        runtime_wrapper="cuda_graph" if use_cuda_graph else "eager",
+        runtime_wrapper=runtime_wrapper,
+        batch_tile_size=(spec.batch_tile_size if fully_applied else None),
         residual_norm_backend=(
             spec.residual_norm.value
             if fully_applied

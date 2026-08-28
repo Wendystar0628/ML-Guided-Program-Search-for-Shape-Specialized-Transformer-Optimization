@@ -19,6 +19,9 @@ DEPLOYABLE_CANDIDATES = (
     "mixed-fp16-core-cudnn",
     "graph-mixed-fp16-efficient",
     "graph-mixed-fp16-efficient-compiled-norm",
+    "graph-mixed-fp16-core-efficient-compiled-norm",
+    "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+    "compiled-mixed-fp16-core-efficient",
 )
 ALL_CANDIDATES = ("eager-sdpa", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
 
@@ -133,13 +136,13 @@ def test_measured_s128_family_prioritizes_graph_mixed_attention(
     )
 
     assert plan["candidate_order"] == [
+        "graph-mixed-fp16-core-efficient-compiled-norm",
         "graph-mixed-fp16-efficient-compiled-norm",
-        "graph-mixed-fp16-efficient",
         "eager-sdpa",
     ]
 
 
-def test_extreme_batch_does_not_receive_a_negative_graph_prior() -> None:
+def test_extreme_batch_prioritizes_the_batch_tiled_graph() -> None:
     plan = build_routing_plan(
         official_shape("official_06"),
         RunVariant(),
@@ -150,28 +153,39 @@ def test_extreme_batch_does_not_receive_a_negative_graph_prior() -> None:
 
     assert plan["feasibility"]["baseline_executable"] is True
     assert plan["candidate_order"] == [
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         "mixed-fp16-core-efficient-triton-norm",
-        "mixed-fp16-core-efficient",
         "eager-sdpa",
     ]
     assert "graph" in plan["capability_rejections"]
 
 
-@pytest.mark.parametrize("case_id", ["official_08", "official_13"])
-def test_dense_mixed_core_families_prioritize_full_fp16_compute(
-    case_id: str,
-) -> None:
+def test_shape08_prioritizes_fixed_plan_compilation() -> None:
     plan = build_routing_plan(
-        official_shape(case_id),
+        official_shape("official_08"),
         RunVariant(),
         _ada_profile(),
         DEPLOYABLE_CANDIDATES,
         limit=3,
     )
 
-    assert plan["candidate_order"][0] == "mixed-fp16-core-efficient"
-    reasons = " ".join(plan["selection_reasons"]["mixed-fp16-core-efficient"])
-    assert "projection/FFN share" in reasons
+    assert plan["candidate_order"][0] == "compiled-mixed-fp16-core-efficient"
+    reasons = " ".join(plan["selection_reasons"]["compiled-mixed-fp16-core-efficient"])
+    assert "whole-stack fusion" in reasons
+
+
+def test_shape13_prioritizes_fixed_plan_compilation() -> None:
+    plan = build_routing_plan(
+        official_shape("official_13"),
+        RunVariant(),
+        _ada_profile(),
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["candidate_order"][0] == "compiled-mixed-fp16-core-efficient"
+    reasons = " ".join(plan["selection_reasons"]["compiled-mixed-fp16-core-efficient"])
+    assert "whole-stack fusion" in reasons
 
 
 def test_negative_prior_still_retains_the_current_incumbent() -> None:

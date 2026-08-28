@@ -153,6 +153,7 @@ class ExecutionPathDocument(TypedDict, total=False):
     qkv_projection: str
     attention_backend: str
     runtime_wrapper: str
+    batch_tile_size: int
     residual_norm_backend: str
     causal_mask: str
     valid_token_mask: str
@@ -560,6 +561,13 @@ def validate_execution_path(value: Any) -> str | None:
         item = value.get(field)
         if not isinstance(item, str) or not item:
             return f"missing_{field}"
+    batch_tile_size = value.get("batch_tile_size")
+    if batch_tile_size is not None and (
+        isinstance(batch_tile_size, bool)
+        or not isinstance(batch_tile_size, int)
+        or batch_tile_size <= 0
+    ):
+        return "invalid_batch_tile_size"
     if value.get("execution_mode") not in {"eager", "torch_compile"}:
         return "invalid_execution_mode"
     fallback_reasons = value.get("fallback_reasons")

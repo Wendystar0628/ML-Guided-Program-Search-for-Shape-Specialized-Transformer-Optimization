@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "final_performance",
-  "created_at": "2026-08-28T15:29:31.825076+00:00",
+  "created_at": "2026-08-28T17:41:23.621637+00:00",
   "hardware_identity": {
     "id": "nvidia_geforce_rtx_4080",
     "environment": {
@@ -14,8 +14,8 @@
       "total_memory_bytes": 17170956288,
       "driver": "610.88"
     },
-    "profile_sha256": "2dba6067101dcddcd33489f5865d7bde968654b11571ba3674dfea91767cdb2e",
-    "source_probe_run_id": "20260828T142405.786979Z-053f1d66"
+    "profile_sha256": "2b35c47c25678471b976d0be57fdd33427cc558bc341257d915082d02ed15d67",
+    "source_probe_run_id": "20260828T170518.339275Z-36ec229b"
   },
   "workload_identity": {
     "set_id": "official_transformer_v1",
@@ -28,13 +28,13 @@
   },
   "source": {
     "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
-    "solution_sha256": "07882d07b4d1f682ebaa1fc2d8bc1a7a2ff65ab2d9a3740481e4c9499ae34d9a"
+    "solution_sha256": "017f6028bb10f85ee0dc28fcf6df24a4053ed4b6ae7e6bd4f0d2e07b90cf90a4"
   },
   "scopes": {
     "resident": {
       "validation_level": "formal",
       "comparison_mode": "paired",
-      "measured_at": "2026-08-28T14:52:05.140822+00:00",
+      "measured_at": "2026-08-28T17:29:04.210812+00:00",
       "protocol": {
         "preset": "formal",
         "accuracy_trials": 5,
@@ -43,18 +43,18 @@
         "rounds": 3
       },
       "case_count": 13,
-      "geomean_speedup": 10.979957207298224,
+      "geomean_speedup": 8.220830719129234,
       "evidence": {
-        "manifest_sha256": "caa0d0b11be03dd345d4b4423f3a8f6e2919d50be7fbb12676dbc0bfd2c36f2b",
-        "profile_sha256": "2dba6067101dcddcd33489f5865d7bde968654b11571ba3674dfea91767cdb2e",
-        "source_probe_run_id": "20260828T142405.786979Z-053f1d66",
-        "route_table_sha256": "abe29c3fba8efcf2aaf74c5d3177f74e57d2b9fb462fec2a290e14356f9a9b3b"
+        "manifest_sha256": "771c291df552152fa5ee5bc167ec6761f82d9042b9633fb2f80b4b07affef8a9",
+        "profile_sha256": "2b35c47c25678471b976d0be57fdd33427cc558bc341257d915082d02ed15d67",
+        "source_probe_run_id": "20260828T170518.339275Z-36ec229b",
+        "route_table_sha256": "1ed68576ae471af41ef4b9631f276d76a67150f6c5bc1a5230a7a85020c33e09"
       }
     },
     "streamed": {
       "validation_level": "provisional",
       "comparison_mode": "target_only",
-      "measured_at": "2026-08-28T14:58:29.431449+00:00",
+      "measured_at": "2026-08-28T17:38:39.936691+00:00",
       "protocol": {
         "preset": "formal",
         "accuracy_trials": 1,
@@ -64,9 +64,9 @@
       },
       "case_count": 1,
       "evidence": {
-        "manifest_sha256": "caa0d0b11be03dd345d4b4423f3a8f6e2919d50be7fbb12676dbc0bfd2c36f2b",
-        "profile_sha256": "2dba6067101dcddcd33489f5865d7bde968654b11571ba3674dfea91767cdb2e",
-        "source_probe_run_id": "20260828T142405.786979Z-053f1d66"
+        "manifest_sha256": "771c291df552152fa5ee5bc167ec6761f82d9042b9633fb2f80b4b07affef8a9",
+        "profile_sha256": "2b35c47c25678471b976d0be57fdd33427cc558bc341257d915082d02ed15d67",
+        "source_probe_run_id": "20260828T170518.339275Z-36ec229b"
       }
     }
   },
@@ -76,23 +76,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 4.544159889221191,
-        "baseline_p90": 5.013929462432861,
-        "target_median": 0.4915199875831604,
-        "target_p90": 0.49264639616012573
+        "baseline_median": 1.825439989566803,
+        "baseline_p90": 2.309628796577454,
+        "target_median": 0.3635199964046478,
+        "target_p90": 0.39823358654975916
       },
-      "speedup": 9.245117195671241,
+      "speedup": 5.0215669223731965,
       "performance": {
-        "achieved_tflops": 15.308800386732827,
-        "measured_compute_roof_tflops": 50.85044090471462,
-        "project_estimated_mfu": 0.3010554110124435,
-        "peak_device_allocated_bytes": 89970688,
+        "achieved_tflops": 20.699222739934516,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.23978990937824166,
+        "peak_device_allocated_bytes": 85776384,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 907.7333562646066,
+          "estimated_traffic_gbps": 1227.357758617912,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -100,8 +100,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0011050701141357422,
-        "max_relative_error": 268.9901428222656
+        "max_abs_error": 0.0013396739959716797,
+        "max_relative_error": 542.1654663085938
       }
     },
     {
@@ -111,21 +111,21 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 4.641983985900879,
-        "baseline_p90": 6.008169794082642,
-        "target_median": 0.14028799533843994,
-        "target_p90": 0.14336000382900238
+        "baseline_median": 1.988864004611969,
+        "baseline_p90": 2.499654483795166,
+        "target_median": 0.13312000036239624,
+        "target_p90": 0.1332480013370514
       },
-      "speedup": 33.08896085300993,
+      "speedup": 14.940384609357196,
       "performance": {
-        "achieved_tflops": 0.8380730205486407,
-        "measured_compute_roof_tflops": 47.221735461917646,
-        "project_estimated_mfu": 0.017747611610431206,
-        "peak_device_allocated_bytes": 19750912,
+        "achieved_tflops": 0.8831999975956404,
+        "measured_compute_roof_tflops": 47.30504949548159,
+        "project_estimated_mfu": 0.018670311246159893,
+        "peak_device_allocated_bytes": 19685376,
         "logical_operator": {
           "estimated_bytes": 8519680,
           "arithmetic_intensity_flops_per_byte": 13.8,
-          "estimated_traffic_gbps": 60.72992902526383,
+          "estimated_traffic_gbps": 63.99999982577104,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -133,8 +133,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0006857216358184814,
-        "max_relative_error": 9.548253059387207
+        "max_abs_error": 0.0006857812404632568,
+        "max_relative_error": 7.789857387542725
       }
     },
     {
@@ -144,21 +144,21 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 4.5268800258636475,
-        "baseline_p90": 5.050422239303589,
-        "target_median": 0.14847999811172485,
-        "target_p90": 0.14847999811172485
+        "baseline_median": 1.9884960055351257,
+        "baseline_p90": 2.4567072391510014,
+        "target_median": 0.13926400244235992,
+        "target_p90": 0.13926400244235992
       },
-      "speedup": 30.488147113642633,
+      "speedup": 14.278607326097394,
       "performance": {
-        "achieved_tflops": 3.1673379713146925,
-        "measured_compute_roof_tflops": 47.221735461917646,
-        "project_estimated_mfu": 0.06707373077952668,
-        "peak_device_allocated_bytes": 23093248,
+        "achieved_tflops": 3.3769411172470583,
+        "measured_compute_roof_tflops": 47.30504949548159,
+        "project_estimated_mfu": 0.07138648311888167,
+        "peak_device_allocated_bytes": 22831104,
         "logical_operator": {
           "estimated_bytes": 29360128,
           "arithmetic_intensity_flops_per_byte": 16.017857,
-          "estimated_traffic_gbps": 197.73793354918928,
+          "estimated_traffic_gbps": 210.82352571442058,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -167,7 +167,7 @@
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0009073615074157715,
-        "max_relative_error": 33.559226989746094
+        "max_relative_error": 33.55922317504883
       }
     },
     {
@@ -177,21 +177,21 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 4.482320070266724,
-        "baseline_p90": 5.0759679794311525,
-        "target_median": 0.23756800591945648,
-        "target_p90": 0.23756800591945648
+        "baseline_median": 1.9606879949569702,
+        "baseline_p90": 2.37194242477417,
+        "target_median": 0.22118400037288666,
+        "target_p90": 0.22220799326896667
       },
-      "speedup": 18.86752407134478,
+      "speedup": 8.864510957625834,
       "performance": {
-        "achieved_tflops": 7.9183446302856595,
-        "measured_compute_roof_tflops": 47.221735461917646,
-        "project_estimated_mfu": 0.16768432063814073,
-        "peak_device_allocated_bytes": 36468736,
+        "achieved_tflops": 8.504888874550783,
+        "measured_compute_roof_tflops": 47.30504949548159,
+        "project_estimated_mfu": 0.17978818255677206,
+        "peak_device_allocated_bytes": 35420160,
         "logical_operator": {
           "estimated_bytes": 112721920,
           "arithmetic_intensity_flops_per_byte": 16.688372,
-          "estimated_traffic_gbps": 474.4827467980537,
+          "estimated_traffic_gbps": 509.6296287704622,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -200,7 +200,7 @@
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0009307265281677246,
-        "max_relative_error": 349.0494384765625
+        "max_relative_error": 167.28021240234375
       }
     },
     {
@@ -208,23 +208,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 4.2142558097839355,
-        "baseline_p90": 4.867651271820069,
-        "target_median": 0.92876797914505,
-        "target_p90": 1.146060824394226
+        "baseline_median": 2.358272075653076,
+        "baseline_p90": 2.926080083847046,
+        "target_median": 0.6850559711456299,
+        "target_p90": 1.1225087642669678
       },
-      "speedup": 4.537468888261247,
+      "speedup": 3.442451675458431,
       "performance": {
-        "achieved_tflops": 16.203360893054327,
-        "measured_compute_roof_tflops": 50.85044090471462,
-        "project_estimated_mfu": 0.3186474021615027,
-        "peak_device_allocated_bytes": 161306624,
+        "achieved_tflops": 21.967785678640315,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.25448556225055924,
+        "peak_device_allocated_bytes": 152918016,
         "logical_operator": {
           "estimated_bytes": 890765312,
           "arithmetic_intensity_flops_per_byte": 16.894644,
-          "estimated_traffic_gbps": 959.0827117230804,
+          "estimated_traffic_gbps": 1300.2810712099322,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -232,8 +232,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0011050701141357422,
-        "max_relative_error": 296.2870788574219
+        "max_abs_error": 0.001466512680053711,
+        "max_relative_error": 542.1586303710938
       }
     },
     {
@@ -241,23 +241,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "mixed-fp16-core-efficient-triton-norm",
+      "policy": "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 450.0889587402344,
-        "baseline_p90": 481.0534973144531,
-        "target_median": 104.4403190612793,
-        "target_p90": 106.29970092773438
+        "baseline_median": 1144.5150756835938,
+        "baseline_p90": 1214.2953735351564,
+        "target_median": 105.77471923828125,
+        "target_p90": 117.97964859008789
       },
-      "speedup": 4.309532590341372,
+      "speedup": 10.82030833005869,
       "performance": {
-        "achieved_tflops": 11.25729843194141,
-        "measured_compute_roof_tflops": 93.73155816657429,
-        "project_estimated_mfu": 0.12010147544902212,
-        "peak_device_allocated_bytes": 5261089792,
+        "achieved_tflops": 11.11528206802834,
+        "measured_compute_roof_tflops": 86.32232604618827,
+        "project_estimated_mfu": 0.12876485814435673,
+        "peak_device_allocated_bytes": 5340035072,
         "logical_operator": {
           "estimated_bytes": 69469732864,
           "arithmetic_intensity_flops_per_byte": 16.924145,
-          "estimated_traffic_gbps": 665.1620129888663,
+          "estimated_traffic_gbps": 656.7706666042181,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -266,7 +266,7 @@
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0017772167921066284,
-        "max_relative_error": 142133008.0
+        "max_relative_error": 142140496.0
       }
     },
     {
@@ -274,23 +274,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 4.402544021606445,
-        "baseline_p90": 4.968550539016724,
-        "target_median": 0.2949120104312897,
-        "target_p90": 0.2959359884262085
+        "baseline_median": 1.8542880415916443,
+        "baseline_p90": 2.4774656295776367,
+        "target_median": 0.1955839991569519,
+        "target_p90": 0.19763199985027313
       },
-      "speedup": 14.928330708430662,
+      "speedup": 9.480775777079895,
       "performance": {
-        "achieved_tflops": 2.282666585926797,
-        "measured_compute_roof_tflops": 58.98354776639104,
-        "project_estimated_mfu": 0.03870005573363401,
-        "peak_device_allocated_bytes": 35030784,
+        "achieved_tflops": 3.4419267164068112,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.03987296072820313,
+        "peak_device_allocated_bytes": 33982208,
         "logical_operator": {
           "estimated_bytes": 111247360,
           "arithmetic_intensity_flops_per_byte": 6.051252,
-          "estimated_traffic_gbps": 377.22220887955007,
+          "estimated_traffic_gbps": 568.7958139700703,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -298,8 +298,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0015511512756347656,
-        "max_relative_error": 955.4859619140625
+        "max_abs_error": 0.0018820613622665405,
+        "max_relative_error": 616.6293334960938
       }
     },
     {
@@ -307,23 +307,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "mixed-fp16-core-efficient",
+      "policy": "compiled-mixed-fp16-core-efficient",
       "latency_ms": {
-        "baseline_median": 13.209648132324219,
-        "baseline_p90": 13.428735733032227,
-        "target_median": 7.564895868301392,
-        "target_p90": 7.774537658691407
+        "baseline_median": 14.089727878570557,
+        "baseline_p90": 14.592512035369873,
+        "target_median": 6.416384220123291,
+        "target_p90": 6.649036645889282
       },
-      "speedup": 1.74617712686246,
+      "speedup": 2.1958984055820494,
       "performance": {
-        "achieved_tflops": 55.64834086295556,
-        "measured_compute_roof_tflops": 93.73155816657429,
-        "project_estimated_mfu": 0.59369909080206,
-        "peak_device_allocated_bytes": 377798656,
+        "achieved_tflops": 65.6092106441704,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.7600491512365531,
+        "peak_device_allocated_bytes": 430245888,
         "logical_operator": {
           "estimated_bytes": 3657433088,
           "arithmetic_intensity_flops_per_byte": 115.100917,
-          "estimated_traffic_gbps": 483.4743467290097,
+          "estimated_traffic_gbps": 570.014662857849,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -331,8 +331,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0014119446277618408,
-        "max_relative_error": 160059.625
+        "max_abs_error": 0.0012546777725219727,
+        "max_relative_error": 54691.28125
       }
     },
     {
@@ -340,23 +340,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 3.8924319744110107,
-        "baseline_p90": 4.56310396194458,
-        "target_median": 0.4792320132255554,
-        "target_p90": 0.48025599122047424
+        "baseline_median": 1.6008800268173218,
+        "baseline_p90": 2.1575712442398074,
+        "target_median": 0.3532800078392029,
+        "target_p90": 0.36556801199913025
       },
-      "speedup": 8.12222862202446,
+      "speedup": 4.531476424632469,
       "performance": {
-        "achieved_tflops": 15.701332900017427,
-        "measured_compute_roof_tflops": 50.85044090471462,
-        "project_estimated_mfu": 0.3087747642038964,
-        "peak_device_allocated_bytes": 89970688,
+        "achieved_tflops": 21.299199527375606,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.24674033361866424,
+        "peak_device_allocated_bytes": 85776384,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 931.0085213151359,
+          "estimated_traffic_gbps": 1262.9333053091304,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -364,8 +364,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.00125199556350708,
-        "max_relative_error": 336.782958984375
+        "max_abs_error": 0.0014437437057495117,
+        "max_relative_error": 378.0246887207031
       }
     },
     {
@@ -373,23 +373,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 4.330672025680542,
-        "baseline_p90": 4.899827194213867,
-        "target_median": 0.4689919948577881,
-        "target_p90": 0.4700160026550293
+        "baseline_median": 1.7976959943771362,
+        "baseline_p90": 2.345033621788025,
+        "target_median": 0.34406399726867676,
+        "target_p90": 0.363622397184372
       },
-      "speedup": 9.233999883076313,
+      "speedup": 5.2248884179919886,
       "performance": {
-        "achieved_tflops": 16.044157381154598,
-        "measured_compute_roof_tflops": 50.85044090471462,
-        "project_estimated_mfu": 0.3155165834494673,
-        "peak_device_allocated_bytes": 89970688,
+        "achieved_tflops": 21.86971445932518,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.2533494573306957,
+        "peak_device_allocated_bytes": 85776384,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 951.3362549723079,
+          "estimated_traffic_gbps": 1296.7619150561407,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -397,8 +397,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0010663270950317383,
-        "max_relative_error": 613.007568359375
+        "max_abs_error": 0.0013890266418457031,
+        "max_relative_error": 2272.426025390625
       }
     },
     {
@@ -406,23 +406,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 7.102976083755493,
-        "baseline_p90": 7.283711910247803,
-        "target_median": 0.609279990196228,
-        "target_p90": 0.6113280057907104
+        "baseline_median": 7.521279811859131,
+        "baseline_p90": 8.007987117767334,
+        "target_median": 0.4843519926071167,
+        "target_p90": 0.6184959948062898
       },
-      "speedup": 11.657983518329349,
+      "speedup": 15.528541074796475,
       "performance": {
-        "achieved_tflops": 12.349956501241067,
-        "measured_compute_roof_tflops": 50.85044090471462,
-        "project_estimated_mfu": 0.24286822850529177,
-        "peak_device_allocated_bytes": 89970688,
+        "achieved_tflops": 15.5353575309921,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.1799691718534048,
+        "peak_device_allocated_bytes": 85776384,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 732.2890874133325,
+          "estimated_traffic_gbps": 921.1670330876725,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -430,8 +430,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0009748935699462891,
-        "max_relative_error": 96.669677734375
+        "max_abs_error": 0.0013537406921386719,
+        "max_relative_error": 270.5915222167969
       }
     },
     {
@@ -441,21 +441,21 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 4.499007940292358,
-        "baseline_p90": 5.059024095535278,
-        "target_median": 0.21401600539684296,
-        "target_p90": 0.21401600539684296
+        "baseline_median": 1.9927040338516235,
+        "baseline_p90": 2.3784863710403443,
+        "target_median": 0.19865599274635315,
+        "target_p90": 0.19968000054359436
       },
-      "speedup": 21.02182933444624,
+      "speedup": 10.030928371720137,
       "performance": {
-        "achieved_tflops": 7.8490332948938395,
-        "measured_compute_roof_tflops": 47.221735461917646,
-        "project_estimated_mfu": 0.1662165360530588,
-        "peak_device_allocated_bytes": 36468736,
+        "achieved_tflops": 8.455917834529245,
+        "measured_compute_roof_tflops": 47.30504949548159,
+        "project_estimated_mfu": 0.17875296452944045,
+        "peak_device_allocated_bytes": 35420160,
         "logical_operator": {
           "estimated_bytes": 112721920,
           "arithmetic_intensity_flops_per_byte": 14.902326,
-          "estimated_traffic_gbps": 526.6985513115404,
+          "estimated_traffic_gbps": 567.42270113102,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -463,8 +463,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0010500550270080566,
-        "max_relative_error": 349.0494384765625
+        "max_abs_error": 0.0010499954223632812,
+        "max_relative_error": 167.28021240234375
       }
     },
     {
@@ -472,23 +472,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "mixed-fp16-core-efficient",
+      "policy": "compiled-mixed-fp16-core-efficient",
       "latency_ms": {
-        "baseline_median": 108.42427444458008,
-        "baseline_p90": 108.84239654541015,
-        "target_median": 5.302271842956543,
-        "target_p90": 5.4824960231781015
+        "baseline_median": 117.11385726928711,
+        "baseline_p90": 117.95005569458007,
+        "target_median": 4.060672044754028,
+        "target_p90": 4.133068799972534
       },
-      "speedup": 20.44864496878055,
+      "speedup": 28.841003651251818,
       "performance": {
-        "achieved_tflops": 22.693327825475315,
-        "measured_compute_roof_tflops": 93.7315581665743,
-        "project_estimated_mfu": 0.2421097895881134,
-        "peak_device_allocated_bytes": 278615040,
+        "achieved_tflops": 29.63208843901814,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.34327259002686017,
+        "peak_device_allocated_bytes": 211539456,
         "logical_operator": {
           "estimated_bytes": 3558342656,
           "arithmetic_intensity_flops_per_byte": 33.815235,
-          "estimated_traffic_gbps": 671.0977410045183,
+          "estimated_traffic_gbps": 876.2940264030959,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -496,8 +496,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0013132095336914062,
-        "max_relative_error": 11999.6318359375
+        "max_abs_error": 0.0013136863708496094,
+        "max_relative_error": 12987.1416015625
       }
     },
     {
@@ -507,19 +507,19 @@
       "validation_level": "provisional",
       "policy": "mixed-fp16-core-cudnn",
       "latency_ms": {
-        "target_median": 15987.853881835938,
-        "target_p90": 15988.451147460937,
-        "host_end_to_end": 19333.0952000033
+        "target_median": 17136.172485351562,
+        "target_p90": 17158.58918457031,
+        "host_end_to_end": 18821.00029999856
       },
       "performance": {
-        "achieved_tflops": 87.0200437333642,
-        "measured_compute_roof_tflops": 93.73155816657429,
-        "project_estimated_mfu": 0.9283964273667278,
-        "peak_device_allocated_bytes": 7437577728,
+        "achieved_tflops": 81.18871032544098,
+        "measured_compute_roof_tflops": 86.32232604618828,
+        "project_estimated_mfu": 0.9405296873256118,
+        "peak_device_allocated_bytes": 7845867008,
         "logical_operator": {
           "estimated_bytes": 707839131648,
           "arithmetic_intensity_flops_per_byte": 1965.508379,
-          "estimated_traffic_gbps": 44.27355521757599,
+          "estimated_traffic_gbps": 41.306723088430566,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },

@@ -10,8 +10,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from policy_registry import ResidualNormBackend, get_policy_spec
+from policy_registry import ResidualNormBackend, RuntimeWrapper, get_policy_spec
 
+from .batch_tiled_graph import BatchTiledGraphReplay
+from .compiled_forward import CompiledForward
 from .cuda_graph import CudaGraphReplay
 from .dispatch import OfflineDispatcher
 from .execution_plan import (
@@ -23,6 +25,7 @@ from .kernels import (
     causal_sdpa,
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
+    prevalidated_mixed_fp16_efficient_attention,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
@@ -42,7 +45,7 @@ class _ExecutionObservation:
     def describe(self, expected_layers: int) -> dict[str, Any]:
         complete = (
             len(self.attention_backends) == expected_layers
-            and len(self.residual_norm_backends) == expected_layers
+            and len(self.residual_norm_backends) == 2 * expected_layers
         )
         mixed_core_observed = bool(
             self.attention_compute_dtypes
@@ -115,15 +118,25 @@ class _SelfAttention(nn.Module):
                     training=self.training,
                 )
             elif plan.attention_backend == "mixed_fp16_efficient":
-                context, actual_attention_backend = mixed_fp16_efficient_attention(
-                    query,
-                    key,
-                    projected_value,
-                    valid_token_mask,
-                    scale=self.scale,
-                    causal=causal,
-                    training=self.training,
-                )
+                if plan.use_compiled_forward:
+                    context, actual_attention_backend = (
+                        prevalidated_mixed_fp16_efficient_attention(
+                            query,
+                            key,
+                            projected_value,
+                            scale=self.scale,
+                        )
+                    )
+                else:
+                    context, actual_attention_backend = mixed_fp16_efficient_attention(
+                        query,
+                        key,
+                        projected_value,
+                        valid_token_mask,
+                        scale=self.scale,
+                        causal=causal,
+                        training=self.training,
+                    )
             elif plan.attention_backend == "causal_sdpa":
                 context = causal_sdpa(
                     query,
@@ -179,39 +192,32 @@ class _TransformerBlock(nn.Module):
         self.ffn_in = nn.Linear(d_model, ffn_dim)
         self.ffn_out = nn.Linear(ffn_dim, d_model)
 
-    def forward(
+    def attention_update(
         self,
-        value: torch.Tensor,
+        normalized: torch.Tensor,
         valid_token_mask: torch.Tensor | None,
         causal: bool,
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
-        attention_update = self.attention(
-            self.norm1(value),
+        """Compute the attention branch from an already normalized value."""
+
+        return self.attention(
+            normalized,
             valid_token_mask,
             causal,
             plan,
             observation,
         )
-        if plan.residual_norm_backend == ResidualNormBackend.COMPILED:
-            value, normalized, actual_residual_norm_backend = residual_layer_norm(
-                value,
-                attention_update,
-                self.norm2,
-            )
-        elif plan.residual_norm_backend == ResidualNormBackend.TRITON:
-            value, normalized, actual_residual_norm_backend = (
-                triton_residual_layer_norm(
-                    value,
-                    attention_update,
-                    self.norm2,
-                )
-            )
-        else:
-            value = residual_add(value, attention_update, valid_token_mask)
-            normalized = self.norm2(value)
-            actual_residual_norm_backend = "torch"
+
+    def ffn_update(
+        self,
+        normalized: torch.Tensor,
+        plan: ExecutionPlan,
+        observation: _ExecutionObservation | None,
+    ) -> torch.Tensor:
+        """Compute the FFN branch from an already normalized value."""
+
         mixed_core = plan.linear_backend == "autocast_fp16"
         with torch.autocast(
             device_type=normalized.device.type,
@@ -221,19 +227,17 @@ class _TransformerBlock(nn.Module):
             projected = self.ffn_in(normalized)
             hidden = F.gelu(projected, approximate="none")
             ffn_update = self.ffn_out(hidden)
-        if observation is not None:
-            observation.residual_norm_backends.append(actual_residual_norm_backend)
-            if mixed_core:
-                observation.linear_backends.extend([plan.linear_backend] * 2)
-                observation.linear_compute_dtypes.extend(
-                    [
-                        str(projected.dtype).removeprefix("torch."),
-                        str(ffn_update.dtype).removeprefix("torch."),
-                    ]
-                )
-        if ffn_update.dtype != value.dtype:
-            ffn_update = ffn_update.to(value.dtype)
-        return residual_add(value, ffn_update, valid_token_mask)
+        if observation is not None and mixed_core:
+            observation.linear_backends.extend([plan.linear_backend] * 2)
+            observation.linear_compute_dtypes.extend(
+                [
+                    str(projected.dtype).removeprefix("torch."),
+                    str(ffn_update.dtype).removeprefix("torch."),
+                ]
+            )
+        if ffn_update.dtype != normalized.dtype:
+            ffn_update = ffn_update.to(normalized.dtype)
+        return ffn_update
 
 
 class UserOptimizedTransformer(nn.Module):
@@ -255,6 +259,8 @@ class UserOptimizedTransformer(nn.Module):
         self.final_norm = nn.LayerNorm(config.d_model)
 
         self._cuda_graph_replay: CudaGraphReplay | None = None
+        self._batch_tiled_graph_replay: BatchTiledGraphReplay | None = None
+        self._compiled_forward = CompiledForward()
         self._runtime_plan_signature: tuple[object, ...] | None = None
         self._runtime_plan: ExecutionPlan | None = None
         self._execution_observation_enabled = False
@@ -273,6 +279,8 @@ class UserOptimizedTransformer(nn.Module):
 
     def _invalidate_runtime_state(self) -> None:
         self._cuda_graph_replay = None
+        self._batch_tiled_graph_replay = None
+        self._compiled_forward.clear()
         self._runtime_plan_signature = None
         self._runtime_plan = None
         self._last_execution_observation = None
@@ -470,6 +478,7 @@ class UserOptimizedTransformer(nn.Module):
         self._execution_observation_enabled = bool(enabled)
         if enabled:
             self._cuda_graph_replay = None
+            self._batch_tiled_graph_replay = None
             self._last_execution_observation = None
 
     def _forward_eager(
@@ -477,26 +486,87 @@ class UserOptimizedTransformer(nn.Module):
         value: torch.Tensor,
         valid_token_mask: torch.Tensor | None,
         plan: ExecutionPlan,
+        *,
+        observe: bool = True,
     ) -> torch.Tensor:
         observation = (
             _ExecutionObservation()
-            if self._execution_observation_enabled and not torch.compiler.is_compiling()
+            if observe
+            and self._execution_observation_enabled
+            and not torch.compiler.is_compiling()
             else None
         )
-        for layer in self.layers:
-            value = layer(
-                value,
-                valid_token_mask,
-                bool(self.config.causal),
-                plan,
-                observation,
-            )
-        value = self.final_norm(value)
+        if not self.layers:
+            value = self.final_norm(value)
+        else:
+            normalized = self.layers[0].norm1(value)
+            for layer_index, layer in enumerate(self.layers):
+                attention_update = layer.attention_update(
+                    normalized,
+                    valid_token_mask,
+                    bool(self.config.causal),
+                    plan,
+                    observation,
+                )
+                value, normalized = self._apply_residual_norm(
+                    value,
+                    attention_update,
+                    layer.norm2,
+                    valid_token_mask,
+                    plan,
+                    observation,
+                )
+                ffn_update = layer.ffn_update(normalized, plan, observation)
+                next_norm = (
+                    self.layers[layer_index + 1].norm1
+                    if layer_index + 1 < len(self.layers)
+                    else self.final_norm
+                )
+                value, normalized = self._apply_residual_norm(
+                    value,
+                    ffn_update,
+                    next_norm,
+                    valid_token_mask,
+                    plan,
+                    observation,
+                )
+            value = normalized
         if valid_token_mask is not None:
             value.masked_fill_(~valid_token_mask[..., None], 0)
         if observation is not None:
             self._last_execution_observation = observation.describe(len(self.layers))
         return value
+
+    @staticmethod
+    def _apply_residual_norm(
+        value: torch.Tensor,
+        update: torch.Tensor,
+        layer_norm: nn.LayerNorm,
+        valid_token_mask: torch.Tensor | None,
+        plan: ExecutionPlan,
+        observation: _ExecutionObservation | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply one residual boundary and its following LayerNorm."""
+
+        if plan.residual_norm_backend == ResidualNormBackend.COMPILED:
+            value, normalized, actual_backend = residual_layer_norm(
+                value,
+                update,
+                layer_norm,
+            )
+        elif plan.residual_norm_backend == ResidualNormBackend.TRITON:
+            value, normalized, actual_backend = triton_residual_layer_norm(
+                value,
+                update,
+                layer_norm,
+            )
+        else:
+            value = residual_add(value, update, valid_token_mask)
+            normalized = layer_norm(value)
+            actual_backend = "torch"
+        if observation is not None:
+            observation.residual_norm_backends.append(actual_backend)
+        return value, normalized
 
     def _effective_valid_token_mask(
         self,
@@ -535,8 +605,13 @@ class UserOptimizedTransformer(nn.Module):
         valid_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if torch.compiler.is_compiling():
-            if get_policy_spec(self._active_policy_id).use_cuda_graph:
-                raise RuntimeError("CUDA Graph policy cannot run under torch.compile")
+            if (
+                get_policy_spec(self._active_policy_id).runtime
+                is not RuntimeWrapper.EAGER
+            ):
+                raise RuntimeError(
+                    "a Solution-owned runtime cannot run under torch.compile"
+                )
             valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._execution_plan(x, valid_token_mask)
         else:
@@ -544,6 +619,48 @@ class UserOptimizedTransformer(nn.Module):
             valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._cached_execution_plan(x, valid_token_mask)
 
+        if plan.use_batch_tiled_cuda_graph:
+            if plan.batch_tile_size is None:
+                raise RuntimeError("batch-tiled plan is missing its tile size")
+            if self._batch_tiled_graph_replay is None:
+                self._batch_tiled_graph_replay = BatchTiledGraphReplay(
+                    plan.batch_tile_size
+                )
+            output = self._batch_tiled_graph_replay.run(
+                lambda value, mask: self._forward_eager(value, mask, plan),
+                x,
+                valid_token_mask,
+            )
+            if (
+                self._execution_observation_enabled
+                and self._last_execution_observation is not None
+            ):
+                self._last_execution_observation["runtime_wrappers"] = [
+                    "batch_tiled_cuda_graph"
+                ]
+            return output
+        if plan.use_compiled_forward:
+            if self._execution_observation_enabled:
+                self._forward_eager(x, valid_token_mask, plan)
+            output = self._compiled_forward.run(
+                lambda value, mask: self._forward_eager(
+                    value,
+                    mask,
+                    plan,
+                    observe=False,
+                ),
+                x,
+                valid_token_mask,
+                plan_key=plan,
+            )
+            if (
+                self._execution_observation_enabled
+                and self._last_execution_observation is not None
+            ):
+                self._last_execution_observation["runtime_wrappers"] = [
+                    "compiled_forward"
+                ]
+            return output
         if plan.use_cuda_graph:
             if self._cuda_graph_replay is None:
                 self._cuda_graph_replay = CudaGraphReplay()

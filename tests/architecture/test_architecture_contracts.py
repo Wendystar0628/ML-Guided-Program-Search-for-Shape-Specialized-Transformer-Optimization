@@ -34,6 +34,9 @@ EXPECTED_EXPLICIT_POLICIES = frozenset(
         "mixed-fp16-core-cudnn",
         "graph-mixed-fp16-efficient",
         "graph-mixed-fp16-efficient-compiled-norm",
+        "graph-mixed-fp16-core-efficient-compiled-norm",
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        "compiled-mixed-fp16-core-efficient",
     }
 )
 EXPECTED_ROUTABLE_POLICIES = EXPECTED_EXPLICIT_POLICIES - {"safe"}
@@ -106,6 +109,9 @@ def test_candidate_registry_contains_only_distinct_strategies() -> None:
         "mixed-fp16-core-cudnn",
         "graph-mixed-fp16-efficient",
         "graph-mixed-fp16-efficient-compiled-norm",
+        "graph-mixed-fp16-core-efficient-compiled-norm",
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        "compiled-mixed-fp16-core-efficient",
     }
 
 

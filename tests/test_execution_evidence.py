@@ -35,7 +35,12 @@ def test_eager_observation_covers_every_execution_dimension() -> None:
     observed = path["observed_execution"]
     assert observed["complete"] is True
     assert observed["attention_backends"] == ["causal_sdpa", "causal_sdpa"]
-    assert observed["residual_norm_backends"] == ["torch", "torch"]
+    assert observed["residual_norm_backends"] == [
+        "torch",
+        "torch",
+        "torch",
+        "torch",
+    ]
 
 
 def test_graph_fused_norm_evidence_rejects_an_observed_fallback() -> None:
@@ -139,13 +144,89 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
             "runtime_wrappers": ["cuda_graph"],
         },
     }
+    mixed_core_compiled_graph_path = {
+        "requested_policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+        "selected_policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+        "attention_backend": "mixed_fp16_efficient",
+        "attention_compute_dtype": "float16",
+        "linear_backend": "autocast_fp16",
+        "linear_compute_dtype": "float16",
+        "runtime_wrapper": "cuda_graph",
+        "residual_norm_backend": "compiled_residual_layer_norm",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["mixed_fp16_efficient"],
+            "attention_compute_dtypes": ["float16"],
+            "linear_backends": ["autocast_fp16"],
+            "linear_compute_dtypes": ["float16"],
+            "residual_norm_backends": ["compiled_residual_layer_norm"],
+            "runtime_wrappers": ["cuda_graph"],
+        },
+    }
+    batch_tiled_path = deepcopy(mixed_core_compiled_graph_path)
+    batch_tiled_path.update(
+        {
+            "requested_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
+            "selected_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
+            "runtime_wrapper": "batch_tiled_cuda_graph",
+            "batch_tile_size": 128,
+        }
+    )
+    batch_tiled_path["observed_execution"]["runtime_wrappers"] = [
+        "batch_tiled_cuda_graph"
+    ]
 
     for candidate_id, path in (
         ("mixed-fp16-core-efficient-triton-norm", triton_path),
         ("graph-mixed-fp16-efficient-compiled-norm", compiled_graph_path),
+        (
+            "graph-mixed-fp16-core-efficient-compiled-norm",
+            mixed_core_compiled_graph_path,
+        ),
+        (
+            "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+            batch_tiled_path,
+        ),
     ):
         candidate = CANDIDATE_SPECS[candidate_id]
         assert candidate.evidence_matches(path)
         fallback = deepcopy(path)
         fallback["observed_execution"]["residual_norm_backends"] = ["torch"]
         assert not candidate.evidence_matches(fallback)
+
+    runtime_fallback = deepcopy(batch_tiled_path)
+    runtime_fallback["observed_execution"]["runtime_wrappers"] = ["cuda_graph"]
+    assert not CANDIDATE_SPECS[
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm"
+    ].evidence_matches(runtime_fallback)
+
+
+def test_compiled_forward_evidence_requires_inner_and_outer_execution() -> None:
+    path = {
+        "requested_policy": "compiled-mixed-fp16-core-efficient",
+        "selected_policy": "compiled-mixed-fp16-core-efficient",
+        "attention_backend": "mixed_fp16_efficient",
+        "attention_compute_dtype": "float16",
+        "linear_backend": "autocast_fp16",
+        "linear_compute_dtype": "float16",
+        "runtime_wrapper": "compiled_forward",
+        "residual_norm_backend": "torch",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["mixed_fp16_efficient"],
+            "attention_compute_dtypes": ["float16"],
+            "linear_backends": ["autocast_fp16"],
+            "linear_compute_dtypes": ["float16"],
+            "residual_norm_backends": ["torch"],
+            "runtime_wrappers": ["compiled_forward"],
+        },
+    }
+    candidate = CANDIDATE_SPECS["compiled-mixed-fp16-core-efficient"]
+
+    assert candidate.evidence_matches(path)
+    missing_wrapper = deepcopy(path)
+    del missing_wrapper["observed_execution"]["runtime_wrappers"]
+    assert not candidate.evidence_matches(missing_wrapper)
+    wrong_inner = deepcopy(path)
+    wrong_inner["observed_execution"]["attention_backends"] = ["causal_sdpa"]
+    assert not candidate.evidence_matches(wrong_inner)

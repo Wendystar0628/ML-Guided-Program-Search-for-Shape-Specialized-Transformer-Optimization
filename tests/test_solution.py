@@ -253,6 +253,20 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
             "eager",
             "torch",
         ),
+        (
+            "graph-mixed-fp16-core-efficient-compiled-norm",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
     ],
 )
 def test_explicit_policy_reports_one_honest_execution_plan(
@@ -290,12 +304,14 @@ def test_module_transform_invalidates_cached_runtime_state() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
     solution._cuda_graph_replay = object()
+    solution._batch_tiled_graph_replay = object()
     solution._runtime_plan = object()
     solution._dispatch_signature = ("fixture",)
 
     solution.to(dtype=torch.float64)
 
     assert solution._cuda_graph_replay is None
+    assert solution._batch_tiled_graph_replay is None
     assert solution._runtime_plan is None
     assert solution._dispatch_signature is None
 
@@ -335,7 +351,11 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
 ) -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
-    plan = SimpleNamespace(use_cuda_graph=True)
+    plan = SimpleNamespace(
+        use_batch_tiled_cuda_graph=False,
+        use_compiled_forward=False,
+        use_cuda_graph=True,
+    )
     replay_calls: list[str] = []
 
     class FakeGraphReplay:
@@ -346,7 +366,7 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
     def fake_forward_eager(value, _valid_mask, _plan):  # type: ignore[no-untyped-def]
         solution._last_execution_observation = {
             "attention_backends": ["causal_sdpa"],
-            "residual_norm_backends": ["torch"],
+            "residual_norm_backends": ["torch", "torch"],
             "expected_layers": 1,
             "complete": True,
         }
@@ -369,6 +389,121 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
     assert replay_calls == ["replay"]
     assert torch.equal(output, inputs + 1)
     assert solution._last_execution_observation["runtime_wrappers"] == ["cuda_graph"]
+
+
+def test_execution_observation_reports_batch_tiled_graph_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    plan = SimpleNamespace(
+        use_batch_tiled_cuda_graph=True,
+        batch_tile_size=128,
+        use_cuda_graph=False,
+    )
+    replay_tiles: list[int] = []
+
+    class FakeBatchTiledGraphReplay:
+        def __init__(self, tile_size: int) -> None:
+            replay_tiles.append(tile_size)
+
+        def run(self, function, value, valid_mask):  # type: ignore[no-untyped-def]
+            return function(value, valid_mask)
+
+    def fake_forward_eager(value, _valid_mask, _plan):  # type: ignore[no-untyped-def]
+        solution._last_execution_observation = {
+            "attention_backends": ["mixed_fp16_efficient"],
+            "residual_norm_backends": [
+                "compiled_residual_layer_norm",
+                "compiled_residual_layer_norm",
+            ],
+            "expected_layers": 1,
+            "complete": True,
+        }
+        return value + 1
+
+    monkeypatch.setattr(
+        solution_module,
+        "BatchTiledGraphReplay",
+        FakeBatchTiledGraphReplay,
+    )
+    monkeypatch.setattr(solution, "_resolve_dispatch", lambda _value: None)
+    monkeypatch.setattr(
+        solution,
+        "_cached_execution_plan",
+        lambda _value, _valid_mask: plan,
+    )
+    monkeypatch.setattr(solution, "_forward_eager", fake_forward_eager)
+    solution.set_execution_observation(True)
+
+    inputs = torch.zeros(2, 4, 8)
+    output = solution(inputs)
+
+    assert replay_tiles == [128]
+    assert torch.equal(output, inputs + 1)
+    assert solution._last_execution_observation["runtime_wrappers"] == [
+        "batch_tiled_cuda_graph"
+    ]
+
+
+def test_execution_observation_reports_compiled_forward_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    plan = SimpleNamespace(
+        use_batch_tiled_cuda_graph=False,
+        use_compiled_forward=True,
+        use_cuda_graph=False,
+    )
+    compiled_calls: list[object] = []
+
+    class FakeCompiledForward:
+        def run(
+            self,
+            function,
+            value,
+            valid_mask,
+            *,
+            plan_key,
+        ):  # type: ignore[no-untyped-def]
+            compiled_calls.append(plan_key)
+            return function(value, valid_mask)
+
+    def fake_forward_eager(
+        value,
+        _valid_mask,
+        _plan,
+        *,
+        observe=True,
+    ):  # type: ignore[no-untyped-def]
+        if observe:
+            solution._last_execution_observation = {
+                "attention_backends": ["mixed_fp16_efficient"],
+                "residual_norm_backends": ["torch", "torch"],
+                "expected_layers": 1,
+                "complete": True,
+            }
+        return value + 1
+
+    monkeypatch.setattr(solution, "_resolve_dispatch", lambda _value: None)
+    monkeypatch.setattr(
+        solution,
+        "_cached_execution_plan",
+        lambda _value, _valid_mask: plan,
+    )
+    monkeypatch.setattr(solution, "_forward_eager", fake_forward_eager)
+    solution._compiled_forward = FakeCompiledForward()
+    solution.set_execution_observation(True)
+
+    inputs = torch.zeros(2, 4, 8)
+    output = solution(inputs)
+
+    assert compiled_calls == [plan]
+    assert torch.equal(output, inputs + 1)
+    assert solution._last_execution_observation["runtime_wrappers"] == [
+        "compiled_forward"
+    ]
 
 
 def test_all_valid_mask_cache_does_not_go_stale_for_inference_tensors() -> None:
@@ -413,7 +548,7 @@ def test_execution_observation_reports_complete_layer_coverage() -> None:
     observation = solution.describe_execution_path()["observed_execution"]
     assert observation == {
         "attention_backends": ["safe_streaming", "safe_streaming"],
-        "residual_norm_backends": ["torch", "torch"],
+        "residual_norm_backends": ["torch", "torch", "torch", "torch"],
         "expected_layers": 2,
         "complete": True,
     }
@@ -463,7 +598,7 @@ def test_mixed_cudnn_policy_reports_the_backend_that_passed_comparator() -> None
     assert path["attention_backend"] == "mixed_fp16_cudnn"
     assert path["observed_execution"] == {
         "attention_backends": ["mixed_fp16_cudnn"],
-        "residual_norm_backends": ["torch"],
+        "residual_norm_backends": ["torch", "torch"],
         "expected_layers": 1,
         "complete": True,
     }

@@ -289,6 +289,167 @@ def test_full_mixed_core_plans_report_actual_compute_contracts(
     assert streamed_efficient.linear_backend == "autocast_fp16"
 
 
+def test_graph_mixed_core_composes_every_requested_component(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+
+    plan = _resolve(
+        "graph-mixed-fp16-core-efficient-compiled-norm",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=128,
+            d_model=128,
+            num_heads=16,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+
+    assert plan.selected_policy == ("graph-mixed-fp16-core-efficient-compiled-norm")
+    assert plan.attention_backend == "mixed_fp16_efficient"
+    assert plan.attention_compute_dtype == "float16"
+    assert plan.linear_backend == "autocast_fp16"
+    assert plan.linear_compute_dtype == "float16"
+    assert plan.runtime_wrapper == "cuda_graph"
+    assert plan.residual_norm_backend == "compiled_residual_layer_norm"
+    assert plan.resolved_components == (
+        "compiled_residual_layer_norm",
+        "cuda_graph",
+        "mixed_fp16_core",
+        "mixed_fp16_efficient_attention",
+    )
+
+
+def test_shape06_batch_tiled_plan_is_exact_and_self_describing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+
+    exact = _resolve(
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        _context(
+            device="cuda",
+            batch_size=10_000,
+            seq_len=128,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+    nearby = _resolve(
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        _context(
+            device="cuda",
+            batch_size=9_999,
+            seq_len=128,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+
+    assert exact.selected_policy == (
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm"
+    )
+    assert exact.runtime_wrapper == "batch_tiled_cuda_graph"
+    assert exact.batch_tile_size == 128
+    assert exact.resolved_components == (
+        "batch_tiled_cuda_graph",
+        "compiled_residual_layer_norm",
+        "cuda_graph",
+        "mixed_fp16_core",
+        "mixed_fp16_efficient_attention",
+    )
+    assert nearby.selected_policy == "safe"
+    assert nearby.runtime_wrapper == "eager"
+    assert nearby.batch_tile_size is None
+
+
+def test_compiled_forward_plan_is_exact_to_measured_shapes(monkeypatch) -> None:
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+
+    exact = _resolve(
+        "compiled-mixed-fp16-core-efficient",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=1024,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+    nearby = _resolve(
+        "compiled-mixed-fp16-core-efficient",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=128,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+    wide = _resolve(
+        "compiled-mixed-fp16-core-efficient",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=128,
+            d_model=1024,
+            num_heads=4,
+            ffn_dim=1024,
+            num_layers=4,
+        ),
+    )
+
+    assert exact.selected_policy == "compiled-mixed-fp16-core-efficient"
+    assert exact.runtime_wrapper == "compiled_forward"
+    assert exact.use_compiled_forward
+    assert wide.selected_policy == "compiled-mixed-fp16-core-efficient"
+    assert wide.use_compiled_forward
+    assert exact.resolved_components == (
+        "compiled_forward",
+        "mixed_fp16_core",
+        "mixed_fp16_efficient_attention",
+    )
+    assert nearby.selected_policy == "safe"
+    assert nearby.runtime_wrapper == "eager"
+
+
 def test_triton_residual_norm_composes_with_shape06_mixed_core(
     monkeypatch,
 ) -> None:

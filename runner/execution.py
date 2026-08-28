@@ -14,6 +14,7 @@ import torch
 from torch import nn
 
 from official import torch_transformer_benchmark as official
+from policy_registry import RuntimeWrapper
 from project_identity import solution_implementation_hash
 from runner.contracts import (
     ContractError,
@@ -508,7 +509,7 @@ def prepare_execution(
         execution_path["execution_mode"] = (
             "torch_compile" if target_is_compiled else "eager"
         )
-        _validate_cuda_graph_composition(execution_path, protocol)
+        _validate_solution_runtime_composition(execution_path, protocol)
         if parsed_request.run_kind == "profile":
             _validate_profile_execution_path(execution_path)
 
@@ -853,25 +854,35 @@ def _set_execution_observation(model: nn.Module, enabled: bool) -> bool:
     return True
 
 
-def _validate_cuda_graph_composition(
+def _validate_solution_runtime_composition(
     execution_path: dict[str, Any],
     protocol: MeasurementProtocol,
 ) -> None:
-    """Reject compiling a Solution-owned CUDA Graph route."""
+    """Reject nesting the runner compiler around a Solution-owned runtime."""
 
-    if execution_path.get("runtime_wrapper") != "cuda_graph":
+    if execution_path.get("runtime_wrapper") not in {
+        RuntimeWrapper.CUDA_GRAPH,
+        RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
+        RuntimeWrapper.COMPILED_FORWARD,
+    }:
         return
     if protocol.compile_solution:
-        raise ContractError("the graph policy cannot combine with torch.compile")
+        raise ContractError(
+            "the selected Solution runtime cannot combine with runner torch.compile"
+        )
 
 
 def _validate_profile_execution_path(execution_path: dict[str, Any]) -> None:
     """Keep operator profiling on an eager path with visible ATen work."""
 
-    if execution_path.get("runtime_wrapper") == "cuda_graph":
+    if execution_path.get("runtime_wrapper") in {
+        RuntimeWrapper.CUDA_GRAPH,
+        RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
+        RuntimeWrapper.COMPILED_FORWARD,
+    }:
         raise ContractError(
-            "the graph policy hides per-operator profile work; select an eager "
-            "policy for operator profiling"
+            "the selected runtime hides per-operator profile work; select an "
+            "eager policy for operator profiling"
         )
 
 

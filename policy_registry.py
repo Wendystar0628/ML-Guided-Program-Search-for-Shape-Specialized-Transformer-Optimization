@@ -13,6 +13,8 @@ class ExecutionComponent(StrEnum):
 
     CAUSAL_SDPA = "causal_sdpa"
     CUDA_GRAPH = "cuda_graph"
+    BATCH_TILED_CUDA_GRAPH = "batch_tiled_cuda_graph"
+    COMPILED_FORWARD = "compiled_forward"
     COMPILED_RESIDUAL_LAYER_NORM = "compiled_residual_layer_norm"
     TRITON_RESIDUAL_LAYER_NORM = "triton_residual_layer_norm"
     MIXED_FP16_EFFICIENT_ATTENTION = "mixed_fp16_efficient_attention"
@@ -28,6 +30,15 @@ class ResidualNormBackend(StrEnum):
     TRITON = "triton_residual_layer_norm"
 
 
+class RuntimeWrapper(StrEnum):
+    """Supported outer execution schedules."""
+
+    EAGER = "eager"
+    CUDA_GRAPH = "cuda_graph"
+    BATCH_TILED_CUDA_GRAPH = "batch_tiled_cuda_graph"
+    COMPILED_FORWARD = "compiled_forward"
+
+
 @dataclass(frozen=True, slots=True)
 class PolicySpec:
     """One execution composition, independent of workload shape and hardware."""
@@ -36,7 +47,8 @@ class PolicySpec:
     attention: str = "safe_streaming"
     linear_compute: str = "input"
     residual_norm: ResidualNormBackend = ResidualNormBackend.TORCH
-    use_cuda_graph: bool = False
+    runtime: RuntimeWrapper = RuntimeWrapper.EAGER
+    batch_tile_size: int | None = None
     routable: bool = True
 
     def __post_init__(self) -> None:
@@ -58,6 +70,33 @@ class PolicySpec:
                 f"unsupported residual norm backend: {self.residual_norm}"
             ) from exc
         object.__setattr__(self, "residual_norm", backend)
+        try:
+            runtime = RuntimeWrapper(self.runtime)
+        except ValueError as exc:
+            raise ValueError(f"unsupported runtime wrapper: {self.runtime}") from exc
+        object.__setattr__(self, "runtime", runtime)
+        if runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
+            if (
+                isinstance(self.batch_tile_size, bool)
+                or not isinstance(self.batch_tile_size, int)
+                or self.batch_tile_size <= 0
+            ):
+                raise ValueError(
+                    "batch-tiled CUDA Graph runtime requires a positive tile size"
+                )
+        elif self.batch_tile_size is not None:
+            raise ValueError(
+                "batch_tile_size is valid only for batch-tiled CUDA Graph runtime"
+            )
+
+    @property
+    def use_cuda_graph(self) -> bool:
+        """Return whether the runtime owns a CUDA Graph."""
+
+        return self.runtime in {
+            RuntimeWrapper.CUDA_GRAPH,
+            RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
+        }
 
     @property
     def required_components(self) -> frozenset[ExecutionComponent]:
@@ -72,8 +111,17 @@ class PolicySpec:
             components.add(ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION)
         if self.linear_compute == "float16":
             components.add(ExecutionComponent.MIXED_FP16_CORE)
-        if self.use_cuda_graph:
+        if self.runtime is RuntimeWrapper.CUDA_GRAPH:
             components.add(ExecutionComponent.CUDA_GRAPH)
+        elif self.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
+            components.update(
+                {
+                    ExecutionComponent.CUDA_GRAPH,
+                    ExecutionComponent.BATCH_TILED_CUDA_GRAPH,
+                }
+            )
+        elif self.runtime is RuntimeWrapper.COMPILED_FORWARD:
+            components.add(ExecutionComponent.COMPILED_FORWARD)
         if self.residual_norm is ResidualNormBackend.COMPILED:
             components.add(ExecutionComponent.COMPILED_RESIDUAL_LAYER_NORM)
         elif self.residual_norm is ResidualNormBackend.TRITON:
@@ -90,12 +138,12 @@ _POLICY_SPECS = {
     "graph": PolicySpec(
         "graph",
         attention="causal_sdpa",
-        use_cuda_graph=True,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
     ),
     "graph-fused-norm": PolicySpec(
         "graph-fused-norm",
         attention="causal_sdpa",
-        use_cuda_graph=True,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
         residual_norm=ResidualNormBackend.COMPILED,
     ),
     "mixed-fp16-efficient": PolicySpec(
@@ -125,13 +173,34 @@ _POLICY_SPECS = {
     "graph-mixed-fp16-efficient": PolicySpec(
         "graph-mixed-fp16-efficient",
         attention="mixed_fp16_efficient",
-        use_cuda_graph=True,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
     ),
     "graph-mixed-fp16-efficient-compiled-norm": PolicySpec(
         "graph-mixed-fp16-efficient-compiled-norm",
         attention="mixed_fp16_efficient",
         residual_norm=ResidualNormBackend.COMPILED,
-        use_cuda_graph=True,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
+    ),
+    "graph-mixed-fp16-core-efficient-compiled-norm": PolicySpec(
+        "graph-mixed-fp16-core-efficient-compiled-norm",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+        residual_norm=ResidualNormBackend.COMPILED,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
+    ),
+    "batch-tiled-mixed-fp16-core-efficient-compiled-norm": PolicySpec(
+        "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+        residual_norm=ResidualNormBackend.COMPILED,
+        runtime=RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
+        batch_tile_size=128,
+    ),
+    "compiled-mixed-fp16-core-efficient": PolicySpec(
+        "compiled-mixed-fp16-core-efficient",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+        runtime=RuntimeWrapper.COMPILED_FORWARD,
     ),
 }
 
@@ -168,6 +237,7 @@ __all__ = [
     "ExecutionComponent",
     "PolicySpec",
     "ResidualNormBackend",
+    "RuntimeWrapper",
     "get_policy_spec",
     "policy_ids",
 ]
