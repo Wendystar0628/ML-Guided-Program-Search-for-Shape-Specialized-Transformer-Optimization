@@ -7,7 +7,7 @@ import math
 import platform
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +15,8 @@ from runner.candidates import candidate_spec_for_policy
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
     WorkloadSet,
     atomic_replace_json,
     load_json,
@@ -23,6 +24,7 @@ from runner.contracts import (
 )
 from runner.locking import device_measurement_lease
 from runner.probe import collect_environment
+from runner.resource_guard import local_benchmark_shapes
 from runner.routing_contracts import (
     exact_route_key,
     hardware_identity_from_runtime,
@@ -89,6 +91,7 @@ class LaunchConfig:
     device: str = "cuda:0"
     preset: str = "formal"
     timeout: float | None = None
+    variant: RunVariant = field(default_factory=RunVariant)
 
 
 def _positive_float(value: str) -> float:
@@ -212,38 +215,45 @@ def _dispatch_source_matches(
 
 
 def _route_key(
-    case: Mapping[str, Any],
+    shape: TransformerShape,
+    variant: RunVariant,
     identity: Mapping[str, Any],
 ) -> dict[str, object]:
     try:
-        return exact_route_key(case, hardware_identity_from_runtime(identity))
+        return exact_route_key(
+            shape,
+            variant,
+            hardware_identity_from_runtime(identity),
+        )
     except (TypeError, ValueError) as exc:
         raise VerifiedHardwareError(str(exc)) from exc
 
 
 def _expected_route(
     routes: Mapping[str, Any],
-    case: Mapping[str, Any],
+    shape: TransformerShape,
+    variant: RunVariant,
     identity: Mapping[str, Any],
 ) -> tuple[str, str]:
     try:
         table = validate_verified_route_table(routes)
     except (TypeError, ValueError) as exc:
         raise VerifiedHardwareError(f"invalid verified route table: {exc}") from exc
-    resolution = resolve_route_result(table, _route_key(case, identity))
+    resolution = resolve_route_result(table, _route_key(shape, variant, identity))
     return resolution.policy, resolution.origin
 
 
 def _case_id(run: Mapping[str, Any]) -> str | None:
     workload = run.get("workload")
-    case = workload.get("case") if isinstance(workload, Mapping) else None
-    value = case.get("case_id") if isinstance(case, Mapping) else None
+    shape = workload.get("shape") if isinstance(workload, Mapping) else None
+    value = shape.get("case_id") if isinstance(shape, Mapping) else None
     return value if isinstance(value, str) and value else None
 
 
 def validate_workload_route_coverage(
     workload_set: WorkloadSet,
     *,
+    variant: RunVariant,
     routes: Mapping[str, Any],
     identity: Mapping[str, Any],
 ) -> None:
@@ -263,11 +273,11 @@ def validate_workload_route_coverage(
         raise VerifiedHardwareError(f"invalid verified route table: {exc}") from exc
 
     missing: list[str] = []
-    for case in workload_set.cases:
-        case_document = case.as_dict()
-        _, origin = _expected_route(routes, case_document, identity)
+    for shape in local_benchmark_shapes(workload_set.shapes):
+        shape_document = shape.as_dict()
+        _, origin = _expected_route(routes, shape, variant, identity)
         if origin != "calibrated":
-            missing.append(str(case_document.get("case_id", "<unknown>")))
+            missing.append(str(shape_document.get("case_id", "<unknown>")))
     if missing:
         raise VerifiedHardwareError(
             "verified route table has no exact decision for: " + ", ".join(missing)
@@ -288,10 +298,26 @@ def validate_run_routes(
     for run in runs:
         case_id = _case_id(run) or "<missing-case-id>"
         workload = run.get("workload")
-        case = workload.get("case") if isinstance(workload, Mapping) else None
+        shape_payload = (
+            workload.get("shape") if isinstance(workload, Mapping) else None
+        )
+        variant_payload = (
+            workload.get("variant") if isinstance(workload, Mapping) else None
+        )
         execution_path = run.get("execution_path")
-        if not isinstance(case, Mapping) or not isinstance(execution_path, Mapping):
+        if (
+            not isinstance(shape_payload, dict)
+            or not isinstance(variant_payload, dict)
+            or not isinstance(execution_path, Mapping)
+        ):
             raise VerifiedHardwareError(f"{case_id}: result is missing route details")
+        try:
+            shape = TransformerShape.from_dict(shape_payload)
+            variant = RunVariant.from_dict(variant_payload)
+        except ContractError as exc:
+            raise VerifiedHardwareError(
+                f"{case_id}: result has an invalid shape variant: {exc}"
+            ) from exc
         if not _dispatch_source_matches(
             execution_path.get("dispatch_source"),
             route_path=route_path,
@@ -305,7 +331,12 @@ def validate_run_routes(
                 f"{case_id}: result used an unexpected route-table hash"
             )
 
-        expected_policy, expected_origin = _expected_route(routes, case, identity)
+        expected_policy, expected_origin = _expected_route(
+            routes,
+            shape,
+            variant,
+            identity,
+        )
         if expected_origin != "calibrated":
             raise VerifiedHardwareError(
                 f"{case_id}: verified workload resolved through fallback"
@@ -321,9 +352,9 @@ def validate_run_routes(
                 f"got {execution_path.get('route_origin')!r}"
             )
         try:
-            workload_case = WorkloadCase.from_dict(dict(case))
             candidate = candidate_spec_for_policy(
-                workload_case,
+                shape,
+                variant,
                 expected_policy,
                 deployable_only=True,
             )
@@ -403,6 +434,7 @@ def _run_verified(
     )
     validate_workload_route_coverage(
         workload_set,
+        variant=config.variant,
         routes=routes,
         identity=actual_identity,
     )
@@ -446,7 +478,10 @@ def _run_verified(
                 raise VerifiedHardwareError(
                     "verified summary does not match the validated runs"
                 )
-            case_result["policy_applied"] = True
+            if not isinstance(case_result.get("actual_policy"), str):
+                raise VerifiedHardwareError(
+                    f"{case_result.get('case_id')}: verified summary has no actual policy"
+                )
 
     protocol = MeasurementProtocol.for_preset(
         config.preset,
@@ -462,6 +497,7 @@ def _run_verified(
                 workload_set_id=manifest.workload_set_id,
                 protocol=protocol,
                 device=config.device,
+                variant=config.variant,
                 target="solution",
                 solution_policy="dispatch",
                 output_root=paths.sweeps,

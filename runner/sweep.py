@@ -1,18 +1,18 @@
-"""Execute, aggregate, and persist one isolated benchmark sweep."""
+"""Execute and summarize one ordered official benchmark sweep."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
-    WorkloadGroup,
+    RunVariant,
+    TransformerShape,
     WorkloadSet,
     atomic_write_json,
     load_workload_set,
@@ -20,6 +20,7 @@ from runner.contracts import (
     utc_now,
 )
 from runner.locking import device_measurement_lease
+from runner.resource_guard import local_benchmark_shapes
 from runner.result_contracts import (
     validate_benchmark_performance,
     validate_correctness,
@@ -31,18 +32,19 @@ SweepValidator = Callable[
     [WorkloadSet, Sequence[Mapping[str, Any]], Sequence[Path], dict[str, Any]],
     None,
 ]
-CaseStarted = Callable[[int, int, WorkloadCase], None]
-CaseCompleted = Callable[[dict[str, Any], Path], None]
+ShapeStarted = Callable[[int, int, TransformerShape], None]
+ShapeCompleted = Callable[[dict[str, Any], Path], None]
 
 
 @dataclass(frozen=True)
 class BenchmarkSweepRequest:
-    """Complete input for one ordered benchmark sweep."""
+    """Complete input for one local sweep of the official workload."""
 
     project_root: Path
     workload_set_id: str
     protocol: MeasurementProtocol
     device: str
+    variant: RunVariant = field(default_factory=RunVariant)
     target: str = "solution"
     solution_policy: str | None = "dispatch"
     output_root: Path | None = None
@@ -61,33 +63,23 @@ class BenchmarkSweepResult:
     summary_path: Path
 
 
-def _geometric_mean(values: list[float], weights: list[float] | None = None) -> float:
+def _geometric_mean(values: Sequence[float]) -> float:
     if not values or any(not math.isfinite(value) or value <= 0 for value in values):
         raise ContractError("geometric mean inputs must be finite and positive")
-    if weights is None:
-        return math.exp(math.fsum(math.log(value) for value in values) / len(values))
-    if len(values) != len(weights):
-        raise ContractError("geometric mean values and weights must have equal length")
-    total_weight = math.fsum(weights)
-    if total_weight <= 0 or any(weight <= 0 for weight in weights):
-        raise ContractError("geometric mean weights must be positive")
-    return math.exp(
-        math.fsum(weight * math.log(value) for value, weight in zip(values, weights))
-        / total_weight
-    )
+    return math.exp(math.fsum(math.log(value) for value in values) / len(values))
 
 
-def _outcome(run: dict[str, Any]) -> str:
+def _outcome(run: Mapping[str, Any]) -> str:
     value = run.get("outcome")
     return value if isinstance(value, str) else "runtime_error"
 
 
 def _validated_performance(
-    run: dict[str, Any],
+    run: Mapping[str, Any],
     target: str,
 ) -> tuple[float | None, str | None]:
     protocol = run.get("protocol")
-    if not isinstance(protocol, dict):
+    if not isinstance(protocol, Mapping):
         return None, "missing_protocol"
     performance, error = validate_benchmark_performance(
         run.get("performance"),
@@ -102,14 +94,11 @@ def _validated_performance(
     return performance.speedup, None
 
 
-def _validated_correctness(
-    run: dict[str, Any],
-    target: str,
-) -> str | None:
+def _validated_correctness(run: Mapping[str, Any], target: str) -> str | None:
     if target == "baseline":
         return None
     protocol = run.get("protocol")
-    if not isinstance(protocol, dict):
+    if not isinstance(protocol, Mapping):
         return "invalid_correctness"
     return validate_correctness(
         run.get("correctness"), expected_trials=protocol.get("accuracy_trials")
@@ -117,24 +106,24 @@ def _validated_correctness(
 
 
 def _run_context(
-    run: dict[str, Any],
+    run: Mapping[str, Any],
     *,
     target: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    if run.get("schema_version") != 2:
+    if run.get("schema_version") != 3:
         return None, "unsupported_schema"
     if run.get("run_kind") != "benchmark":
         return None, "run_kind_mismatch"
     if run.get("target") != target:
         return None, "target_mismatch"
     run_id = run.get("run_id")
+    sweep_id = run.get("sweep_id")
     if not isinstance(run_id, str) or not run_id:
         return None, "missing_run_id"
-    sweep_id = run.get("sweep_id")
     if not isinstance(sweep_id, str) or not sweep_id:
         return None, "missing_sweep_id"
     source = run.get("source")
-    if not isinstance(source, dict):
+    if not isinstance(source, Mapping):
         return None, "missing_source"
     official_hash = source.get("official_sha256")
     if not isinstance(official_hash, str) or not official_hash:
@@ -145,10 +134,10 @@ def _run_context(
     ):
         return None, "missing_solution_source_hash"
     protocol = run.get("protocol")
-    if not isinstance(protocol, dict):
-        return None, "missing_protocol"
     environment = run.get("environment")
-    if not isinstance(environment, dict):
+    if not isinstance(protocol, Mapping):
+        return None, "missing_protocol"
+    if not isinstance(environment, Mapping):
         return None, "missing_environment"
     resolved_device = environment.get("device")
     if not isinstance(resolved_device, str) or not resolved_device:
@@ -157,15 +146,12 @@ def _run_context(
         "sweep_id": sweep_id,
         "official_snapshot_sha256": official_hash,
         "solution_source_sha256": solution_hash if target == "solution" else None,
-        "protocol": protocol,
-        "environment": environment,
+        "protocol": dict(protocol),
+        "environment": dict(environment),
     }, None
 
 
-def _context_mismatch(
-    expected: dict[str, Any],
-    actual: dict[str, Any],
-) -> str | None:
+def _context_mismatch(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> str | None:
     labels = {
         "sweep_id": "sweep_id_mismatch",
         "official_snapshot_sha256": "official_snapshot_mismatch",
@@ -179,48 +165,113 @@ def _context_mismatch(
     return None
 
 
-def _case_id(run: Mapping[str, Any]) -> str | None:
+def _shape_id(run: Mapping[str, Any]) -> str | None:
     workload = run.get("workload")
-    case = workload.get("case") if isinstance(workload, Mapping) else None
-    value = case.get("case_id") if isinstance(case, Mapping) else None
+    shape = workload.get("shape") if isinstance(workload, Mapping) else None
+    value = shape.get("case_id") if isinstance(shape, Mapping) else None
     return value if isinstance(value, str) and value else None
 
 
-def _compact_case_result(
-    case_id: str,
+def _timing_summary(value: Any) -> dict[str, float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    median = value.get("median_ms")
+    p90 = value.get("p90_ms")
+    if (
+        not isinstance(median, (int, float))
+        or isinstance(median, bool)
+        or not isinstance(p90, (int, float))
+        or isinstance(p90, bool)
+    ):
+        return None
+    return {"median_ms": float(median), "p90_ms": float(p90)}
+
+
+def _accuracy_summary(run: Mapping[str, Any]) -> dict[str, Any] | None:
+    value = run.get("correctness")
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        key: value[key]
+        for key in (
+            "passed",
+            "trial_count",
+            "failed_elements",
+            "max_abs_error",
+            "max_relative_error",
+            "diagnostic",
+        )
+        if value.get(key) is not None
+    }
+
+
+def _actual_policy(run: Mapping[str, Any], *, target: str) -> str | None:
+    if target == "baseline":
+        return "official-baseline"
+    persisted = run.get("actual_policy")
+    if isinstance(persisted, str) and persisted:
+        return persisted
+    execution_path = run.get("execution_path")
+    if not isinstance(execution_path, Mapping):
+        return None
+    for field_name in (
+        "actual_policy",
+        "selected_policy",
+        "dispatch_policy",
+        "requested_policy",
+    ):
+        value = execution_path.get(field_name)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _failure_summary(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if run is None:
+        return {"stage": "sweep", "type": "MissingResult", "message": "missing"}
+    value = run.get("failure")
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        key: value[key]
+        for key in ("stage", "type", "message", "exit_code")
+        if value.get(key) is not None
+    }
+
+
+def _compact_shape_result(
+    shape_id: str,
     run: Mapping[str, Any] | None,
     *,
+    target: str,
     outcome: str,
     speedup: float | None,
 ) -> dict[str, Any]:
-    compact: dict[str, Any] = {
-        "case_id": case_id,
-        "outcome": outcome,
-        "run_id": run.get("run_id") if run is not None else None,
-        "baseline_median_ms": None,
-        "target_median_ms": None,
-        "speedup": speedup,
-        "dispatch_policy": None,
-        "selected_policy": None,
-        "route_origin": None,
-        "policy_applied": None,
-    }
-    if run is None:
-        return compact
-    performance = run.get("performance")
+    performance = run.get("performance") if run is not None else None
+    baseline = None
+    solution = None
     if isinstance(performance, Mapping):
-        baseline = performance.get("baseline")
-        target = performance.get("target")
-        if isinstance(baseline, Mapping):
-            compact["baseline_median_ms"] = baseline.get("median_ms")
-        if isinstance(target, Mapping):
-            compact["target_median_ms"] = target.get("median_ms")
-    execution_path = run.get("execution_path")
-    if isinstance(execution_path, Mapping):
-        compact["dispatch_policy"] = execution_path.get("dispatch_policy")
-        compact["selected_policy"] = execution_path.get("selected_policy")
-        compact["route_origin"] = execution_path.get("route_origin")
-    return compact
+        baseline = _timing_summary(performance.get("baseline"))
+        solution = _timing_summary(performance.get("target"))
+    failure = _failure_summary(run) if outcome != "success" else None
+    if outcome != "success" and failure is None:
+        failure = {
+            "stage": "summary_validation",
+            "type": "InvalidResult",
+            "message": outcome,
+        }
+    return {
+        "case_id": shape_id,
+        "outcome": outcome,
+        "baseline": baseline,
+        "solution": solution,
+        "speedup": speedup,
+        "accuracy": _accuracy_summary(run) if run is not None else None,
+        "actual_policy": _actual_policy(run, target=target)
+        if run is not None
+        else None,
+        "failure": failure,
+    }
 
 
 def _common_dispatch(runs: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
@@ -245,105 +296,96 @@ def summarize_sweep(
     runs: list[dict[str, Any]],
     *,
     target: str,
+    variant: RunVariant | None = None,
 ) -> dict[str, Any]:
-    """Build the single compact summary shared by CLI and verified runs."""
+    """Build one compact, unweighted summary for official cases 1 through 13."""
 
     if target not in {"baseline", "solution"}:
         raise ContractError(f"unsupported sweep target: {target}")
-
-    expected_cases = workload_set.cases
-    expected_ids = [case.case_id for case in expected_cases]
+    expected_variant = variant or RunVariant()
+    expected_shapes = local_benchmark_shapes(workload_set.shapes)
+    expected_ids = [shape.case_id for shape in expected_shapes]
     indexed: dict[str, dict[str, Any]] = {}
     duplicates: list[str] = []
     unexpected: list[str] = []
     for run in runs:
-        case_id = _case_id(run)
-        if not isinstance(case_id, str):
-            unexpected.append("<missing-case-id>")
-            continue
-        if case_id not in expected_ids:
-            unexpected.append(case_id)
-            continue
-        if case_id in indexed:
-            duplicates.append(case_id)
-            continue
-        indexed[case_id] = run
+        shape_id = _shape_id(run)
+        if shape_id is None or shape_id not in expected_ids:
+            unexpected.append(shape_id or "<missing-case-id>")
+        elif shape_id in indexed:
+            duplicates.append(shape_id)
+        else:
+            indexed[shape_id] = run
 
-    case_results: list[dict[str, Any]] = []
+    shape_results: list[dict[str, Any]] = []
     failed_cases: list[dict[str, str]] = []
-    speedups: dict[str, float] = {}
+    speedups: list[float] = []
     context_anchor: dict[str, Any] | None = None
-    for case, case_id in zip(expected_cases, expected_ids):
-        run = indexed.get(case_id)
-        if run is None:
-            case_results.append(
-                _compact_case_result(
-                    case_id,
-                    None,
-                    outcome="missing",
-                    speedup=None,
-                )
-            )
-            failed_cases.append({"case_id": case_id, "outcome": "missing"})
-            continue
-        outcome = _outcome(run)
-        reason: str | None = None
-        if outcome != "success":
+    for shape in expected_shapes:
+        shape_id = shape.case_id
+        run = indexed.get(shape_id)
+        reason: str | None = "missing" if run is None else None
+        outcome = "missing" if run is None else _outcome(run)
+        if run is not None and outcome != "success":
             reason = outcome
-        if reason is None:
+        if run is not None and reason is None:
             reason = _validated_correctness(run, target)
+            workload = run.get("workload")
+            if reason is None and (
+                not isinstance(workload, Mapping)
+                or workload.get("set_id") != workload_set.workload_set_id
+                or workload.get("sha256") != workload_set.sha256
+                or workload.get("shape") != shape.as_dict()
+                or workload.get("variant") != expected_variant.as_dict()
+            ):
+                reason = "workload_mismatch"
 
-        workload = run.get("workload")
-        if reason is None and (
-            not isinstance(workload, dict)
-            or workload.get("set_id") != workload_set.workload_set_id
-            or workload.get("sha256") != workload_set.sha256
-            or workload.get("case") != case.as_dict()
-        ):
-            reason = "workload_mismatch"
-
-        context, context_error = _run_context(run, target=target)
-        if reason is None and context_error is not None:
-            reason = context_error
-        if context is not None:
-            if context_anchor is None:
-                context_anchor = context
-            elif reason is None:
-                reason = _context_mismatch(context_anchor, context)
+            context, context_error = _run_context(run, target=target)
+            if reason is None and context_error is not None:
+                reason = context_error
+            if context is not None:
+                if context_anchor is None:
+                    context_anchor = context
+                elif reason is None:
+                    reason = _context_mismatch(context_anchor, context)
 
         speedup: float | None = None
-        if reason is None:
+        if run is not None and reason is None:
             speedup, reason = _validated_performance(run, target)
-        case_results.append(
-            _compact_case_result(
-                case_id,
+        compact_outcome = reason or outcome
+        shape_results.append(
+            _compact_shape_result(
+                shape_id,
                 run,
-                outcome=reason or outcome,
+                target=target,
+                outcome=compact_outcome,
                 speedup=speedup,
             )
         )
         if reason is not None:
-            failed_cases.append({"case_id": case_id, "outcome": reason})
+            failed_cases.append({"case_id": shape_id, "outcome": reason})
         elif target == "solution" and speedup is not None:
-            speedups[case_id] = speedup
+            speedups.append(speedup)
 
-    for case_id in duplicates:
-        failed_cases.append({"case_id": case_id, "outcome": "duplicate"})
-    for case_id in unexpected:
-        failed_cases.append({"case_id": case_id, "outcome": "unexpected"})
-
+    failed_cases.extend(
+        {"case_id": shape_id, "outcome": "duplicate"} for shape_id in duplicates
+    )
+    failed_cases.extend(
+        {"case_id": shape_id, "outcome": "unexpected"} for shape_id in unexpected
+    )
     complete = not failed_cases and len(indexed) == len(expected_ids)
     created_values = [
         value
         for value in (run.get("created_at") for run in runs)
         if isinstance(value, str) and value
     ]
-    summary: dict[str, Any] = {
-        "schema_version": 1,
+    return {
+        "schema_version": 2,
         "sweep_id": context_anchor.get("sweep_id") if context_anchor else None,
         "created_at": min(created_values) if created_values else None,
         "workload_set_id": workload_set.workload_set_id,
         "workload_sha256": workload_set.sha256,
+        "variant": expected_variant.as_dict(),
         "target": target,
         "source": (
             {
@@ -357,39 +399,17 @@ def summarize_sweep(
         "environment": context_anchor.get("environment") if context_anchor else None,
         "dispatch": _common_dispatch(runs),
         "sweep_outcome": "complete" if complete else "incomplete",
-        "case_results": case_results,
+        "case_results": shape_results,
         "failed_cases": failed_cases,
-        "groups": [],
-        "group_balanced_geomean_speedup": None,
-        "worst_case_speedup": None,
+        "excluded_case_ids": [
+            shape.case_id
+            for shape in workload_set.shapes
+            if shape.case_id not in expected_ids
+        ],
+        "geomean_speedup": _geometric_mean(speedups)
+        if complete and target == "solution"
+        else None,
     }
-    if not complete or target != "solution":
-        return summary
-
-    group_results: list[dict[str, Any]] = []
-    group_values: list[float] = []
-    group_weights: list[float] = []
-    for group in workload_set.groups:
-        if not isinstance(group, WorkloadGroup):
-            raise ContractError("workload_set groups must contain WorkloadGroup values")
-        value = _geometric_mean([speedups[case_id] for case_id in group.case_ids])
-        group_results.append(
-            {
-                "group_id": group.group_id,
-                "display_name": group.display_name,
-                "weight": group.weight,
-                "geomean_speedup": value,
-            }
-        )
-        group_values.append(value)
-        group_weights.append(float(group.weight))
-
-    summary["groups"] = group_results
-    summary["group_balanced_geomean_speedup"] = _geometric_mean(
-        group_values, group_weights
-    )
-    summary["worst_case_speedup"] = min(speedups.values())
-    return summary
 
 
 def _resolve_output_root(request: BenchmarkSweepRequest) -> Path:
@@ -408,18 +428,18 @@ def _validated_sweep_id(value: str | None) -> str:
 
 
 class BenchmarkSweepService:
-    """Run every workload case in its own worker and own the sweep artifacts."""
+    """Run official cases 1 through 13 in isolated workers."""
 
-    def __init__(self, run_case: ManagedBenchmark | None = None) -> None:
-        self._run_case = run_case or run_managed_benchmark
+    def __init__(self, run_shape: ManagedBenchmark | None = None) -> None:
+        self._run_shape = run_shape or run_managed_benchmark
 
     def run(
         self,
         request: BenchmarkSweepRequest,
         *,
         validate_before_persist: SweepValidator | None = None,
-        on_case_started: CaseStarted | None = None,
-        on_case_completed: CaseCompleted | None = None,
+        on_case_started: ShapeStarted | None = None,
+        on_case_completed: ShapeCompleted | None = None,
         cancellation_token: CancellationToken | None = None,
     ) -> BenchmarkSweepResult:
         with device_measurement_lease(
@@ -440,19 +460,20 @@ class BenchmarkSweepService:
         request: BenchmarkSweepRequest,
         *,
         validate_before_persist: SweepValidator | None,
-        on_case_started: CaseStarted | None,
-        on_case_completed: CaseCompleted | None,
+        on_case_started: ShapeStarted | None,
+        on_case_completed: ShapeCompleted | None,
         cancellation_token: CancellationToken | None,
     ) -> BenchmarkSweepResult:
         if request.target not in {"baseline", "solution"}:
             raise ContractError(f"unsupported sweep target: {request.target}")
-        if request.target == "baseline" and request.solution_policy is not None:
-            solution_policy = None
-        else:
-            solution_policy = request.solution_policy
+        solution_policy = (
+            None if request.target == "baseline" else request.solution_policy
+        )
+        request.variant.validate()
 
         project_root = request.project_root.resolve()
         workload_set = load_workload_set(project_root, request.workload_set_id)
+        shapes = local_benchmark_shapes(workload_set.shapes)
         sweep_id = _validated_sweep_id(request.sweep_id)
         sweep_directory = _resolve_output_root(request) / sweep_id
         if sweep_directory.exists():
@@ -463,20 +484,21 @@ class BenchmarkSweepService:
         run_paths: list[Path] = []
         cancelled = False
 
-        total = len(workload_set.cases)
-        for index, case in enumerate(workload_set.cases, start=1):
+        total = len(shapes)
+        for index, shape in enumerate(shapes, start=1):
             if cancellation_token is not None and cancellation_token.is_cancelled:
                 cancelled = True
                 break
             if on_case_started is not None:
-                on_case_started(index, total, case)
+                on_case_started(index, total, shape)
             if cancellation_token is not None and cancellation_token.is_cancelled:
                 cancelled = True
                 break
-            run, run_path = self._run_case(
+            run, run_path = self._run_shape(
                 project_root,
                 workload_set_id=request.workload_set_id,
-                case=case,
+                shape=shape,
+                variant=request.variant,
                 protocol=request.protocol,
                 device=request.device,
                 target=request.target,
@@ -503,6 +525,7 @@ class BenchmarkSweepService:
             workload_set,
             runs,
             target=request.target,
+            variant=request.variant,
         )
         summary["sweep_id"] = sweep_id
         summary["created_at"] = started_at

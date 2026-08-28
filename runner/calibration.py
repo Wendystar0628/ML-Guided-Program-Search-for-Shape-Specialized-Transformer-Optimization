@@ -20,14 +20,20 @@ from project_identity import solution_implementation_hash
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
+    WorkloadSet,
     load_workload_set,
     new_run_id,
-    select_workload_case,
+    select_transformer_shape,
     utc_now,
 )
 from runner.hardware_router import build_routing_plan
 from runner.locking import device_measurement_lease
+from runner.resource_guard import (
+    ensure_local_benchmark_allowed,
+    local_benchmark_shapes,
+)
 from runner.route_promotion import (
     auto_promote_calibration,
     find_matching_verified_route,
@@ -38,7 +44,7 @@ from runner.supervisor import CancellationToken, run_managed_probe
 from runner.tuning import (
     align_shared_smoke_plans,
     build_formal_candidate_plans,
-    candidates_for_case,
+    candidates_for_shape,
     deployable_candidate_id_for_policy,
     is_deployable_candidate,
     run_tuning_case,
@@ -55,6 +61,7 @@ class CalibrationRequest:
 
     project_root: Path
     workload_set_id: str
+    variant: RunVariant = field(default_factory=RunVariant)
     case_ids: tuple[str, ...] = ()
     device: str = "cuda:0"
     preset: str = "smoke"
@@ -183,10 +190,7 @@ class _CalibrationCheckpoint:
         solution_sha256: str | None,
     ) -> None:
         self.path = (
-            project_root.resolve()
-            / "results"
-            / "calibration"
-            / f"{session_id}.json"
+            project_root.resolve() / "results" / "calibration" / f"{session_id}.json"
         )
         if self.path.exists():
             raise ContractError(f"calibration session already exists: {session_id}")
@@ -425,6 +429,20 @@ class CalibrationService:
         self._validate_request(request)
         if len(request.case_ids) != len(set(request.case_ids)):
             raise ContractError("calibration case_ids must not contain duplicates")
+        workload_set = load_workload_set(
+            request.project_root,
+            request.workload_set_id,
+        )
+        shapes = (
+            tuple(
+                select_transformer_shape(workload_set, case_id)
+                for case_id in request.case_ids
+            )
+            if request.case_ids
+            else local_benchmark_shapes(workload_set.shapes)
+        )
+        for shape in shapes:
+            ensure_local_benchmark_allowed(shape)
         session_id = request.session_id or new_run_id()
         token = cancellation_token or CancellationToken()
         solution_root = request.project_root / "solution"
@@ -452,6 +470,8 @@ class CalibrationService:
             ):
                 result = self._run(
                     request,
+                    workload_set=workload_set,
+                    shapes=shapes,
                     on_event=emit_with_session,
                     cancellation_token=token,
                     checkpoint=checkpoint,
@@ -480,25 +500,15 @@ class CalibrationService:
         self,
         request: CalibrationRequest,
         *,
+        workload_set: WorkloadSet,
+        shapes: tuple[TransformerShape, ...],
         on_event: ProgressCallback | None,
         cancellation_token: CancellationToken,
         checkpoint: _CalibrationCheckpoint,
     ) -> CalibrationResult:
-        self._validate_request(request)
-        workload_set = load_workload_set(
-            request.project_root,
-            request.workload_set_id,
-        )
-        cases = (
-            [
-                select_workload_case(workload_set, case_id)
-                for case_id in request.case_ids
-            ]
-            if request.case_ids
-            else list(workload_set.cases)
-        )
-        case_ids = tuple(case.case_id for case in cases)
-        full_case_ids = [case.case_id for case in workload_set.cases]
+        case_ids = tuple(shape.case_id for shape in shapes)
+        local_shapes = local_benchmark_shapes(workload_set.shapes)
+        full_case_ids = [shape.case_id for shape in local_shapes]
         checkpoint.configure(
             workload_sha256=workload_set.sha256,
             case_ids=case_ids,
@@ -547,31 +557,38 @@ class CalibrationService:
             raise ContractError("formal calibration deployment requires a CUDA device")
 
         incumbents = [
-            self._incumbent_candidate_id(case, hardware_profile, existing_route)
-            for case in cases
+            self._incumbent_candidate_id(
+                shape,
+                request.variant,
+                hardware_profile,
+                existing_route,
+            )
+            for shape in shapes
         ]
         smoke_plans = [
-            self._routing_plan_for_case(
-                case,
+            self._routing_plan_for_shape(
+                shape,
+                request.variant,
                 hardware_profile,
                 request.candidate_limit,
                 incumbent_candidate_id=incumbent,
             )
-            for case, incumbent in zip(cases, incumbents, strict=True)
+            for shape, incumbent in zip(shapes, incumbents, strict=True)
         ]
         smoke_plans = list(
             align_shared_smoke_plans(
-                cases,
+                shapes,
+                request.variant,
                 smoke_plans,
                 incumbents,
                 candidate_limit=request.candidate_limit,
             )
         )
-        for case, plan in zip(cases, smoke_plans, strict=True):
+        for shape, plan in zip(shapes, smoke_plans, strict=True):
             self._emit(
                 on_event,
                 "routing_plan_ready",
-                case_id=case.case_id,
+                case_id=shape.case_id,
                 plan=plan,
             )
 
@@ -604,7 +621,8 @@ class CalibrationService:
             try:
                 validate_selected_route_groups(
                     list(case_ids),
-                    workload_set.cases,
+                    local_shapes,
+                    request.variant,
                 )
             except ValueError as exc:
                 raise ContractError(str(exc)) from exc
@@ -622,7 +640,8 @@ class CalibrationService:
         )
         smoke_summaries = self._run_stage(
             request,
-            cases,
+            shapes,
+            request.variant,
             smoke_plans,
             workload_set.sha256,
             hardware_profile,
@@ -662,7 +681,12 @@ class CalibrationService:
         checkpoint.enter("formal_selection")
         try:
             formal_plans = list(
-                build_formal_candidate_plans(cases, smoke_summaries, incumbents)
+                build_formal_candidate_plans(
+                    shapes,
+                    request.variant,
+                    smoke_summaries,
+                    incumbents,
+                )
             )
         except ContractError as exc:
             message = str(exc)
@@ -693,7 +717,7 @@ class CalibrationService:
         self._emit(
             on_event,
             "formal_plans_ready",
-            cases=cases,
+            shapes=shapes,
             plans=formal_plans,
         )
         formal_protocol = MeasurementProtocol.for_preset(
@@ -704,7 +728,8 @@ class CalibrationService:
         )
         formal_summaries = self._run_stage(
             request,
-            cases,
+            shapes,
+            request.variant,
             formal_plans,
             workload_set.sha256,
             hardware_profile,
@@ -768,7 +793,7 @@ class CalibrationService:
                 request.project_root,
                 formal_summaries,
                 probe_result=probe_context.raw_result,
-                full_workload_case_ids=full_case_ids,
+                full_workload_shape_ids=full_case_ids,
             )
         except (ContractError, OSError) as exc:
             message = str(exc)
@@ -794,7 +819,7 @@ class CalibrationService:
         self._emit(
             on_event,
             "promotion_completed",
-            cases=cases,
+            shapes=shapes,
             winners=winners,
             route_path=route_path,
             route_action=route_action,
@@ -811,15 +836,16 @@ class CalibrationService:
 
     @staticmethod
     def _validate_request(request: CalibrationRequest) -> None:
+        if not isinstance(request.variant, RunVariant):
+            raise ContractError("calibration variant must be a RunVariant")
+        request.variant.validate()
         if request.preset not in {"smoke", "formal"}:
             raise ContractError(f"unsupported calibration preset: {request.preset}")
         if request.candidate_limit <= 0:
             raise ContractError("candidate-limit must be positive")
         if request.session_id is not None:
             allowed = set(
-                "abcdefghijklmnopqrstuvwxyz"
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                "0123456789._-"
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
             )
             if (
                 not request.session_id
@@ -887,7 +913,8 @@ class CalibrationService:
 
     def _incumbent_candidate_id(
         self,
-        case: WorkloadCase,
+        shape: TransformerShape,
+        variant: RunVariant,
         hardware_profile: Mapping[str, Any],
         route_path: Path | None,
     ) -> str | None:
@@ -895,9 +922,9 @@ class CalibrationService:
             return None
         table = load_route_table(route_path)
         key = make_route_key(
-            case,
-            shape=(case.batch_size, case.seq_len, case.d_model),
-            dtype=case.dtype,
+            shape,
+            shape=(shape.batch_size, shape.seq_len, shape.d_model),
+            dtype=variant.dtype,
             device_type=str(hardware_profile["device_type"]),
             device_name=str(hardware_profile["device_name"]),
             compute_capability=str(hardware_profile["compute_capability"]),
@@ -909,17 +936,22 @@ class CalibrationService:
         resolution = resolve_route_result(table, key)
         if resolution.origin != "calibrated":
             return None
-        candidate_id = deployable_candidate_id_for_policy(case, resolution.policy)
+        candidate_id = deployable_candidate_id_for_policy(
+            shape,
+            variant,
+            resolution.policy,
+        )
         if candidate_id is None:
             raise ContractError(
-                f"current route {resolution.policy!r} for {case.case_id} has no "
+                f"current route {resolution.policy!r} for {shape.case_id} has no "
                 "deployable calibration candidate"
             )
         return candidate_id
 
-    def _routing_plan_for_case(
+    def _routing_plan_for_shape(
         self,
-        case: WorkloadCase,
+        shape: TransformerShape,
+        variant: RunVariant,
         hardware_profile: Mapping[str, Any],
         candidate_limit: int,
         *,
@@ -927,7 +959,7 @@ class CalibrationService:
     ) -> dict[str, Any]:
         applicable = tuple(
             item.candidate_id
-            for item in candidates_for_case(case)
+            for item in candidates_for_shape(shape, variant)
             if is_deployable_candidate(item)
         )
         try:
@@ -935,7 +967,8 @@ class CalibrationService:
             if incumbent_candidate_id is not None:
                 options["required_candidate_ids"] = (incumbent_candidate_id,)
             raw_plan = self._dependencies.build_plan(
-                case,
+                shape,
+                variant,
                 hardware_profile,
                 applicable,
                 limit=candidate_limit,
@@ -943,10 +976,10 @@ class CalibrationService:
             )
         except (TypeError, ValueError) as exc:
             raise ContractError(
-                f"unable to build routing plan for {case.case_id}: {exc}"
+                f"unable to build routing plan for {shape.case_id}: {exc}"
             ) from exc
         if not isinstance(raw_plan, Mapping):
-            raise ContractError(f"routing plan for {case.case_id} must be an object")
+            raise ContractError(f"routing plan for {shape.case_id} must be an object")
         raw_order = raw_plan.get("candidate_order")
         if (
             not isinstance(raw_order, Sequence)
@@ -955,25 +988,25 @@ class CalibrationService:
             or any(not isinstance(value, str) for value in raw_order)
         ):
             raise ContractError(
-                f"routing plan for {case.case_id} has no valid candidate order"
+                f"routing plan for {shape.case_id} has no valid candidate order"
             )
         candidate_order = list(raw_order)
         if len(candidate_order) > candidate_limit:
             raise ContractError(
-                f"routing plan for {case.case_id} exceeds candidate-limit"
+                f"routing plan for {shape.case_id} exceeds candidate-limit"
             )
         if "eager-auto" in applicable and "eager-auto" not in candidate_order:
             raise ContractError(
-                f"routing plan for {case.case_id} must retain eager-auto"
+                f"routing plan for {shape.case_id} must retain eager-auto"
             )
         if (
             incumbent_candidate_id is not None
             and incumbent_candidate_id not in candidate_order
         ):
             raise ContractError(
-                f"routing plan for {case.case_id} must retain the current incumbent"
+                f"routing plan for {shape.case_id} must retain the current incumbent"
             )
-        select_candidates(case, candidate_order)
+        select_candidates(shape, variant, candidate_order)
         plan = dict(raw_plan)
         plan["candidate_order"] = candidate_order
         plan["decision_scope"] = "candidate_order_only"
@@ -983,7 +1016,8 @@ class CalibrationService:
     def _run_stage(
         self,
         request: CalibrationRequest,
-        cases: list[WorkloadCase],
+        shapes: list[TransformerShape],
+        variant: RunVariant,
         plans: list[Mapping[str, Any]],
         workload_sha256: str,
         hardware_profile: Mapping[str, Any],
@@ -996,22 +1030,23 @@ class CalibrationService:
         checkpoint.enter(stage)
         self._emit(on_event, "stage_started", stage=stage)
         summaries: list[dict[str, Any]] = []
-        for case, plan in zip(cases, plans, strict=True):
+        for shape, plan in zip(shapes, plans, strict=True):
             if cancellation_token.is_cancelled:
-                checkpoint.enter(stage, case.case_id)
+                checkpoint.enter(stage, shape.case_id)
                 self._emit(
                     on_event,
                     "cancellation_observed",
-                    case_id=case.case_id,
+                    case_id=shape.case_id,
                     stage=stage,
                 )
                 break
-            checkpoint.enter(stage, case.case_id)
+            checkpoint.enter(stage, shape.case_id)
             summary = self._dependencies.run_tuning(
                 request.project_root,
                 workload_set_id=request.workload_set_id,
                 workload_sha256=workload_sha256,
-                case=case,
+                shape=shape,
+                variant=variant,
                 base_protocol=protocol,
                 device=request.device,
                 requested_candidates=plan["candidate_order"],
@@ -1024,7 +1059,7 @@ class CalibrationService:
             self._emit(
                 on_event,
                 "tuning_completed",
-                case_id=case.case_id,
+                case_id=shape.case_id,
                 stage=stage,
                 summary=summary,
             )

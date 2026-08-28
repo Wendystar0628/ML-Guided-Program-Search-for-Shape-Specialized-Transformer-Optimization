@@ -17,7 +17,8 @@ import psutil
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
     atomic_write_json,
     load_json,
     new_run_id,
@@ -357,6 +358,8 @@ def _success_contract_error(result: dict[str, Any]) -> str | None:
             return "missing Solution source identity"
         if not isinstance(result.get("execution_path"), dict):
             return "missing compact execution path"
+        if not isinstance(result.get("actual_policy"), str):
+            return "missing actual policy"
 
     if run_kind == "benchmark":
         performance = result.get("performance")
@@ -423,21 +426,38 @@ def _enforce_success_contract(result: dict[str, Any]) -> None:
 
 def _workload_record(
     workload_set_id: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     workload_sha256: str | None,
 ) -> dict[str, Any]:
     return {
         "set_id": workload_set_id,
         "sha256": workload_sha256,
-        "case": case.as_dict(),
+        "shape": shape.as_dict(),
+        "variant": variant.as_dict(),
     }
+
+
+def _actual_policy(
+    execution_path: dict[str, Any],
+    *,
+    target: str,
+) -> str:
+    if target == "baseline":
+        return "official-baseline"
+    for field_name in ("actual_policy", "selected_policy", "dispatch_policy"):
+        value = execution_path.get(field_name)
+        if isinstance(value, str) and value:
+            return value
+    return "unreported"
 
 
 def run_managed_benchmark(
     project_root: Path,
     *,
     workload_set_id: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: str,
     target: str = "solution",
@@ -457,7 +477,8 @@ def run_managed_benchmark(
         return _run_managed_benchmark(
             project_root,
             workload_set_id=workload_set_id,
-            case=case,
+            shape=shape,
+            variant=variant,
             protocol=protocol,
             device=device,
             target=target,
@@ -475,7 +496,8 @@ def _run_managed_benchmark(
     project_root: Path,
     *,
     workload_set_id: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: str,
     target: str = "solution",
@@ -494,7 +516,8 @@ def _run_managed_benchmark(
     request = {
         "run_kind": "benchmark",
         "project_root": str(project_root),
-        "case": case.as_dict(),
+        "shape": shape.as_dict(),
+        "variant": variant.as_dict(),
         "protocol": protocol.as_dict(),
         "device": device,
         "target": target,
@@ -507,11 +530,11 @@ def _run_managed_benchmark(
         protocol.timeout_seconds,
         cancellation_token=cancellation_token,
     )
-    source = {"official_sha256": snapshot["sha256"]}
+    source = {"official_sha256": snapshot["combined_sha256"]}
     if response.get("solution_source_sha256") is not None:
         source["solution_sha256"] = response["solution_source_sha256"]
     result: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": run_id,
     }
     if sweep_id is not None:
@@ -530,7 +553,12 @@ def _run_managed_benchmark(
             "target": target,
             "requested_device": device,
             "outcome": response["outcome"],
-            "workload": _workload_record(workload_set_id, case, workload_sha256),
+            "workload": _workload_record(
+                workload_set_id,
+                shape,
+                variant,
+                workload_sha256,
+            ),
             "source": source,
         }
     )
@@ -544,6 +572,10 @@ def _run_managed_benchmark(
     execution_path = response.get("execution_path")
     if isinstance(execution_path, dict):
         result["execution_path"] = execution_path
+        result["actual_policy"] = _actual_policy(
+            execution_path,
+            target=target,
+        )
     environment = response.get("environment")
     if isinstance(environment, dict):
         result["environment"] = environment
@@ -559,7 +591,8 @@ def run_managed_profile(
     project_root: Path,
     *,
     workload_set_id: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: str,
     target: str,
@@ -575,7 +608,8 @@ def run_managed_profile(
         return _run_managed_profile(
             project_root,
             workload_set_id=workload_set_id,
-            case=case,
+            shape=shape,
+            variant=variant,
             protocol=protocol,
             device=device,
             target=target,
@@ -589,7 +623,8 @@ def _run_managed_profile(
     project_root: Path,
     *,
     workload_set_id: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: str,
     target: str,
@@ -604,7 +639,8 @@ def _run_managed_profile(
     request = {
         "run_kind": "profile",
         "project_root": str(project_root),
-        "case": case.as_dict(),
+        "shape": shape.as_dict(),
+        "variant": variant.as_dict(),
         "protocol": protocol.as_dict(),
         "device": device,
         "target": target,
@@ -617,18 +653,23 @@ def _run_managed_profile(
         protocol.timeout_seconds,
         cancellation_token=cancellation_token,
     )
-    source = {"official_sha256": snapshot["sha256"]}
+    source = {"official_sha256": snapshot["combined_sha256"]}
     if response.get("solution_source_sha256") is not None:
         source["solution_sha256"] = response["solution_source_sha256"]
     result: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": run_id,
         "created_at": created_at,
         "run_kind": "profile",
         "target": target,
         "requested_device": device,
         "outcome": response["outcome"],
-        "workload": _workload_record(workload_set_id, case, workload_sha256),
+        "workload": _workload_record(
+            workload_set_id,
+            shape,
+            variant,
+            workload_sha256,
+        ),
         "source": source,
     }
     correctness = compact_correctness(response.get("correctness"))
@@ -641,6 +682,10 @@ def _run_managed_profile(
     execution_path = response.get("execution_path")
     if isinstance(execution_path, dict):
         result["execution_path"] = execution_path
+        result["actual_policy"] = _actual_policy(
+            execution_path,
+            target=target,
+        )
     environment = response.get("environment")
     if isinstance(environment, dict):
         result["environment"] = environment
@@ -716,7 +761,7 @@ def _run_managed_probe(
         cancellation_token=cancellation_token,
     )
     result: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": run_id,
         "created_at": created_at,
         "run_kind": "probe",

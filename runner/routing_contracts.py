@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from runner.contracts import RunVariant, TransformerShape
 from solution.dispatch import (
     ROUTE_FIELDS,
     WORKLOAD_ROUTE_FIELDS,
@@ -163,15 +164,15 @@ def hardware_identity_from_runtime(
 
 
 def exact_route_key(
-    case: object,
+    shape: TransformerShape,
+    variant: RunVariant,
     identity: HardwareIdentity,
 ) -> dict[str, object]:
     """Build the one exact route key shared by promotion and verification."""
 
-    dtype = case.get("dtype") if isinstance(case, Mapping) else case.dtype
     key = make_route_key(
-        case,
-        dtype=dtype,
+        shape,
+        dtype=variant.dtype,
         **identity.as_make_route_key_kwargs(),
     )
     if set(key) != ROUTE_FIELDS:
@@ -183,10 +184,13 @@ def exact_route_key(
     return key
 
 
-def workload_route_identity(case: object) -> tuple[tuple[str, object], ...]:
+def workload_route_identity(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> tuple[tuple[str, object], ...]:
     """Return the runtime-visible workload identity, excluding case metadata."""
 
-    key = make_workload_route_key(case)
+    key = make_workload_route_key(shape, dtype=variant.dtype)
     return tuple((field, key[field]) for field in WORKLOAD_ROUTE_FIELDS)
 
 
@@ -194,28 +198,37 @@ def route_match_from_summary(summary: Mapping[str, Any]) -> dict[str, object]:
     """Build one exact dispatch match from a validated tuning summary."""
 
     workload = summary.get("workload")
-    case = workload.get("case") if isinstance(workload, Mapping) else None
-    if not isinstance(case, Mapping):
-        raise TypeError("tuning summary workload is missing its case object")
+    shape_payload = workload.get("shape") if isinstance(workload, Mapping) else None
+    variant_payload = workload.get("variant") if isinstance(workload, Mapping) else None
+    if not isinstance(shape_payload, dict):
+        raise TypeError("tuning summary workload is missing its shape object")
+    if not isinstance(variant_payload, dict):
+        raise TypeError("tuning summary workload is missing its run variant")
+    shape = TransformerShape.from_dict(shape_payload)
+    variant = RunVariant.from_dict(variant_payload)
     profile = summary.get("device_profile")
     if not isinstance(profile, Mapping):
         raise TypeError("tuning summary is missing device_profile")
-    return exact_route_key(case, hardware_identity_from_flat_profile(profile))
+    return exact_route_key(
+        shape,
+        variant,
+        hardware_identity_from_flat_profile(profile),
+    )
 
 
-def shared_route_groups(cases: Sequence[object]) -> tuple[frozenset[str], ...]:
-    """Derive case groups that collapse to the same runtime route key."""
+def shared_route_groups(
+    shapes: Sequence[TransformerShape],
+    variant: RunVariant,
+) -> tuple[frozenset[str], ...]:
+    """Derive shape groups that collapse to the same runtime route key."""
 
     groups: dict[tuple[tuple[str, object], ...], set[str]] = {}
-    for case in cases:
-        case_id = (
-            case.get("case_id")
-            if isinstance(case, Mapping)
-            else getattr(case, "case_id", None)
+    for shape in shapes:
+        if not isinstance(shape, TransformerShape):
+            raise TypeError("shapes must contain TransformerShape values")
+        groups.setdefault(workload_route_identity(shape, variant), set()).add(
+            shape.case_id
         )
-        if not isinstance(case_id, str) or not case_id:
-            raise ValueError("workload case is missing case_id")
-        groups.setdefault(workload_route_identity(case), set()).add(case_id)
     return tuple(
         frozenset(case_ids) for case_ids in groups.values() if len(case_ids) > 1
     )
@@ -223,12 +236,13 @@ def shared_route_groups(cases: Sequence[object]) -> tuple[frozenset[str], ...]:
 
 def validate_selected_route_groups(
     selected_case_ids: Sequence[str],
-    all_cases: Sequence[object],
+    all_shapes: Sequence[TransformerShape],
+    variant: RunVariant,
 ) -> None:
     """Reject a selection that proves only part of one shared runtime route."""
 
     selected = set(selected_case_ids)
-    for required_group in shared_route_groups(all_cases):
+    for required_group in shared_route_groups(all_shapes, variant):
         if selected & required_group and not required_group <= selected:
             missing = ", ".join(sorted(required_group - selected))
             required = ", ".join(sorted(required_group))

@@ -1,26 +1,30 @@
 {
-  "schema_version": 1,
-  "sweep_id": "20260827T163151.788901Z-2d999b07",
-  "created_at": "2026-08-27T16:31:51.789401+00:00",
-  "workload_set_id": "transformer_core_v1",
-  "workload_sha256": "f6a9d6265d53f198a041da687a928aedf524da9eb481b1e9a269242cd2cdec5f",
+  "schema_version": 2,
+  "sweep_id": "20260828T044045.539151Z-bc8bc104",
+  "created_at": "2026-08-28T04:40:45.539651+00:00",
+  "workload_set_id": "official_transformer_v1",
+  "workload_sha256": "621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9",
+  "variant": {
+    "dtype": "float32",
+    "padding_ratio": 0.0,
+    "input_scale": 1.0
+  },
   "target": "solution",
   "source": {
-    "official_sha256": "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b",
-    "solution_sha256": "ec75008438f2d592d136c84bacd26fe8e8e8b4a6982c0b0ff01373f6718b0050"
+    "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
+    "solution_sha256": "fd7ce10b12c06c9101f92995cea567d7169c6fdb5a1c9e6f0dd28b98093298bf"
   },
   "protocol": {
     "preset": "formal",
     "seed": 1234,
     "accuracy_trials": 5,
-    "rtol": 0.01,
-    "atol": 0.001,
+    "rtol": 0.02,
+    "atol": 0.002,
     "warmup": 20,
     "repeats": 100,
     "rounds": 3,
     "compile_baseline": false,
     "compile_solution": false,
-    "cuda_graph_solution": false,
     "compile_mode": "default",
     "matmul_precision": "high",
     "allow_tf32": true,
@@ -38,152 +42,300 @@
   },
   "dispatch": {
     "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
-    "sha256": "bfe68b2c29872fb41eb4a33fc8cf0dea956f0a0d8086c89e80fd4e3c49e37822"
+    "sha256": "c48bc3db5ce27ea212dec3aabf16143fd06e8a455b1320c2f598b03578cd1f70"
   },
   "sweep_outcome": "complete",
   "case_results": [
     {
-      "case_id": "launch_s64_fp16",
+      "case_id": "official_01",
       "outcome": "success",
-      "run_id": "20260827T163151.790402Z-5cbedfee",
-      "baseline_median_ms": 1.7038879990577698,
-      "target_median_ms": 0.13414399325847626,
-      "speedup": 12.701932883231095,
-      "dispatch_policy": "cuda-graph",
-      "selected_policy": "cuda-graph",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 1.6361759901046753,
+        "p90_ms": 4.525516796112061
+      },
+      "solution": {
+        "median_ms": 0.6763520240783691,
+        "p90_ms": 0.7352319955825806
+      },
+      "speedup": 2.4191189378551945,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.001018613576889038,
+        "max_relative_error": 349.0494384765625
+      },
+      "actual_policy": "graph",
+      "failure": null
     },
     {
-      "case_id": "balanced_s128_fp32",
+      "case_id": "official_02",
       "outcome": "success",
-      "run_id": "20260827T163155.629605Z-8464fbf5",
-      "baseline_median_ms": 5.71345591545105,
-      "target_median_ms": 3.1620320081710815,
-      "speedup": 1.8068937634681665,
-      "dispatch_policy": "auto",
-      "selected_policy": "auto",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 1.767520010471344,
+        "p90_ms": 4.45032000541687
+      },
+      "solution": {
+        "median_ms": 0.16076800227165222,
+        "p90_ms": 0.16076800227165222
+      },
+      "speedup": 10.994227616791168,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0006857216358184814,
+        "max_relative_error": 9.548253059387207
+      },
+      "actual_policy": "graph",
+      "failure": null
     },
     {
-      "case_id": "balanced_s128_fp16",
+      "case_id": "official_03",
       "outcome": "success",
-      "run_id": "20260827T163201.215498Z-c796da73",
-      "baseline_median_ms": 6.021791934967041,
-      "target_median_ms": 0.8775680065155029,
-      "speedup": 6.86190915149396,
-      "dispatch_policy": "balanced-cuda-graph",
-      "selected_policy": "balanced-cuda-graph",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 1.8625440001487732,
+        "p90_ms": 4.439164686203003
+      },
+      "solution": {
+        "median_ms": 0.16896000504493713,
+        "p90_ms": 0.16998399794101715
+      },
+      "speedup": 11.023579217184594,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0009073615074157715,
+        "max_relative_error": 35.539493560791016
+      },
+      "actual_policy": "graph",
+      "failure": null
     },
     {
-      "case_id": "attention_s2048_fp16",
+      "case_id": "official_04",
       "outcome": "success",
-      "run_id": "20260827T163206.135958Z-ca86ebc7",
-      "baseline_median_ms": 9.586688041687012,
-      "target_median_ms": 5.382191896438599,
-      "speedup": 1.7811865920333558,
-      "dispatch_policy": "long-tail-online",
-      "selected_policy": "long-tail-online",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 1.6946880221366882,
+        "p90_ms": 5.081814193725586
+      },
+      "solution": {
+        "median_ms": 0.2734079957008362,
+        "p90_ms": 0.2755584090948105
+      },
+      "speedup": 6.198385009892032,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0009307265281677246,
+        "max_relative_error": 349.0494384765625
+      },
+      "actual_policy": "graph",
+      "failure": null
     },
     {
-      "case_id": "attention_s2048_causal_fp16",
+      "case_id": "official_05",
       "outcome": "success",
-      "run_id": "20260827T163214.192423Z-1336d7b2",
-      "baseline_median_ms": 11.453951835632324,
-      "target_median_ms": 5.356543779373169,
-      "speedup": 2.138310131943453,
-      "dispatch_policy": "long-tail-online",
-      "selected_policy": "long-tail-online",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 4.138944149017334,
+        "p90_ms": 4.525945615768433
+      },
+      "solution": {
+        "median_ms": 1.235967993736267,
+        "p90_ms": 1.2421120405197144
+      },
+      "speedup": 3.34874703066179,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0011766254901885986,
+        "max_relative_error": 349.0494384765625
+      },
+      "actual_policy": "graph",
+      "failure": null
     },
     {
-      "case_id": "mask_s512_full_fp16",
+      "case_id": "official_06",
       "outcome": "success",
-      "run_id": "20260827T163222.929223Z-59289863",
-      "baseline_median_ms": 5.059072017669678,
-      "target_median_ms": 2.801664113998413,
-      "speedup": 1.8057382369257642,
-      "dispatch_policy": "s512-native-softmax",
-      "selected_policy": "s512-native-softmax",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 446.5157165527344,
+        "p90_ms": 447.49126586914065
+      },
+      "solution": {
+        "median_ms": 131.30035400390625,
+        "p90_ms": 131.83004302978514
+      },
+      "speedup": 3.400719822426757,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0013269931077957153,
+        "max_relative_error": 258616528.0
+      },
+      "actual_policy": "auto",
+      "failure": null
     },
     {
-      "case_id": "mask_s512_padding_fp16",
+      "case_id": "official_07",
       "outcome": "success",
-      "run_id": "20260827T163228.762270Z-c8f3704d",
-      "baseline_median_ms": 5.160959959030151,
-      "target_median_ms": 2.7996160984039307,
-      "speedup": 1.8434527369564813,
-      "dispatch_policy": "s512-native-softmax",
-      "selected_policy": "s512-native-softmax",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 1.6671199798583984,
+        "p90_ms": 2.0548863649368285
+      },
+      "solution": {
+        "median_ms": 0.506879985332489,
+        "p90_ms": 0.7384064197540284
+      },
+      "speedup": 3.288983641294985,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.001344442367553711,
+        "max_relative_error": 1193.36181640625
+      },
+      "actual_policy": "graph",
+      "failure": null
     },
     {
-      "case_id": "mask_s512_causal_padding_fp16",
+      "case_id": "official_08",
       "outcome": "success",
-      "run_id": "20260827T163234.572585Z-6ff14cfd",
-      "baseline_median_ms": 5.493247985839844,
-      "target_median_ms": 2.8037118911743164,
-      "speedup": 1.959276915410532,
-      "dispatch_policy": "s512-native-softmax",
-      "selected_policy": "s512-native-softmax",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 13.207039833068848,
+        "p90_ms": 13.427712440490723
+      },
+      "solution": {
+        "median_ms": 11.771967887878418,
+        "p90_ms": 11.996261978149413
+      },
+      "speedup": 1.121905866449748,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0010819435119628906,
+        "max_relative_error": 14516.63671875
+      },
+      "actual_policy": "auto",
+      "failure": null
     },
     {
-      "case_id": "wide_s256_bf16",
+      "case_id": "official_09",
       "outcome": "success",
-      "run_id": "20260827T163240.537833Z-bed0883c",
-      "baseline_median_ms": 10.764288425445557,
-      "target_median_ms": 10.18726396560669,
-      "speedup": 1.056641750109447,
-      "dispatch_policy": "wide-triton-inplace",
-      "selected_policy": "wide-triton-inplace",
-      "route_origin": "calibrated",
-      "policy_applied": true
+      "baseline": {
+        "median_ms": 1.4580959677696228,
+        "p90_ms": 3.881942415237427
+      },
+      "solution": {
+        "median_ms": 0.6021119952201843,
+        "p90_ms": 0.6574079990386963
+      },
+      "speedup": 2.421635807531814,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.001196831464767456,
+        "max_relative_error": 200.35043334960938
+      },
+      "actual_policy": "graph",
+      "failure": null
+    },
+    {
+      "case_id": "official_10",
+      "outcome": "success",
+      "baseline": {
+        "median_ms": 1.674784004688263,
+        "p90_ms": 4.453801441192628
+      },
+      "solution": {
+        "median_ms": 0.6133760213851929,
+        "p90_ms": 0.6686720252037048
+      },
+      "speedup": 2.7304360560200616,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0010130703449249268,
+        "max_relative_error": 168.7611846923828
+      },
+      "actual_policy": "graph",
+      "failure": null
+    },
+    {
+      "case_id": "official_11",
+      "outcome": "success",
+      "baseline": {
+        "median_ms": 7.136768102645874,
+        "p90_ms": 7.3575423717498785
+      },
+      "solution": {
+        "median_ms": 1.6888480186462402,
+        "p90_ms": 2.057638382911682
+      },
+      "speedup": 4.225820218190278,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0011588335037231445,
+        "max_relative_error": 117.79923248291016
+      },
+      "actual_policy": "auto",
+      "failure": null
+    },
+    {
+      "case_id": "official_12",
+      "outcome": "success",
+      "baseline": {
+        "median_ms": 1.7233440279960632,
+        "p90_ms": 4.484502553939819
+      },
+      "solution": {
+        "median_ms": 0.24780799448490143,
+        "p90_ms": 0.24883200228214264
+      },
+      "speedup": 6.954352023945959,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0010500550270080566,
+        "max_relative_error": 349.0494384765625
+      },
+      "actual_policy": "graph",
+      "failure": null
+    },
+    {
+      "case_id": "official_13",
+      "outcome": "success",
+      "baseline": {
+        "median_ms": 108.5486068725586,
+        "p90_ms": 114.529793548584
+      },
+      "solution": {
+        "median_ms": 13.429248332977295,
+        "p90_ms": 13.971046447753906
+      },
+      "speedup": 8.082999448748232,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 5,
+        "failed_elements": 0,
+        "max_abs_error": 0.0009801238775253296,
+        "max_relative_error": 2109.733642578125
+      },
+      "actual_policy": "inplace-block",
+      "failure": null
     }
   ],
   "failed_cases": [],
-  "groups": [
-    {
-      "group_id": "launch_graph",
-      "display_name": "Launch / Graph",
-      "weight": 0.2,
-      "geomean_speedup": 12.701932883231096
-    },
-    {
-      "group_id": "balanced_precision",
-      "display_name": "Balanced / Precision",
-      "weight": 0.2,
-      "geomean_speedup": 3.52118458069434
-    },
-    {
-      "group_id": "long_attention",
-      "display_name": "Long Attention",
-      "weight": 0.2,
-      "geomean_speedup": 1.9515966121682922
-    },
-    {
-      "group_id": "padding_mask",
-      "display_name": "Padding / Mask",
-      "weight": 0.2,
-      "geomean_speedup": 1.8683613493805922
-    },
-    {
-      "group_id": "wide_gemm_ffn",
-      "display_name": "Wide GEMM / FFN",
-      "weight": 0.2,
-      "geomean_speedup": 1.056641750109447
-    }
+  "excluded_case_ids": [
+    "official_14"
   ],
-  "group_balanced_geomean_speedup": 2.8007056036041584,
-  "worst_case_speedup": 1.056641750109447
+  "geomean_speedup": 4.1827283093031555
 }

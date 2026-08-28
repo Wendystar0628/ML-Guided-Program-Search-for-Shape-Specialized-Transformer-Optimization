@@ -1,175 +1,163 @@
-"""Tests for the thin command-line adapter."""
-
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from runner import __main__ as runner_cli
-from runner.contracts import MeasurementProtocol, WorkloadCase
-from runner.sweep import BenchmarkSweepService
-from tests.support.runner_fixtures import (
-    EXPECTED_CASES,
-    WORKLOAD_SET_ID,
-    successful_run,
-)
+from runner.calibration import CalibrationEvent
+from runner.contracts import RunVariant, TransformerShape
+from tests.support.runner_fixtures import WORKLOAD_SET_ID, successful_run
 
 
-def test_cli_parses_public_commands() -> None:
+def test_cli_defaults_to_the_official_workload_and_float32_variant() -> None:
     parser = runner_cli.build_parser()
 
-    probe = parser.parse_args(["probe"])
-    assert probe.command == "probe"
-    assert probe.device == "cuda:0"
-    assert probe.mode == "diagnostic"
-
     benchmark = parser.parse_args(["benchmark"])
-    assert benchmark.command == "benchmark"
-    assert benchmark.target == "solution"
-    assert benchmark.workload_set == WORKLOAD_SET_ID
-    assert benchmark.case_id is None
-    assert benchmark.preset == "smoke"
-    assert benchmark.solution_policy == "dispatch"
-
-    profile = parser.parse_args(["profile", "--case-id", "attention_s2048_fp16"])
-    assert profile.command == "profile"
-    assert profile.case_id == "attention_s2048_fp16"
-    assert profile.solution_policy == "dispatch"
-
+    profile = parser.parse_args(["profile", "--case-id", "official_13"])
     tune = parser.parse_args(
         [
             "tune",
             "--case-id",
-            "launch_s64_fp16",
+            "official_02",
             "--candidate",
-            "eager-auto",
+            "causal-sdpa",
         ]
     )
-    assert tune.command == "tune"
-    assert tune.case_id == ["launch_s64_fp16"]
-    assert tune.candidate == ["eager-auto"]
-    assert not hasattr(tune, "candidate_limit")
 
-    calibrate = parser.parse_args(
-        [
-            "calibrate",
-            "--case-id",
-            "launch_s64_fp16",
-            "--case-id",
-            "wide_s256_bf16",
-            "--candidate-limit",
-            "2",
-            "--matmul-precision",
-            "highest",
-            "--no-allow-tf32",
-        ]
-    )
-    assert calibrate.command == "calibrate"
-    assert calibrate.case_id == ["launch_s64_fp16", "wide_s256_bf16"]
-    assert calibrate.candidate_limit == 2
-    assert calibrate.matmul_precision == "highest"
-    assert calibrate.allow_tf32 is False
-    assert calibrate.plan_only is False
+    assert benchmark.workload_set == WORKLOAD_SET_ID
+    assert benchmark.dtype == "float32"
+    assert benchmark.solution_policy == "dispatch"
+    assert profile.case_id == "official_13"
+    assert tune.case_id == ["official_02"]
+    assert tune.candidate == ["causal-sdpa"]
 
-def test_tune_requires_explicit_candidates() -> None:
+
+def test_tune_requires_an_explicit_candidate() -> None:
     parser = runner_cli.build_parser()
 
-    with pytest.raises(SystemExit) as missing_candidate:
-        parser.parse_args(["tune", "--case-id", "balanced_s128_fp16"])
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["tune", "--case-id", "official_02"])
 
-    assert missing_candidate.value.code == 2
+    assert error.value.code == 2
 
 
-def test_single_case_benchmark_cli_dispatches_supervisor(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+def test_calibrate_rejects_official_14_as_a_configuration_error(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    calls: list[tuple[str, str | None, str | None]] = []
-    result_dir = Path("verified_hardware/fixture/results/runs")
-
-    def fake_run_managed_benchmark(
-        project_root: Path,
-        *,
-        workload_set_id: str,
-        case: WorkloadCase,
-        protocol: MeasurementProtocol,
-        device: str,
-        target: str,
-        workload_sha256: str | None,
-        sweep_id: str | None = None,
-        result_dir: Path | None = None,
-        solution_policy: str | None = None,
-    ) -> tuple[dict[str, Any], Path]:
-        del project_root, protocol, device
-        assert workload_set_id == WORKLOAD_SET_ID
-        assert target == "solution"
-        assert solution_policy == "dispatch"
-        assert result_dir == Path("verified_hardware/fixture/results/runs")
-        calls.append((case.case_id, workload_sha256, sweep_id))
-        return successful_run(
-            case.case_id,
-            2.0,
-            sweep_id=sweep_id or "single-case",
-        ), tmp_path / f"{case.case_id}.json"
-
-    monkeypatch.setattr(runner_cli, "run_managed_benchmark", fake_run_managed_benchmark)
-
-    assert (
-        runner_cli.main(
-            [
-                "benchmark",
-                "--case-id",
-                "balanced_s128_fp16",
-                "--result-dir",
-                str(result_dir),
-            ]
-        )
-        == 0
+    exit_code = runner_cli.main(
+        ["calibrate", "--case-id", "official_14", "--plan-only"]
     )
-    assert [case_id for case_id, _, _ in calls] == ["balanced_s128_fp16"]
-    assert calls[0][2] is None
-    assert all(workload_hash for _, workload_hash, _ in calls)
+
+    assert exit_code == 2
+    assert "configuration error" in capsys.readouterr().out
 
 
-def test_full_benchmark_cli_dispatches_sweep_service(
+def test_single_shape_benchmark_forwards_shape_and_variant(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[str, str, Path]] = []
+    captured: dict[str, Any] = {}
 
-    def fake_run_managed_benchmark(
+    def fake_run(
         _project_root: Path,
-        **arguments: Any,
-    ) -> tuple[dict[str, Any], Path]:
-        case = arguments["case"]
-        sweep_id = arguments["sweep_id"]
-        result_dir = arguments["result_dir"]
-        calls.append((case.case_id, sweep_id, result_dir))
-        return (
-            successful_run(case.case_id, 2.0, sweep_id=sweep_id),
-            result_dir / f"{case.case_id}.json",
+        *,
+        shape: TransformerShape,
+        variant: RunVariant,
+        **kwargs: Any,
+    ):
+        captured.update(shape=shape, variant=variant, kwargs=kwargs)
+        return successful_run(shape.case_id, 1.0), tmp_path / "run.json"
+
+    monkeypatch.setattr(runner_cli, "run_managed_benchmark", fake_run)
+
+    exit_code = runner_cli.main(
+        [
+            "benchmark",
+            "--case-id",
+            "official_02",
+            "--dtype",
+            "float16",
+            "--device",
+            "cpu",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["shape"].case_id == "official_02"
+    assert captured["variant"] == RunVariant(dtype="float16")
+    assert captured["kwargs"]["solution_policy"] == "dispatch"
+
+
+def test_full_benchmark_uses_the_shared_sweep_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeService:
+        def run(self, request: Any, **_kwargs: Any) -> Any:
+            captured["request"] = request
+            return SimpleNamespace(
+                summary={
+                    "sweep_outcome": "complete",
+                    "case_results": [],
+                    "failed_cases": [],
+                    "geomean_speedup": 1.0,
+                },
+                summary_path=tmp_path / "summary.json",
+                runs=(),
+            )
+
+    monkeypatch.setattr(runner_cli, "BenchmarkSweepService", FakeService)
+
+    assert runner_cli.main(["benchmark", "--device", "cpu"]) == 0
+    assert captured["request"].workload_set_id == WORKLOAD_SET_ID
+    assert captured["request"].variant == RunVariant()
+
+
+def test_calibration_cli_renders_shape_based_formal_events(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    shape = TransformerShape(
+        case_id="official_02",
+        batch_size=1,
+        seq_len=128,
+        d_model=128,
+        num_heads=4,
+        ffn_dim=128,
+        num_layers=4,
+        causal=True,
+    )
+    runner_cli._print_calibration_event(
+        CalibrationEvent(
+            kind="formal_plans_ready",
+            data={
+                "shapes": [shape],
+                "plans": [{"candidate_order": ["graph", "eager-auto"]}],
+            },
         )
-
-    monkeypatch.setattr(
-        runner_cli,
-        "BenchmarkSweepService",
-        lambda: BenchmarkSweepService(fake_run_managed_benchmark),
     )
-    output_root = tmp_path / "sweeps"
-
-    assert (
-        runner_cli.main(["benchmark", "--result-dir", str(output_root)])
-        == 0
+    runner_cli._print_calibration_event(
+        CalibrationEvent(
+            kind="promotion_completed",
+            data={
+                "shapes": [shape],
+                "winners": [
+                    {
+                        "candidate_id": "graph",
+                        "solution_policy": "graph",
+                    }
+                ],
+                "route_path": tmp_path / "routes.json",
+                "route_action": "updated verified package",
+            },
+        )
     )
-    assert [case_id for case_id, _, _ in calls] == [
-        case[0] for case in EXPECTED_CASES
-    ]
-    sweep_ids = {sweep_id for _, sweep_id, _ in calls}
-    assert len(sweep_ids) == 1
-    sweep_id = next(iter(sweep_ids))
-    assert {directory for _, _, directory in calls} == {
-        (output_root / sweep_id / "runs").resolve()
-    }
-    assert (output_root / sweep_id / "summary.json").is_file()
+
+    output = capsys.readouterr().out
+    assert "official_02: graph, eager-auto" in output
+    assert "official_02: deployed graph -> graph" in output

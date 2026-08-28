@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_probe": {
-    "run_id": "20260827T155717.733545Z-b28e0b74",
-    "created_at": "2026-08-27T15:57:17.734047+00:00",
+    "run_id": "20260828T042726.624888Z-23146ae8",
+    "created_at": "2026-08-28T04:27:26.624888+00:00",
     "requested_device": "cuda:0",
     "mode": "routing"
   },
@@ -62,7 +62,7 @@
       "method": "single_element_inplace_add",
       "repeats_per_round": 128,
       "rounds": 3,
-      "effective_latency_us": 6.391750182956457
+      "effective_latency_us": 6.723249796777964
     },
     "cuda_graph_replay": {
       "available": true,
@@ -70,8 +70,8 @@
       "kernel_nodes": 8,
       "repeats_per_round": 64,
       "rounds": 3,
-      "replay_latency_us": 8.078999817371368,
-      "effective_latency_per_node_us": 1.009874977171421
+      "replay_latency_us": 7.631999906152487,
+      "effective_latency_per_node_us": 0.9539999882690609
     },
     "device_copy": {
       "available": true,
@@ -79,8 +79,8 @@
       "payload_bytes": 33554432,
       "repeats_per_round": 16,
       "rounds": 3,
-      "latency_ms": 0.02917799912393093,
-      "effective_bandwidth_gbps": 1149.990849526061
+      "latency_ms": 0.03006800077855587,
+      "effective_bandwidth_gbps": 1115.9515475312417
     },
     "gemm_float16": {
       "available": true,
@@ -90,8 +90,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.030559999868273735,
-      "tflops": 70.2710620830021
+      "latency_ms": 0.03044999949634075,
+      "tflops": 70.5249157149598
     },
     "gemm_bfloat16": {
       "available": true,
@@ -101,8 +101,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.031007999554276466,
-      "tflops": 69.25579459716646
+      "latency_ms": 0.031168000772595406,
+      "tflops": 68.90026933932137
     },
     "gemm_float32": {
       "available": true,
@@ -112,8 +112,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.07417599856853485,
-      "tflops": 28.951192965954267,
+      "latency_ms": 0.05777899920940399,
+      "tflops": 37.167200494716774,
       "tf32_allowed": true
     },
     "softmax_fp32": {
@@ -123,8 +123,8 @@
       "columns": 1024,
       "repeats_per_round": 16,
       "rounds": 3,
-      "latency_ms": 0.009126000106334686,
-      "throughput_gigaelements_per_second": 229.7996905067195
+      "latency_ms": 0.009846000000834465,
+      "throughput_gigaelements_per_second": 212.9953280339491
     }
   }
 }

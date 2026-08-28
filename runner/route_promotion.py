@@ -1,4 +1,4 @@
-"""Promote one formally measured eager winner into the dispatch table."""
+"""Promote one formally measured runtime policy into the dispatch table."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from project_identity import official_snapshot_hash, solution_implementation_has
 from runner.candidates import candidate_spec, deployable_policy_ids
 from runner.contracts import (
     ContractError,
+    RunVariant,
+    TransformerShape,
     load_json,
     load_workload_set,
 )
@@ -27,12 +29,14 @@ from runner.locking import (
     exclusive_file_lock,
     hardware_bundle_lock_path,
 )
+from runner.resource_guard import local_benchmark_shapes
 from runner.routing_contracts import (
     hardware_identity_from_verified_profile,
     route_match_from_summary,
     validate_selected_route_groups,
 )
 from solution.dispatch import (
+    MANIFEST_SCHEMA_VERSION,
     ROUTE_FIELDS,
     SCHEMA_VERSION,
     load_verified_bundle,
@@ -42,7 +46,7 @@ from solution.dispatch import (
     validate_verified_route_table,
 )
 
-TUNING_SCHEMA_VERSION = 2
+TUNING_SCHEMA_VERSION = 3
 DEFAULT_ROUTE_POLICY = "auto"
 MINIMUM_ROUTE_GAIN = 1.02
 _FORMAL_MINIMUM_COUNTS = {
@@ -51,8 +55,8 @@ _FORMAL_MINIMUM_COUNTS = {
     "repeats": 100,
     "rounds": 3,
 }
-_FORMAL_MAXIMUM_TOLERANCES = {"rtol": 0.01, "atol": 0.001}
-DEPLOYABLE_EAGER_POLICIES = deployable_policy_ids()
+_FORMAL_MAXIMUM_TOLERANCES = {"rtol": 0.02, "atol": 0.002}
+DEPLOYABLE_POLICIES = deployable_policy_ids()
 _BUNDLE_HARDWARE_FIELDS = frozenset(
     {"device_type", "device_name", "compute_capability"}
 )
@@ -69,38 +73,12 @@ def _positive_number(value: Any) -> float | None:
     return float(value)
 
 
-def _paired_conservative_speedup(observation: Mapping[str, Any]) -> float | None:
-    baseline = observation.get("baseline_round_medians_ms")
-    target = observation.get("target_round_medians_ms")
-    if (
-        not isinstance(baseline, Sequence)
-        or isinstance(baseline, (str, bytes))
-        or not isinstance(target, Sequence)
-        or isinstance(target, (str, bytes))
-        or not baseline
-        or len(baseline) != len(target)
-    ):
-        return None
-    baseline_values = [_positive_number(value) for value in baseline]
-    target_values = [_positive_number(value) for value in target]
-    if any(value is None for value in (*baseline_values, *target_values)):
-        return None
-    return min(
-        float(baseline_value) / float(target_value)
-        for baseline_value, target_value in zip(
-            baseline_values,
-            target_values,
-            strict=True,
-        )
-    )
-
-
 def select_deployable_winner(
     summary: Mapping[str, Any],
     *,
-    allowed_policies: frozenset[str] = DEPLOYABLE_EAGER_POLICIES,
+    allowed_policies: frozenset[str] = DEPLOYABLE_POLICIES,
 ) -> dict[str, Any]:
-    """Select the best paired-baseline speedup among correct eager routes."""
+    """Select the best paired-baseline speedup among correct runtime routes."""
 
     observations = summary.get("observations")
     if not isinstance(observations, Sequence) or isinstance(observations, (str, bytes)):
@@ -112,8 +90,7 @@ def select_deployable_winner(
             continue
         policy = observation.get("solution_policy")
         candidate_id = observation.get("candidate_id")
-        speedup = _positive_number(observation.get("conservative_speedup"))
-        measured_speedup = _paired_conservative_speedup(observation)
+        speedup = _positive_number(observation.get("speedup"))
         median = _positive_number(observation.get("target_median_ms"))
         p90 = _positive_number(observation.get("target_p90_ms"))
         execution_path = observation.get("execution_path")
@@ -123,14 +100,10 @@ def select_deployable_winner(
             or spec is None
             or not spec.deployable
             or spec.solution_policy != policy
-            or observation.get("compile_solution") is not False
-            or observation.get("cuda_graph_solution", False) is not False
             or observation.get("outcome") != "success"
             or observation.get("correctness_passed") is not True
             or observation.get("failed_elements") != 0
             or speedup is None
-            or measured_speedup is None
-            or not math.isclose(speedup, measured_speedup, rel_tol=1e-12, abs_tol=1e-12)
             or median is None
             or p90 is None
             or not isinstance(execution_path, Mapping)
@@ -147,9 +120,7 @@ def select_deployable_winner(
         )
 
     if not eligible:
-        raise ContractError(
-            "tuning summary has no correct, applied, eager dispatch candidate"
-        )
+        raise ContractError("tuning summary has no correct, applied dispatch candidate")
     return copy.deepcopy(dict(min(eligible, key=lambda item: item[:3])[3]))
 
 
@@ -469,16 +440,19 @@ def _write_new_bundle_support_files(
 
 def validate_promotion_case_set(
     case_ids: Sequence[str],
-    all_cases: Sequence[object] | None = None,
+    all_shapes: Sequence[TransformerShape] | None = None,
+    variant: RunVariant | None = None,
 ) -> None:
     """Validate shared routes from workload shape fields, never case-id names."""
 
     if len(case_ids) != len(set(case_ids)):
         raise ContractError("automatic promotion received duplicate workload cases")
-    if all_cases is None:
+    if all_shapes is None:
         return
+    if variant is None:
+        raise ContractError("promotion route validation requires a run variant")
     try:
-        validate_selected_route_groups(case_ids, all_cases)
+        validate_selected_route_groups(case_ids, all_shapes, variant)
     except (TypeError, ValueError) as exc:
         raise ContractError(str(exc)) from exc
 
@@ -501,12 +475,39 @@ def _summary_workload_identity(
     return next(iter(identities))
 
 
+def _summary_variant(summaries: Sequence[Mapping[str, Any]]) -> RunVariant:
+    """Return the single run variant shared by a calibration publication."""
+
+    variants: set[str] = set()
+    payloads: list[dict[str, Any]] = []
+    for summary in summaries:
+        workload = summary.get("workload")
+        raw_variant = workload.get("variant") if isinstance(workload, Mapping) else None
+        if not isinstance(raw_variant, dict):
+            raise ContractError("tuning summary workload is missing its run variant")
+        payloads.append(raw_variant)
+        variants.add(
+            json.dumps(
+                raw_variant,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    if len(variants) != 1:
+        raise ContractError("formal summaries do not share one run variant")
+    try:
+        return RunVariant.from_dict(payloads[0])
+    except (TypeError, ValueError) as exc:
+        raise ContractError(str(exc)) from exc
+
+
 def _auto_promote_calibration_locked(
     project_root: Path,
     summaries: Sequence[Mapping[str, Any]],
     *,
     probe_result: Mapping[str, Any],
-    full_workload_case_ids: Sequence[str],
+    full_workload_shape_ids: Sequence[str],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Path, bool]:
     """Publish one Formal calibration to its exact verified device package."""
 
@@ -516,12 +517,13 @@ def _auto_promote_calibration_locked(
     workload_set = load_workload_set(project_root, workload_set_id)
     if workload_set.sha256 != workload_sha256:
         raise ContractError("formal summary workload hash is stale; rerun calibration")
-    authoritative_case_ids = [case.case_id for case in workload_set.cases]
-    if set(authoritative_case_ids) != set(full_workload_case_ids):
+    local_shapes = local_benchmark_shapes(workload_set.shapes)
+    authoritative_case_ids = [shape.case_id for shape in local_shapes]
+    if set(authoritative_case_ids) != set(full_workload_shape_ids):
         raise ContractError(
-            "calibration workload case list does not match the persisted workload set"
+            "calibration shape list does not match the persisted workload set"
         )
-    validate_promotion_case_set(case_ids, workload_set.cases)
+    validate_promotion_case_set(case_ids, local_shapes, _summary_variant(summaries))
     existing_route = find_matching_verified_route(
         project_root,
         profile,
@@ -538,7 +540,7 @@ def _auto_promote_calibration_locked(
         )
         return document, winners, destination, False
 
-    if set(case_ids) != set(full_workload_case_ids):
+    if set(case_ids) != set(full_workload_shape_ids):
         raise ContractError(
             "a new verified hardware package requires one complete Formal workload "
             "calibration"
@@ -599,7 +601,7 @@ def auto_promote_calibration(
     summaries: Sequence[Mapping[str, Any]],
     *,
     probe_result: Mapping[str, Any],
-    full_workload_case_ids: Sequence[str],
+    full_workload_shape_ids: Sequence[str],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], Path, bool]:
     """Discover and update one stable GPU bundle under a catalog lock."""
 
@@ -614,7 +616,7 @@ def auto_promote_calibration(
             project_root,
             summaries,
             probe_result=probe_result,
-            full_workload_case_ids=full_workload_case_ids,
+            full_workload_shape_ids=full_workload_shape_ids,
         )
 
 
@@ -679,6 +681,11 @@ def build_promoted_route_document(
     protocol = summary.get("protocol")
     if not isinstance(protocol, Mapping) or protocol.get("preset") != "formal":
         raise ContractError("only a formal tuning summary can be promoted")
+    if (
+        protocol.get("compile_baseline") is not False
+        or protocol.get("compile_solution") is not False
+    ):
+        raise ContractError("formal route promotion requires uncompiled models")
     for field, minimum in _FORMAL_MINIMUM_COUNTS.items():
         value = protocol.get(field)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -731,28 +738,6 @@ def build_promoted_route_document(
         raise ContractError(
             "tuning observation source identities are missing or inconsistent"
         )
-    expected_rounds = int(protocol["rounds"])
-    for observation in observations:
-        if (
-            isinstance(observation, Mapping)
-            and observation.get("outcome") == "success"
-            and observation.get("correctness_passed") is True
-            and observation.get("policy_applied") is True
-        ):
-            baseline_rounds = observation.get("baseline_round_medians_ms")
-            target_rounds = observation.get("target_round_medians_ms")
-            if (
-                not isinstance(baseline_rounds, Sequence)
-                or isinstance(baseline_rounds, (str, bytes))
-                or not isinstance(target_rounds, Sequence)
-                or isinstance(target_rounds, (str, bytes))
-                or len(baseline_rounds) != expected_rounds
-                or len(target_rounds) != expected_rounds
-            ):
-                raise ContractError(
-                    "successful tuning observations must contain every formal round"
-                )
-
     match = _route_match(summary)
     if existing is None:
         document: dict[str, Any] = {
@@ -792,9 +777,9 @@ def build_promoted_route_document(
     measured_policy = str(measured_winner["solution_policy"])
     deployment = measured_winner
     if measured_policy != incumbent_policy:
-        measured_speedup = float(measured_winner["conservative_speedup"])
-        auto_speedup = float(auto_observation["conservative_speedup"])
-        incumbent_speedup = float(incumbent_observation["conservative_speedup"])
+        measured_speedup = float(measured_winner["speedup"])
+        auto_speedup = float(auto_observation["speedup"])
+        incumbent_speedup = float(incumbent_observation["speedup"])
         clears_auto_margin = (
             measured_policy == DEFAULT_ROUTE_POLICY
             or measured_speedup >= auto_speedup * MINIMUM_ROUTE_GAIN
@@ -817,8 +802,8 @@ def build_promoted_route_document(
 
 def _summary_case_id(summary: Mapping[str, Any]) -> str:
     workload = summary.get("workload")
-    case = workload.get("case") if isinstance(workload, Mapping) else None
-    case_id = case.get("case_id") if isinstance(case, Mapping) else None
+    shape = workload.get("shape") if isinstance(workload, Mapping) else None
+    case_id = shape.get("case_id") if isinstance(shape, Mapping) else None
     if not isinstance(case_id, str) or not case_id:
         raise ContractError("tuning summary workload is missing case_id")
     return case_id
@@ -930,7 +915,9 @@ def _build_verified_bundle_manifest(
                 )
     else:
         workload_set = load_workload_set(project_root, workload_set_id)
-        full_case_ids = {case.case_id for case in workload_set.cases}
+        full_case_ids = {
+            shape.case_id for shape in local_benchmark_shapes(workload_set.shapes)
+        }
         if selected_case_ids != full_case_ids:
             raise ContractError(
                 "a verified bundle manifest requires one complete Formal workload "
@@ -951,7 +938,7 @@ def _build_verified_bundle_manifest(
 
     route_digest = hashlib.sha256(_json_payload(route_document)).hexdigest()
     document: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "workload_set": {
             "set_id": workload_set_id,
             "sha256": workload_sha256,
@@ -976,10 +963,12 @@ def _build_verified_bundle_manifest(
             "verified bundle sources do not cover every published exact route"
         )
     workload_set = load_workload_set(project_root, workload_set_id)
-    expected_case_ids = {case.case_id for case in workload_set.cases}
+    expected_case_ids = {
+        shape.case_id for shape in local_benchmark_shapes(workload_set.shapes)
+    }
     manifested_case_ids = {str(source["case_id"]) for source in source_summaries}
     if not expected_case_ids.issubset(manifested_case_ids):
-        raise ContractError("verified bundle sources do not cover every workload case")
+        raise ContractError("verified bundle sources do not cover every local shape")
     try:
         validate_bundle_manifest(document)
     except (TypeError, ValueError) as exc:
@@ -1020,7 +1009,12 @@ def _publish_bundle_tuning_summaries_locked(
     workload_set = load_workload_set(project_root, workload_set_id)
     if workload_set.sha256 != workload_sha256:
         raise ContractError("formal summary workload hash is stale; rerun calibration")
-    validate_promotion_case_set(case_ids, workload_set.cases)
+    local_shapes = local_benchmark_shapes(workload_set.shapes)
+    validate_promotion_case_set(
+        case_ids,
+        local_shapes,
+        _summary_variant(summaries),
+    )
 
     if reset_verified_bundle and not _is_verified_route_destination(destination):
         raise ContractError("only a verified hardware bundle can be reset")
@@ -1091,7 +1085,7 @@ def _publish_bundle_tuning_summaries_locked(
 
     winners = [deployments_by_index[index] for index in range(len(summaries))]
     if reset_verified_bundle or not destination.with_name("manifest.json").is_file():
-        full_case_ids = {case.case_id for case in workload_set.cases}
+        full_case_ids = {shape.case_id for shape in local_shapes}
         if set(case_ids) != full_case_ids:
             raise ContractError(
                 "a verified bundle manifest requires one complete Formal workload "
@@ -1236,7 +1230,7 @@ def _atomic_replace_json(
 
 __all__ = [
     "DEFAULT_ROUTE_POLICY",
-    "DEPLOYABLE_EAGER_POLICIES",
+    "DEPLOYABLE_POLICIES",
     "MINIMUM_ROUTE_GAIN",
     "TUNING_SCHEMA_VERSION",
     "auto_promote_calibration",

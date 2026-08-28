@@ -17,8 +17,8 @@ from project_identity import official_snapshot_hash, solution_implementation_has
 
 from .policies import ROUTABLE_POLICY_IDS
 
-SCHEMA_VERSION = 3
-MANIFEST_SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
+MANIFEST_SCHEMA_VERSION = 3
 ALLOWED_POLICIES = ROUTABLE_POLICY_IDS
 HARDWARE_ROUTE_FIELDS = frozenset(
     (
@@ -420,24 +420,25 @@ def _canonical_json_sha256(path: Path) -> str:
     return _canonical_value_sha256(document)
 
 
-def _validate_manifest_case_coverage(
+def _validate_manifest_shape_coverage(
     manifest: VerifiedBundleManifest,
     *,
     table: RouteTable,
     workload_document: Mapping[str, object],
 ) -> None:
-    raw_cases = workload_document.get("ordered_cases")
-    if not isinstance(raw_cases, Sequence) or isinstance(raw_cases, (str, bytes)):
-        raise TypeError("verified bundle workload set has no ordered cases")
+    raw_shapes = workload_document.get("ordered_shapes")
+    if not isinstance(raw_shapes, Sequence) or isinstance(raw_shapes, (str, bytes)):
+        raise TypeError("verified bundle workload set has no ordered shapes")
     expected_case_ids: set[str] = set()
-    for case in raw_cases:
-        case_id = case.get("case_id") if isinstance(case, Mapping) else None
+    for shape in raw_shapes:
+        case_id = shape.get("case_id") if isinstance(shape, Mapping) else None
         if not isinstance(case_id, str) or not case_id:
-            raise ValueError("verified bundle workload set contains an invalid case")
+            raise ValueError("verified bundle workload set contains an invalid shape")
         expected_case_ids.add(case_id)
     manifested_case_ids = {source.case_id for source in manifest.source_summaries}
-    if not expected_case_ids.issubset(manifested_case_ids):
-        raise ValueError("verified bundle Formal sources do not cover the workload set")
+    unknown_case_ids = manifested_case_ids - expected_case_ids
+    if unknown_case_ids:
+        raise ValueError("verified bundle Formal sources reference unknown shapes")
     route_hashes = {_canonical_value_sha256(match) for match, _policy in table.routes}
     manifested_route_hashes = {
         source.route_sha256 for source in manifest.source_summaries
@@ -484,9 +485,7 @@ def load_verified_bundle(
         raise ValueError(f"unable to verify official snapshot: {exc}") from exc
     if manifest.official_snapshot_sha256 != current_official:
         raise ValueError("verified bundle official snapshot hash is stale")
-    workload_path = (
-        resolved_project / "runner" / "workloads" / f"{manifest.workload_set_id}.json"
-    )
+    workload_path = resolved_project / "official" / "test_shapes.json"
     if not workload_path.is_file():
         raise ValueError("verified bundle workload set is unavailable")
     if manifest.workload_set_sha256 != _canonical_json_sha256(workload_path):
@@ -497,7 +496,9 @@ def load_verified_bundle(
         raise ValueError(f"unable to load verified workload set: {exc}") from exc
     if not isinstance(workload_document, Mapping):
         raise TypeError("verified bundle workload set must be a JSON object")
-    _validate_manifest_case_coverage(
+    if workload_document.get("workload_set_id") != manifest.workload_set_id:
+        raise ValueError("verified bundle workload-set id is stale")
+    _validate_manifest_shape_coverage(
         manifest,
         table=table,
         workload_document=workload_document,

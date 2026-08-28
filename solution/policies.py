@@ -1,4 +1,4 @@
-"""Typed runtime-policy definitions for the optimized Transformer."""
+"""Small, shape-independent runtime policy registry."""
 
 from __future__ import annotations
 
@@ -7,167 +7,68 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
 
-QKV_LAYOUTS = frozenset({"auto", "view", "triton", "torch_contiguous"})
-ATTENTION_POLICIES = frozenset(
-    {
-        "auto",
-        "explicit",
-        "reference",
-        "fp32_sdpa",
-        "s512_native_half_softmax",
-        "triton_preprocess",
-        "triton_softmax",
-        "triton_online",
-    }
-)
-FFN_POLICIES = frozenset(
-    {
-        "exact",
-        "inplace_exact_gelu",
-    }
-)
-
 
 class ExecutionComponent(StrEnum):
-    """Specialized implementation pieces that define a policy's identity."""
+    """Observable capabilities that make a policy distinct."""
 
-    TRITON_QKV_LAYOUT = "triton_qkv_layout"
-    TRITON_ATTENTION_SOFTMAX = "triton_attention_softmax"
-    TRITON_ATTENTION_PREPROCESS = "triton_attention_preprocess"
-    S512_NATIVE_HALF_SOFTMAX = "s512_native_half_softmax"
-    TAIL_ONLINE_ATTENTION = "tail_online_attention"
-    WIDE_INPLACE_FFN = "wide_inplace_ffn"
-    PACKED_FFN = "packed_ffn"
-    TRITON_RESIDUAL = "triton_residual"
+    CAUSAL_SDPA = "causal_sdpa"
     CUDA_GRAPH = "cuda_graph"
+    BATCH_TILING = "batch_tiling"
+    INPLACE_EXACT_GELU = "inplace_exact_gelu"
 
 
 @dataclass(frozen=True, slots=True)
 class PolicySpec:
-    """One complete policy, including what must actually execute."""
+    """A deployable algorithm composition, independent of workload shape."""
 
     policy_id: str
-    qkv_layout: str = "auto"
-    attention: str = "auto"
-    use_packed_ffn: bool = False
-    use_triton_residual: bool = False
-    ffn: str = "exact"
-    tail_attention: str | None = None
-    cuda_graph_shape: tuple[int, int, int, int, int, int] | None = None
-    cuda_graph_route: str | None = None
+    attention: str = "safe"
+    use_cuda_graph: bool = False
+    use_batch_tiling: bool = False
+    use_inplace_exact_gelu: bool = False
     required_components: frozenset[ExecutionComponent] = frozenset()
-    allow_partial_application: bool = False
 
     def __post_init__(self) -> None:
         if not self.policy_id:
             raise ValueError("policy_id must not be empty")
-        if self.qkv_layout not in QKV_LAYOUTS:
-            raise ValueError(f"unsupported qkv_layout: {self.qkv_layout}")
-        if self.attention not in ATTENTION_POLICIES:
-            raise ValueError(f"unsupported attention policy: {self.attention}")
-        if self.ffn not in FFN_POLICIES:
-            raise ValueError(f"unsupported FFN policy: {self.ffn}")
-        if (
-            self.tail_attention is not None
-            and self.tail_attention not in ATTENTION_POLICIES
-        ):
-            raise ValueError(
-                f"unsupported tail attention policy: {self.tail_attention}"
-            )
-        if (self.cuda_graph_shape is None) != (self.cuda_graph_route is None):
-            raise ValueError(
-                "cuda_graph_shape and cuda_graph_route must be configured together"
-            )
-        if self.allow_partial_application and len(self.required_components) < 2:
-            raise ValueError(
-                "partial application requires at least two required components"
-            )
-
-    @property
-    def use_cuda_graph(self) -> bool:
-        """Return whether this policy requests the Solution graph wrapper."""
-
-        return self.cuda_graph_shape is not None
+        if self.attention not in {"safe", "causal_sdpa"}:
+            raise ValueError(f"unsupported attention backend: {self.attention}")
 
 
 _POLICY_SPECS = {
-    "auto": PolicySpec("auto"),
-    "reference": PolicySpec(
-        "reference",
-        qkv_layout="view",
-        attention="reference",
+    "auto": PolicySpec("auto", attention="causal_sdpa"),
+    "safe": PolicySpec("safe"),
+    "causal-sdpa": PolicySpec(
+        "causal-sdpa",
+        attention="causal_sdpa",
+        required_components=frozenset({ExecutionComponent.CAUSAL_SDPA}),
     ),
-    "torch": PolicySpec("torch", qkv_layout="torch_contiguous"),
-    "triton": PolicySpec(
-        "triton",
-        qkv_layout="triton",
-        attention="triton_softmax",
+    "graph": PolicySpec(
+        "graph",
+        attention="causal_sdpa",
+        use_cuda_graph=True,
+        required_components=frozenset(
+            {ExecutionComponent.CAUSAL_SDPA, ExecutionComponent.CUDA_GRAPH}
+        ),
+    ),
+    "batch-tiled": PolicySpec(
+        "batch-tiled",
+        attention="causal_sdpa",
+        use_batch_tiling=True,
+        required_components=frozenset(
+            {ExecutionComponent.CAUSAL_SDPA, ExecutionComponent.BATCH_TILING}
+        ),
+    ),
+    "inplace-block": PolicySpec(
+        "inplace-block",
+        attention="causal_sdpa",
+        use_inplace_exact_gelu=True,
         required_components=frozenset(
             {
-                ExecutionComponent.TRITON_QKV_LAYOUT,
-                ExecutionComponent.TRITON_ATTENTION_SOFTMAX,
+                ExecutionComponent.CAUSAL_SDPA,
+                ExecutionComponent.INPLACE_EXACT_GELU,
             }
         ),
-        allow_partial_application=True,
-    ),
-    "preprocess": PolicySpec(
-        "preprocess",
-        qkv_layout="view",
-        attention="triton_preprocess",
-        required_components=frozenset(
-            {ExecutionComponent.TRITON_ATTENTION_PREPROCESS}
-        ),
-    ),
-    "s512-native-softmax": PolicySpec(
-        "s512-native-softmax",
-        qkv_layout="view",
-        attention="s512_native_half_softmax",
-        required_components=frozenset(
-            {ExecutionComponent.S512_NATIVE_HALF_SOFTMAX}
-        ),
-    ),
-    "long-tail-online": PolicySpec(
-        "long-tail-online",
-        qkv_layout="view",
-        tail_attention="triton_online",
-        required_components=frozenset(
-            {ExecutionComponent.TAIL_ONLINE_ATTENTION}
-        ),
-    ),
-    "wide-triton-inplace": PolicySpec(
-        "wide-triton-inplace",
-        qkv_layout="triton",
-        ffn="inplace_exact_gelu",
-        required_components=frozenset(
-            {
-                ExecutionComponent.TRITON_QKV_LAYOUT,
-                ExecutionComponent.WIDE_INPLACE_FFN,
-            }
-        ),
-    ),
-    "cuda-graph": PolicySpec(
-        "cuda-graph",
-        cuda_graph_shape=(1, 64, 256, 8, 1024, 4),
-        cuda_graph_route="launch_fp16_eager_cuda_graph",
-        required_components=frozenset({ExecutionComponent.CUDA_GRAPH}),
-    ),
-    "balanced-cuda-graph": PolicySpec(
-        "balanced-cuda-graph",
-        cuda_graph_shape=(8, 128, 512, 8, 2048, 6),
-        cuda_graph_route="balanced_fp16_eager_cuda_graph",
-        required_components=frozenset({ExecutionComponent.CUDA_GRAPH}),
-    ),
-    "padding": PolicySpec(
-        "padding",
-        qkv_layout="view",
-        use_triton_residual=True,
-        required_components=frozenset({ExecutionComponent.TRITON_RESIDUAL}),
-    ),
-    "packed": PolicySpec(
-        "packed",
-        qkv_layout="view",
-        use_packed_ffn=True,
-        required_components=frozenset({ExecutionComponent.PACKED_FFN}),
     ),
 }
 
@@ -177,7 +78,7 @@ POLICY_SELECTORS = frozenset({"dispatch"})
 
 
 def get_policy_spec(policy: str) -> PolicySpec:
-    """Resolve a named policy through the single Solution policy registry."""
+    """Return the single registered definition for ``policy``."""
 
     normalized = policy.strip().lower()
     try:
@@ -190,17 +91,14 @@ def get_policy_spec(policy: str) -> PolicySpec:
 
 
 def policy_ids() -> frozenset[str]:
-    """Return all concrete policies accepted by the offline dispatcher."""
+    """Return policies accepted by explicit execution and offline routing."""
 
     return ROUTABLE_POLICY_IDS
 
 
 __all__ = [
-    "ATTENTION_POLICIES",
-    "FFN_POLICIES",
     "POLICY_SELECTORS",
     "POLICY_SPECS",
-    "QKV_LAYOUTS",
     "ROUTABLE_POLICY_IDS",
     "ExecutionComponent",
     "PolicySpec",

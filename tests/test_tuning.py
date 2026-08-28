@@ -1,643 +1,226 @@
-"""Focused tests for the bounded candidate-screening loop."""
+"""Focused tests for official-shape candidate tuning."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from project_identity import solution_implementation_hash
 from runner import tuning
-from runner.contracts import ContractError, MeasurementProtocol, WorkloadCase
-
-_OFFICIAL_HASH = "a" * 64
-
-
-def _case(
-    *,
-    case_id: str = "fixture",
-    padding_ratio: float = 0.0,
-    wide: bool = False,
-) -> WorkloadCase:
-    return WorkloadCase(
-        case_id=case_id,
-        batch_size=2,
-        seq_len=32,
-        d_model=1024 if wide else 64,
-        num_heads=8,
-        ffn_dim=4096 if wide else 128,
-        num_layers=1,
-        dtype="bfloat16" if wide else "float16",
-        causal=False,
-        padding_ratio=padding_ratio,
-    )
+from runner.contracts import ContractError, RunVariant
+from tests.support.runner_fixtures import official_shape, tiny_protocol
 
 
-def _s512_case(case_id: str, *, padding_ratio: float) -> WorkloadCase:
-    return WorkloadCase(
-        case_id=case_id,
-        batch_size=8,
-        seq_len=512,
-        d_model=512,
-        num_heads=8,
-        ffn_dim=2048,
-        num_layers=4,
-        dtype="float16",
-        causal=False,
-        padding_ratio=padding_ratio,
-    )
-
-
-def _smoke_observation(
-    case: WorkloadCase,
-    candidate_id: str,
-    speedup: float,
-    *,
-    correctness_passed: bool = True,
-) -> dict[str, Any]:
-    candidate = next(
-        item
-        for item in tuning.candidates_for_case(case)
-        if item.candidate_id == candidate_id
-    )
-    execution_path: dict[str, Any] = {
-        "requested_policy": candidate.solution_policy,
-        "selected_policy": candidate.solution_policy,
-    }
-    for expectation in candidate.evidence.path_expectations:
-        execution_path[expectation.field] = next(iter(expectation.accepted_values))
-    if (
-        candidate.evidence.requires_observed_execution
-        or candidate.evidence.observed_expectations
-    ):
-        observed: dict[str, Any] = {"complete": True}
-        for expectation in candidate.evidence.observed_expectations:
-            values = expectation.required_values or frozenset(
-                {next(iter(expectation.accepted_values))}
-            )
-            observed[expectation.field] = sorted(values)
-        execution_path["observed_execution"] = observed
-    return {
-        "candidate_id": candidate.candidate_id,
-        "solution_policy": candidate.solution_policy,
-        "compile_solution": candidate.compile_solution,
-        "cuda_graph_solution": candidate.cuda_graph_solution,
-        "outcome": "success",
-        "correctness_passed": correctness_passed,
-        "failed_elements": 0 if correctness_passed else 1,
-        "policy_applied": True,
-        "conservative_speedup": speedup,
-        "baseline_round_medians_ms": [speedup, speedup],
-        "target_round_medians_ms": [1.0, 1.0],
-        "target_median_ms": 1.0,
-        "target_p90_ms": 1.1,
-        "official_snapshot_sha256": _OFFICIAL_HASH,
-        "execution_path": execution_path,
-    }
-
-
-def _smoke_summary(
-    case: WorkloadCase,
-    observations: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return {
-        "case_id": case.case_id,
-        "tuning_id": f"smoke-{case.case_id}",
-        "complete": True,
-        "protocol": {"preset": "smoke"},
-        "source_consistent": True,
-        "implementation_consistent": True,
-        "official_consistent": True,
-        "official_snapshot_sha256": _OFFICIAL_HASH,
-        "source_solution_sha256": "fixture-source",
-        "source_implementation_sha256": "fixture-implementation",
-        "observations": observations,
-    }
-
-
-def test_candidates_add_only_relevant_specialized_routes() -> None:
-    common = {item.candidate_id for item in tuning.candidates_for_case(_case())}
-    padded = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(_case(padding_ratio=0.5))
-    }
-    misleading_case_id = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(_case(case_id="mask_s512_full_fp16"))
-    }
-    wide = {item.candidate_id for item in tuning.candidates_for_case(_case(wide=True))}
-    launch = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(
-            WorkloadCase(
-                case_id="launch",
-                batch_size=1,
-                seq_len=64,
-                d_model=256,
-                num_heads=8,
-                ffn_dim=1024,
-                num_layers=4,
-                dtype="float16",
-                causal=False,
-                padding_ratio=0.0,
-            )
+def _candidate_ids(case_id: str) -> list[str]:
+    return [
+        candidate.candidate_id
+        for candidate in tuning.candidates_for_shape(
+            official_shape(case_id),
+            RunVariant(),
         )
-    }
-    balanced = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(
-            WorkloadCase(
-                case_id="balanced",
-                batch_size=8,
-                seq_len=128,
-                d_model=512,
-                num_heads=8,
-                ffn_dim=2048,
-                num_layers=6,
-                dtype="float16",
-                causal=False,
-                padding_ratio=0.0,
-            )
-        )
-    }
-    s512_mask = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(
-            WorkloadCase(
-                case_id="mask_s512_full_fp16",
-                batch_size=8,
-                seq_len=512,
-                d_model=512,
-                num_heads=8,
-                ffn_dim=2048,
-                num_layers=4,
-                dtype="float16",
-                causal=False,
-                padding_ratio=0.0,
-            )
-        )
-    }
-    long_attention = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(
-            WorkloadCase(
-                case_id="long",
-                batch_size=1,
-                seq_len=2048,
-                d_model=512,
-                num_heads=8,
-                ffn_dim=2048,
-                num_layers=4,
-                dtype="float16",
-                causal=False,
-                padding_ratio=0.0,
-            )
-        )
-    }
-    exact_wide = {
-        item.candidate_id
-        for item in tuning.candidates_for_case(
-            WorkloadCase(
-                case_id="wide",
-                batch_size=16,
-                seq_len=256,
-                d_model=1024,
-                num_heads=8,
-                ffn_dim=4096,
-                num_layers=6,
-                dtype="bfloat16",
-                causal=False,
-                padding_ratio=0.0,
-            )
-        )
-    }
-
-    assert "padding-packed" not in common
-    assert "padding-fused" not in common
-    assert "compile-max-autotune" not in common
-    assert "padding-packed" in padded
-    assert "padding-fused" in padded
-    assert "padding-packed" not in misleading_case_id
-    assert "padding-fused" not in misleading_case_id
-    assert "compile-max-autotune" in wide
-    assert "attention-preprocess" in launch
-    assert "padding-fused" in launch
-    assert "eager-cudagraph" in launch
-    assert "launch-cudagraph" in launch
-    assert "balanced-cudagraph" in balanced
-    assert "s512-native-softmax" in s512_mask
-    assert "s512-native-softmax" not in common
-    assert "long-tail-online" in long_attention
-    assert "attention-preprocess" in long_attention
-    assert "wide-triton-inplace" in exact_wide
-
-
-def test_shared_smoke_plans_keep_one_common_deployable_shortlist() -> None:
-    full = _s512_case("mask_s512_full_fp16", padding_ratio=0.0)
-    padding = _s512_case("mask_s512_padding_fp16", padding_ratio=0.75)
-    plans = [
-        {
-            "candidate_order": [
-                "s512-native-softmax",
-                "padding-fused",
-                "eager-auto",
-            ]
-        },
-        {
-            "candidate_order": [
-                "s512-native-softmax",
-                "eager-auto",
-                "padding-fused",
-            ]
-        },
     ]
 
-    aligned = tuning.align_shared_smoke_plans(
-        [full, padding],
-        plans,
-        [None, None],
-        candidate_limit=2,
-    )
 
-    assert [plan["candidate_order"] for plan in aligned] == [
-        ["eager-auto", "s512-native-softmax"],
-        ["eager-auto", "s512-native-softmax"],
-    ]
-    assert all(
-        plan["decision_scope"] == "shared_route_smoke_shortlist" for plan in aligned
-    )
+def _execution_path(candidate_id: str) -> dict[str, Any]:
+    paths = {
+        "eager-auto": {
+            "requested_policy": "auto",
+            "selected_policy": "auto",
+        },
+        "eager-safe": {
+            "requested_policy": "safe",
+            "selected_policy": "safe",
+            "attention_backend": "safe_streaming",
+            "runtime_wrapper": "eager",
+            "batch_strategy": "full",
+            "block_backend": "torch",
+        },
+        "causal-sdpa": {
+            "requested_policy": "causal-sdpa",
+            "selected_policy": "causal-sdpa",
+            "attention_backend": "causal_sdpa",
+            "runtime_wrapper": "eager",
+            "batch_strategy": "full",
+            "block_backend": "torch",
+        },
+    }
+    path = paths[candidate_id]
+    if candidate_id == "causal-sdpa":
+        path["observed_execution"] = {
+            "complete": True,
+            "attention_backends": ["causal_sdpa"],
+            "block_backends": ["torch"],
+        }
+    return path
 
 
-def test_new_device_formal_plan_keeps_auto_and_best_deployable_challenger() -> None:
-    case = _case()
-    summary = _smoke_summary(
-        case,
-        [
-            _smoke_observation(case, "eager-auto", 1.0),
-            _smoke_observation(case, "compile-default", 2.0),
-            _smoke_observation(case, "eager-torch", 1.3),
-        ],
-    )
+def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
+    launch = _candidate_ids("official_02")
+    extreme_batch = _candidate_ids("official_06")
+    long_sequence = _candidate_ids("official_13")
 
-    plans = tuning.build_formal_candidate_plans([case], [summary], [None])
-
-    assert plans[0]["candidate_order"] == ["eager-auto", "eager-torch"]
-    assert "compile-default" not in plans[0]["candidate_order"]
-    assert plans[0]["screening_tuning_ids"] == ["smoke-fixture"]
-
-
-def test_verified_device_formal_plan_keeps_all_three_candidate_roles() -> None:
-    case = _case()
-    summary = _smoke_summary(
-        case,
-        [
-            _smoke_observation(case, "eager-auto", 1.0),
-            _smoke_observation(case, "eager-reference", 1.2),
-            _smoke_observation(case, "eager-torch", 1.4),
-        ],
-    )
-
-    plans = tuning.build_formal_candidate_plans(
-        [case],
-        [summary],
-        ["eager-reference"],
-    )
-
-    assert plans[0]["candidate_order"] == [
+    assert launch == [
         "eager-auto",
-        "eager-reference",
-        "eager-torch",
+        "eager-safe",
+        "causal-sdpa",
+        "graph",
+        "inplace-block",
     ]
+    assert "batch-tiled" in extreme_batch
+    assert "graph" not in extreme_batch
+    assert "causal-sdpa" in long_sequence
+    assert "graph" not in long_sequence
 
 
-def test_shared_formal_plans_choose_one_common_maximin_challenger() -> None:
-    full = _s512_case("mask_s512_full_fp16", padding_ratio=0.0)
-    padding = _s512_case("mask_s512_padding_fp16", padding_ratio=0.75)
-    summaries = [
-        _smoke_summary(
-            full,
-            [
-                _smoke_observation(full, "eager-auto", 1.0),
-                _smoke_observation(full, "s512-native-softmax", 2.0),
-                _smoke_observation(full, "padding-fused", 1.2),
-            ],
-        ),
-        _smoke_summary(
-            padding,
-            [
-                _smoke_observation(padding, "eager-auto", 1.0),
-                _smoke_observation(padding, "s512-native-softmax", 1.05),
-                _smoke_observation(padding, "padding-fused", 1.2),
-            ],
-        ),
+def test_runtime_variant_is_not_hidden_inside_the_shape() -> None:
+    shape = official_shape("official_02")
+
+    assert tuning.candidates_for_shape(shape, RunVariant(padding_ratio=0.5)) == ()
+
+
+def test_select_candidates_requires_explicit_valid_order() -> None:
+    shape = official_shape("official_02")
+    variant = RunVariant()
+
+    selected = tuning.select_candidates(
+        shape,
+        variant,
+        ["causal-sdpa", "eager-auto"],
+    )
+    assert [item.candidate_id for item in selected] == [
+        "causal-sdpa",
+        "eager-auto",
     ]
-
-    plans = tuning.build_formal_candidate_plans(
-        [full, padding],
-        summaries,
-        [None, None],
-    )
-
-    assert [plan["candidate_order"] for plan in plans] == [
-        ["eager-auto", "padding-fused"],
-        ["eager-auto", "padding-fused"],
-    ]
-    assert all(
-        plan["screening_tuning_ids"]
-        == ["smoke-mask_s512_full_fp16", "smoke-mask_s512_padding_fp16"]
-        for plan in plans
-    )
+    with pytest.raises(ContractError, match="at least one"):
+        tuning.select_candidates(shape, variant, [])
+    with pytest.raises(ContractError, match="not available"):
+        tuning.select_candidates(shape, variant, ["batch-tiled"])
 
 
-@pytest.mark.parametrize(
-    ("incumbent_candidate_id", "failed_candidate_id", "failed_policy"),
-    [
-        (None, "eager-auto", "auto"),
-        ("eager-reference", "eager-reference", "reference"),
-    ],
-)
-def test_formal_plan_rejects_a_failed_smoke_control(
-    incumbent_candidate_id: str | None,
-    failed_candidate_id: str,
-    failed_policy: str,
-) -> None:
-    case = _case()
-    observations = [
-        _smoke_observation(case, "eager-auto", 1.0),
-        _smoke_observation(case, "eager-reference", 1.1),
-        _smoke_observation(case, "eager-torch", 1.2),
-    ]
-    failed = next(
-        item for item in observations if item["candidate_id"] == failed_candidate_id
-    )
-    failed["correctness_passed"] = False
-    failed["failed_elements"] = 1
-    summary = _smoke_summary(case, observations)
+def test_deployed_policy_maps_back_to_one_candidate() -> None:
+    shape = official_shape("official_06")
+    variant = RunVariant()
 
-    with pytest.raises(ContractError, match=rf"Smoke controls failed.*{failed_policy}"):
-        tuning.build_formal_candidate_plans(
-            [case],
-            [summary],
-            [incumbent_candidate_id],
-        )
-
-
-def test_deployed_policy_maps_back_to_an_available_retest_candidate() -> None:
-    launch = WorkloadCase(
-        case_id="launch",
-        batch_size=1,
-        seq_len=64,
-        d_model=256,
-        num_heads=8,
-        ffn_dim=1024,
-        num_layers=4,
-        dtype="float16",
-        causal=False,
-        padding_ratio=0.0,
-    )
-
-    assert tuning.deployable_candidate_id_for_policy(launch, "auto") == "eager-auto"
     assert (
-        tuning.deployable_candidate_id_for_policy(launch, "cuda-graph")
-        == "launch-cudagraph"
+        tuning.deployable_candidate_id_for_policy(shape, variant, "batch-tiled")
+        == "batch-tiled"
     )
-    assert (
-        tuning.deployable_candidate_id_for_policy(
-            launch,
-            "balanced-cuda-graph",
-        )
-        is None
-    )
+    assert tuning.deployable_candidate_id_for_policy(shape, variant, "graph") is None
 
 
-def test_tuning_case_runs_serial_candidates_and_selects_correct_winner(
-    monkeypatch: pytest.MonkeyPatch,
+def test_tuning_runs_serial_candidates_and_selects_the_measured_winner(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[dict[str, Any]] = []
+    solution_root = tmp_path / "solution"
+    solution_root.mkdir()
+    (solution_root / "transformer.py").write_text("VALUE = 1\n", encoding="utf-8")
+    implementation_hash = solution_implementation_hash(solution_root)
+    calls: list[str] = []
 
-    def fake_run_managed_benchmark(
-        project_root: Path,
-        **kwargs: Any,
+    def fake_run(
+        _project_root: Path,
+        *,
+        candidate_id: str,
+        solution_policy: str,
+        result_dir: Path,
+        **_kwargs: Any,
     ) -> tuple[dict[str, Any], Path]:
-        del project_root
-        protocol = kwargs["protocol"]
-        policy = kwargs["solution_policy"]
-        calls.append(
-            {
-                "policy": policy,
-                "compile_solution": protocol.compile_solution,
-                "compile_mode": protocol.compile_mode,
-                "sweep_id": kwargs["sweep_id"],
-            }
-        )
-        speedup = 1.25 if protocol.compile_solution else 1.05
+        calls.append(candidate_id)
+        speedup = {"eager-auto": 1.0, "causal-sdpa": 1.4}[candidate_id]
+        target = 2.0 / speedup
         result = {
+            "run_id": f"run-{candidate_id}",
             "outcome": "success",
-            "correctness": {"passed": True},
+            "correctness": {
+                "passed": True,
+                "failed_elements": 0,
+                "max_abs_error": 0.0,
+            },
             "performance": {
-                "baseline": {"median_ms": 2.0},
-                "target": {"median_ms": 2.0 / speedup, "p90_ms": 1.8},
+                "baseline": {"median_ms": 2.0, "p90_ms": 2.0},
+                "target": {"median_ms": target, "p90_ms": target},
                 "speedup": speedup,
             },
-            "execution_path": {
-                "requested_policy": policy,
-                "selected_policy": policy,
-            },
             "source": {
-                "solution_sha256": "fixture-solution-hash",
-                "official_sha256": _OFFICIAL_HASH,
+                "solution_sha256": implementation_hash,
+                "official_sha256": "fixture-official",
             },
+            "execution_path": _execution_path(candidate_id),
         }
-        return result, tmp_path / f"{policy}-{protocol.compile_mode}.json"
+        return result, result_dir / f"{candidate_id}.json"
 
-    monkeypatch.setattr(tuning, "run_managed_benchmark", fake_run_managed_benchmark)
-    routing_plan = {
-        "source": "hardware_cost_model",
-        "bottleneck_class": "balanced",
-        "workload_analysis": {"estimated_bytes": 123},
-        "routing_signals": {"launch_dominant": False},
-        "candidate_order": ["eager-torch", "compile-default"],
-    }
-    device_profile = {
-        "device_type": "cuda",
-        "device_name": "fixture-gpu",
-        "compute_capability": "8.9",
-        "torch": "fixture-torch",
-        "cuda_runtime": "13.2",
-        "triton": "fixture-triton",
-    }
+    monkeypatch.setattr(tuning, "run_managed_benchmark", fake_run)
+
     summary = tuning.run_tuning_case(
         tmp_path,
-        workload_set_id="fixture",
-        workload_sha256="fixture-hash",
-        case=_case(),
-        base_protocol=MeasurementProtocol.for_preset("smoke"),
-        device="cuda:0",
-        requested_candidates=("eager-torch", "compile-default"),
-        routing_plan=routing_plan,
-        device_profile=device_profile,
+        workload_set_id="official_transformer_v1",
+        workload_sha256="fixture-workload",
+        shape=official_shape("official_02"),
+        variant=RunVariant(),
+        base_protocol=tiny_protocol(),
+        device="cpu",
+        requested_candidates=["eager-auto", "causal-sdpa"],
     )
 
-    assert calls == [
-        {
-            "policy": "torch",
-            "compile_solution": False,
-            "compile_mode": "default",
-            "sweep_id": calls[0]["sweep_id"],
-        },
-        {
-            "policy": "auto",
-            "compile_solution": True,
-            "compile_mode": "default",
-            "sweep_id": calls[0]["sweep_id"],
-        },
-    ]
-    assert summary["tuning_id"] == calls[0]["sweep_id"]
-    assert summary["official_consistent"] is True
-    assert summary["official_snapshot_sha256"] == _OFFICIAL_HASH
-    assert all(
-        observation["official_snapshot_sha256"] == _OFFICIAL_HASH
-        for observation in summary["observations"]
-    )
-    assert summary["winner"]["candidate_id"] == "compile-default"
-    assert summary["winner_basis"] == ("full_transformer_correctness_and_paired_timing")
-    assert len(summary["observations"]) == 2
-    assert summary["routing_plan"] == {
-        key: value for key, value in routing_plan.items() if key != "workload_analysis"
-    }
-    assert summary["device_profile"] == device_profile
-    summary_path = Path(summary["summary_path"])
-    assert summary_path.is_file()
-    assert summary_path.name == "summary.json"
-    assert summary_path.parent.name == summary["tuning_id"]
-    assert summary_path.parent.parent.name == "tuning"
-    assert all(
-        observation["result_path"].startswith("runs/")
-        for observation in summary["observations"]
-    )
-    assert json.loads(summary_path.read_text(encoding="utf-8")) == summary
+    assert calls == ["eager-auto", "causal-sdpa"]
+    assert summary["complete"] is True
+    assert summary["winner"]["candidate_id"] == "causal-sdpa"
+    assert summary["deployable_winner"]["candidate_id"] == "causal-sdpa"
+    assert Path(summary["summary_path"]).exists()
 
 
-def test_select_candidates_rejects_a_route_that_does_not_fit_the_case() -> None:
-    with pytest.raises(ContractError, match="not available"):
-        tuning.select_candidates(_case(), ("padding-packed",))
-
-
-def test_select_candidates_requires_an_explicit_candidate() -> None:
-    with pytest.raises(ContractError, match="at least one explicit"):
-        tuning.select_candidates(_case(), ())
-
-
-def test_select_candidates_preserves_explicit_order() -> None:
-    selected = tuning.select_candidates(
-        _case(),
-        ("compile-default", "eager-auto", "eager-torch"),
-    )
-
-    assert [item.candidate_id for item in selected] == [
-        "compile-default",
-        "eager-auto",
-        "eager-torch",
-    ]
-
-
-def test_fallback_candidate_is_reported_but_not_ranked(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    def fake_run_managed_benchmark(
-        project_root: Path,
-        **kwargs: Any,
-    ) -> tuple[dict[str, Any], Path]:
-        del project_root
-        policy = kwargs["solution_policy"]
-        selected = "torch_fallback" if policy == "triton" else policy
-        speedup = 2.0 if policy == "triton" else 1.1
-        return (
-            {
-                "outcome": "success",
-                "correctness": {"passed": True},
-                "performance": {
-                    "baseline": {"median_ms": 2.0},
-                    "target": {"median_ms": 2.0 / speedup, "p90_ms": 2.0},
-                    "speedup": speedup,
-                },
-                "execution_path": {
-                    "requested_policy": policy,
-                    "selected_policy": selected,
-                    "resolved_qkv_layout": (
-                        "torch_three_contiguous_copies"
-                        if policy == "torch"
-                        else "view_fallback"
-                    ),
-                },
-                "source": {
-                    "solution_sha256": "fixture-solution-hash",
-                    "official_sha256": _OFFICIAL_HASH,
-                },
-            },
-            tmp_path / f"{policy}.json",
+def test_candidate_fallback_is_observed_but_cannot_win() -> None:
+    candidate = next(
+        item
+        for item in tuning.candidates_for_shape(
+            official_shape("official_02"), RunVariant()
         )
-
-    monkeypatch.setattr(tuning, "run_managed_benchmark", fake_run_managed_benchmark)
-    summary = tuning.run_tuning_case(
-        tmp_path,
-        workload_set_id="fixture",
-        workload_sha256="fixture-hash",
-        case=_case(),
-        base_protocol=MeasurementProtocol.for_preset("smoke"),
-        device="cuda:0",
-        requested_candidates=("eager-triton", "eager-torch"),
+        if item.candidate_id == "causal-sdpa"
     )
+    result = {
+        "run_id": "fallback",
+        "outcome": "success",
+        "correctness": {"passed": True, "failed_elements": 0},
+        "performance": {
+            "baseline": {"median_ms": 2.0},
+            "target": {"median_ms": 1.0, "p90_ms": 1.0},
+            "speedup": 2.0,
+        },
+        "source": {
+            "solution_sha256": "fixture-solution",
+            "official_sha256": "fixture-official",
+        },
+        "execution_path": {
+            "requested_policy": "causal-sdpa",
+            "selected_policy": "safe",
+        },
+    }
 
-    assert summary["observations"][0]["policy_applied"] is False
-    assert summary["winner"]["candidate_id"] == "eager-torch"
+    observation = tuning._observation(candidate, result, Path("fallback.json"))
+
+    assert observation["policy_applied"] is False
 
 
-def test_padding_candidate_requires_the_triton_fusion_route(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    def fake_run_managed_benchmark(
-        project_root: Path,
-        **kwargs: Any,
-    ) -> tuple[dict[str, Any], Path]:
-        del project_root
-        policy = kwargs["solution_policy"]
-        return (
-            {
-                "outcome": "success",
-                "correctness": {"passed": True},
-                "performance": {
-                    "baseline": {"median_ms": 2.0},
-                    "target": {"median_ms": 1.0, "p90_ms": 1.1},
-                    "speedup": 2.0,
-                },
-                "execution_path": {
-                    "requested_policy": policy,
-                    "selected_policy": policy,
-                    "block_fusion": "torch_residual_fallback",
-                },
-                "source": {
-                    "solution_sha256": "fixture-solution-hash",
-                    "official_sha256": _OFFICIAL_HASH,
-                },
-            },
-            tmp_path / "padding-fallback.json",
-        )
+def test_graph_candidate_requires_replay_and_underlying_backend_evidence() -> None:
+    candidate = tuning.candidate_spec("graph")
+    assert candidate is not None
+    path = {
+        "requested_policy": "graph",
+        "selected_policy": "graph",
+        "attention_backend": "causal_sdpa",
+        "runtime_wrapper": "cuda_graph",
+        "batch_strategy": "full",
+        "block_backend": "torch",
+        "observed_execution": {
+            "attention_backends": ["causal_sdpa"],
+            "block_backends": ["torch"],
+            "runtime_wrappers": ["cuda_graph"],
+        },
+    }
 
-    monkeypatch.setattr(tuning, "run_managed_benchmark", fake_run_managed_benchmark)
-    summary = tuning.run_tuning_case(
-        tmp_path,
-        workload_set_id="fixture",
-        workload_sha256="fixture-hash",
-        case=_case(padding_ratio=0.5),
-        base_protocol=MeasurementProtocol.for_preset("smoke"),
-        device="cuda:0",
-        requested_candidates=("padding-fused",),
-    )
-
-    assert summary["observations"][0]["policy_applied"] is False
-    assert summary["winner"] is None
+    assert candidate.evidence_matches(path)
+    del path["observed_execution"]["runtime_wrappers"]
+    assert not candidate.evidence_matches(path)

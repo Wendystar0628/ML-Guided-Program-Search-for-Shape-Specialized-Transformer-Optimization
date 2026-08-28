@@ -1,108 +1,50 @@
-"""Shared fixtures for focused runner tests."""
+"""Small shared builders for runner tests."""
 
 from __future__ import annotations
 
-import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
-from project_identity import solution_implementation_hash
+from project_identity import official_snapshot_hash
 from runner.contracts import (
+    OFFICIAL_WORKLOAD_SET_ID,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
     load_workload_set,
+    select_transformer_shape,
 )
-from runner.tuning import candidates_for_case
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_OFFICIAL_SHA256 = (
-    "1630fe39ebc845beeaef73aaaf2d47e061fc56fd20777706c3ddc961664c266b"
-)
-WORKLOAD_SET_ID = "transformer_core_v1"
-EXPECTED_CASES = (
-    ("launch_s64_fp16", 1, 64, 256, 8, 1024, 4, "float16", False, 0.0),
-    ("balanced_s128_fp32", 8, 128, 512, 8, 2048, 6, "float32", False, 0.0),
-    ("balanced_s128_fp16", 8, 128, 512, 8, 2048, 6, "float16", False, 0.0),
-    ("attention_s2048_fp16", 1, 2048, 512, 8, 2048, 4, "float16", False, 0.0),
-    (
-        "attention_s2048_causal_fp16",
-        1,
-        2048,
-        512,
-        8,
-        2048,
-        4,
-        "float16",
-        True,
-        0.0,
-    ),
-    ("mask_s512_full_fp16", 8, 512, 512, 8, 2048, 4, "float16", False, 0.0),
-    (
-        "mask_s512_padding_fp16",
-        8,
-        512,
-        512,
-        8,
-        2048,
-        4,
-        "float16",
-        False,
-        0.75,
-    ),
-    (
-        "mask_s512_causal_padding_fp16",
-        8,
-        512,
-        512,
-        8,
-        2048,
-        4,
-        "float16",
-        True,
-        0.75,
-    ),
-    ("wide_s256_bf16", 16, 256, 1024, 8, 4096, 6, "bfloat16", False, 0.0),
-)
-EXPECTED_GROUPS = (
-    ("launch_graph", 0.2, ("launch_s64_fp16",)),
-    (
-        "balanced_precision",
-        0.2,
-        ("balanced_s128_fp32", "balanced_s128_fp16"),
-    ),
-    (
-        "long_attention",
-        0.2,
-        ("attention_s2048_fp16", "attention_s2048_causal_fp16"),
-    ),
-    (
-        "padding_mask",
-        0.2,
-        (
-            "mask_s512_full_fp16",
-            "mask_s512_padding_fp16",
-            "mask_s512_causal_padding_fp16",
-        ),
-    ),
-    ("wide_gemm_ffn", 0.2, ("wide_s256_bf16",)),
-)
+WORKLOAD_SET_ID = OFFICIAL_WORKLOAD_SET_ID
 
 
-def tiny_case(*, causal: bool = True, padding_ratio: float = 0.5) -> WorkloadCase:
-    return WorkloadCase(
+def official_shape(case_id: str = "official_02") -> TransformerShape:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    return select_transformer_shape(workload, case_id)
+
+
+def tiny_shape(*, causal: bool = True) -> TransformerShape:
+    return TransformerShape(
         case_id="tiny_cpu_smoke",
         batch_size=1,
         seq_len=2,
         d_model=4,
         num_heads=1,
-        ffn_dim=8,
+        ffn_dim=4,
         num_layers=1,
-        dtype="float32",
         causal=causal,
-        padding_ratio=padding_ratio,
-        input_scale=1.0,
     )
+
+
+def official_variant(**changes: Any) -> RunVariant:
+    values: dict[str, Any] = {
+        "dtype": "float32",
+        "padding_ratio": 0.0,
+        "input_scale": 1.0,
+    }
+    values.update(changes)
+    return RunVariant(**values)
 
 
 def tiny_protocol() -> MeasurementProtocol:
@@ -124,57 +66,63 @@ def successful_run(
     speedup: float,
     *,
     sweep_id: str = "fixture-sweep",
+    policy: str = "causal-sdpa",
 ) -> dict[str, Any]:
-    workload_set = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
-    case = next(case for case in workload_set.cases if case.case_id == case_id)
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    shape = select_transformer_shape(workload, case_id)
+    protocol = tiny_protocol()
+    variant = official_variant()
     target_median = 2.0 / speedup
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": f"fixture-{case_id}",
         "run_kind": "benchmark",
         "target": "solution",
         "sweep_id": sweep_id,
+        "created_at": "2026-08-28T00:00:00+00:00",
         "outcome": "success",
         "source": {
-            "official_sha256": EXPECTED_OFFICIAL_SHA256,
+            "official_sha256": official_snapshot_hash(PROJECT_ROOT),
             "solution_sha256": "fixture-solution-hash",
         },
         "workload": {
             "set_id": WORKLOAD_SET_ID,
-            "sha256": workload_set.sha256,
-            "case": case.as_dict(),
+            "sha256": workload.sha256,
+            "shape": shape.as_dict(),
+            "variant": variant.as_dict(),
         },
-        "protocol": {"accuracy_trials": 1, "repeats": 1, "rounds": 1},
+        "protocol": protocol.as_dict(),
         "environment": {"device": "cuda:0", "gpu": "fixture-gpu"},
         "correctness": {
             "passed": True,
-            "trial_count": 1,
+            "trial_count": protocol.accuracy_trials,
             "failed_elements": 0,
             "max_abs_error": 0.0,
+            "max_relative_error": 0.0,
         },
         "performance": {
             "timer": "cuda_event",
-            "sample_count": 1,
-            "baseline": {
-                "median_ms": 2.0,
-                "p90_ms": 2.0,
-                "round_medians_ms": [2.0],
-            },
-            "target": {
-                "median_ms": target_median,
-                "p90_ms": target_median,
-                "round_medians_ms": [target_median],
-            },
+            "sample_count": protocol.repeats * protocol.rounds,
+            "baseline": {"median_ms": 2.0, "p90_ms": 2.0},
+            "target": {"median_ms": target_median, "p90_ms": target_median},
             "speedup": speedup,
+        },
+        "execution_path": {
+            "requested_policy": policy,
+            "selected_policy": policy,
+            "attention_backend": "causal_sdpa",
+            "runtime_wrapper": "eager",
+            "batch_strategy": "full",
+            "block_backend": "torch",
         },
     }
 
 
 def routing_probe_result() -> dict[str, Any]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "run_id": "fixture-routing-probe",
-        "created_at": "2026-08-27T00:00:00+00:00",
+        "created_at": "2026-08-28T00:00:00+00:00",
         "requested_device": "cuda:0",
         "outcome": "success",
         "environment": {
@@ -229,86 +177,10 @@ def routing_probe_result() -> dict[str, Any]:
                 "gemm_float16": {"tflops": 80.0},
                 "gemm_bfloat16": {"tflops": 75.0},
                 "gemm_float32": {"tflops": 40.0},
-                "softmax_fp32": {"throughput_gigaelements_per_second": 250.0},
+                "softmax_fp32": {
+                    "throughput_gigaelements_per_second": 250.0
+                },
             },
             "sdpa": {"available": True, "scenarios": []},
         },
     }
-
-
-def staged_tuning_summary(
-    case: WorkloadCase,
-    candidate_order: list[str],
-    preset: str,
-    tmp_path: Path,
-) -> dict[str, Any]:
-    candidates = {
-        candidate.candidate_id: candidate for candidate in candidates_for_case(case)
-    }
-    observations: list[dict[str, Any]] = []
-    for index, candidate_id in enumerate(candidate_order):
-        candidate = candidates[candidate_id]
-        speedup = 1.0 + index * 0.1
-        target = 2.0 / speedup
-        observations.append(
-            {
-                "candidate_id": candidate_id,
-                "solution_policy": candidate.solution_policy,
-                "compile_solution": candidate.compile_solution,
-                "cuda_graph_solution": candidate.cuda_graph_solution,
-                "outcome": "success",
-                "correctness_passed": True,
-                "failed_elements": 0,
-                "policy_applied": True,
-                "speedup": speedup,
-                "conservative_speedup": speedup,
-                "baseline_round_medians_ms": [2.0, 2.0],
-                "target_round_medians_ms": [target, target],
-                "target_median_ms": target,
-                "target_p90_ms": target * 1.01,
-                "official_snapshot_sha256": EXPECTED_OFFICIAL_SHA256,
-                "execution_path": {
-                    "requested_policy": candidate.solution_policy,
-                    "selected_policy": candidate.solution_policy,
-                },
-            }
-        )
-    deployable = [
-        item
-        for item in observations
-        if item["compile_solution"] is False and item["cuda_graph_solution"] is False
-    ]
-    implementation_hash = solution_implementation_hash(PROJECT_ROOT / "solution")
-    return {
-        "case_id": case.case_id,
-        "tuning_id": f"{preset}-{case.case_id}",
-        "summary_path": str(tmp_path / f"{preset}-{case.case_id}.json"),
-        "complete": True,
-        "protocol": {"preset": preset},
-        "source_consistent": True,
-        "implementation_consistent": True,
-        "official_consistent": True,
-        "official_snapshot_sha256": EXPECTED_OFFICIAL_SHA256,
-        "source_solution_sha256": implementation_hash,
-        "source_implementation_sha256": implementation_hash,
-        "observations": observations,
-        "winner": max(observations, key=lambda item: item["conservative_speedup"]),
-        "deployable_winner": max(
-            deployable,
-            key=lambda item: item["conservative_speedup"],
-            default=None,
-        ),
-    }
-
-
-def canonical_workload_hash() -> str:
-    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
-    raw_document = json.loads(workload.path.read_text(encoding="utf-8"))
-    canonical = json.dumps(
-        raw_document,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()

@@ -58,30 +58,74 @@ def canonical_json_sha256(path: Path) -> str:
 
 
 def official_snapshot_hash(project_root: Path) -> str:
-    """Return the verified hash of the repository's official code snapshot."""
+    """Verify and hash the official benchmark together with its shape table."""
 
-    metadata_path = project_root.resolve() / "official" / "snapshot.json"
+    resolved_project = project_root.resolve()
+    metadata_path = resolved_project / "official" / "snapshot.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if not isinstance(metadata, dict):
         raise TypeError("official snapshot metadata must be a JSON object")
-    snapshot_value = metadata.get("snapshot_path")
-    expected_size = metadata.get("byte_count")
-    expected_hash = metadata.get("sha256")
-    if not isinstance(snapshot_value, str) or not snapshot_value:
-        raise ValueError("official snapshot metadata is missing snapshot_path")
-    if isinstance(expected_size, bool) or not isinstance(expected_size, int):
-        raise TypeError("official snapshot metadata has an invalid byte_count")
-    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
-        raise ValueError("official snapshot metadata has an invalid sha256")
-    snapshot_path = project_root.resolve() / snapshot_value
-    if not snapshot_path.is_file():
-        raise ValueError(f"official snapshot is missing: {snapshot_path}")
-    if snapshot_path.stat().st_size != expected_size:
-        raise ValueError("official snapshot byte count does not match metadata")
-    actual_hash = sha256_file(snapshot_path)
-    if actual_hash != expected_hash.lower():
-        raise ValueError("official snapshot checksum does not match metadata")
-    return actual_hash
+    required = {
+        "schema_version",
+        "source",
+        "benchmark",
+        "shapes",
+        "combined_sha256",
+    }
+    if set(metadata) != required or metadata.get("schema_version") != 2:
+        raise ValueError("unsupported official snapshot metadata schema")
+
+    expected_paths = {
+        "benchmark": "official/torch_transformer_benchmark.py",
+        "shapes": "official/test_shapes.json",
+    }
+    component_hashes: dict[str, str] = {}
+    for component, expected_path in expected_paths.items():
+        descriptor = metadata.get(component)
+        if not isinstance(descriptor, dict) or set(descriptor) != {
+            "path",
+            "byte_count",
+            "sha256",
+        }:
+            raise ValueError(f"invalid official {component} descriptor")
+        if descriptor.get("path") != expected_path:
+            raise ValueError(f"official {component} path is not canonical")
+        expected_size = descriptor.get("byte_count")
+        expected_hash = descriptor.get("sha256")
+        if isinstance(expected_size, bool) or not isinstance(expected_size, int):
+            raise TypeError(f"official {component} byte_count is invalid")
+        if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+            raise ValueError(f"official {component} sha256 is invalid")
+        component_path = resolved_project / expected_path
+        if not component_path.is_file():
+            raise ValueError(f"official {component} is missing: {component_path}")
+        if component_path.stat().st_size != expected_size:
+            raise ValueError(f"official {component} byte count does not match")
+        actual_hash = (
+            canonical_json_sha256(component_path)
+            if component == "shapes"
+            else sha256_file(component_path)
+        )
+        if actual_hash != expected_hash.lower():
+            raise ValueError(f"official {component} checksum does not match")
+        component_hashes[component] = actual_hash
+
+    combined_payload = {
+        "benchmark_sha256": component_hashes["benchmark"],
+        "schema_version": 2,
+        "shapes_sha256": component_hashes["shapes"],
+    }
+    combined_hash = hashlib.sha256(
+        json.dumps(
+            combined_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    expected_combined = metadata.get("combined_sha256")
+    if not isinstance(expected_combined, str) or expected_combined.lower() != combined_hash:
+        raise ValueError("official combined checksum does not match metadata")
+    return combined_hash
 
 
 __all__ = [

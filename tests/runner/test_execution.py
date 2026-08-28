@@ -11,7 +11,12 @@ import torch
 from torch import nn
 
 from official import torch_transformer_benchmark as official
-from runner.contracts import ContractError, MeasurementProtocol, WorkloadCase
+from runner.contracts import (
+    ContractError,
+    MeasurementProtocol,
+    RunVariant,
+    TransformerShape,
+)
 from runner.execution import (
     PreparedExecution,
     _validate_cuda_graph_composition,
@@ -26,19 +31,16 @@ from runner.result_contracts import WorkerRequest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _tiny_case() -> WorkloadCase:
-    return WorkloadCase(
+def _tiny_shape() -> TransformerShape:
+    return TransformerShape(
         case_id="execution_fixture",
         batch_size=1,
         seq_len=2,
         d_model=4,
         num_heads=1,
-        ffn_dim=8,
+        ffn_dim=4,
         num_layers=1,
-        dtype="float32",
-        causal=False,
-        padding_ratio=0.0,
-        input_scale=1.0,
+        causal=True,
     )
 
 
@@ -46,35 +48,25 @@ def _request(run_kind: str, protocol: MeasurementProtocol) -> WorkerRequest:
     return WorkerRequest(
         run_kind=run_kind,  # type: ignore[arg-type]
         project_root=PROJECT_ROOT,
-        case=_tiny_case(),
+        shape=_tiny_shape(),
+        variant=RunVariant(),
         protocol=protocol,
         device="cpu",
         target="baseline",
     )
 
 
-@pytest.mark.parametrize(
-    "protocol",
-    [
-        MeasurementProtocol(preset="smoke", compile_solution=True),
-        MeasurementProtocol(preset="smoke", cuda_graph_solution=True),
-    ],
-)
-def test_solution_graph_rejects_compile_or_outer_graph(
-    protocol: MeasurementProtocol,
-) -> None:
-    with pytest.raises(ContractError, match="Solution CUDA Graph"):
+def test_solution_graph_rejects_torch_compile() -> None:
+    with pytest.raises(ContractError, match="graph policy"):
         _validate_cuda_graph_composition(
-            {"runtime_wrapper": "solution_eager_cuda_graph"},
-            protocol,
+            {"runtime_wrapper": "cuda_graph"},
+            MeasurementProtocol(preset="smoke", compile_solution=True),
         )
 
 
 def test_operator_profile_rejects_the_solution_graph_wrapper() -> None:
     with pytest.raises(ContractError, match="hides per-operator"):
-        _validate_profile_execution_path(
-            {"runtime_wrapper": "solution_eager_cuda_graph"}
-        )
+        _validate_profile_execution_path({"runtime_wrapper": "cuda_graph"})
 
 
 def test_prepare_execution_returns_one_frozen_shared_context() -> None:
@@ -130,19 +122,17 @@ def test_cpu_formal_is_rejected_by_the_shared_preparation_path(
 def test_performance_alternates_order_and_uses_all_raw_samples(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    case = WorkloadCase(
+    shape = TransformerShape(
         case_id="timing_fixture",
         batch_size=1,
         seq_len=2,
         d_model=4,
         num_heads=1,
-        ffn_dim=8,
+        ffn_dim=4,
         num_layers=1,
-        dtype="float32",
-        causal=False,
-        padding_ratio=0.0,
-        input_scale=1.5,
+        causal=True,
     )
+    variant = RunVariant(input_scale=1.5)
     protocol = MeasurementProtocol(
         preset="smoke",
         seed=17,
@@ -152,13 +142,13 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
         rounds=3,
     )
     config = official.TransformerConfig(
-        batch_size=case.batch_size,
-        seq_len=case.seq_len,
-        d_model=case.d_model,
-        num_heads=case.num_heads,
-        ffn_dim=case.ffn_dim,
-        num_layers=case.num_layers,
-        causal=case.causal,
+        batch_size=shape.batch_size,
+        seq_len=shape.seq_len,
+        d_model=shape.d_model,
+        num_heads=shape.num_heads,
+        ffn_dim=shape.ffn_dim,
+        num_layers=shape.num_layers,
+        causal=shape.causal,
     )
     fixed_inputs = torch.zeros(1, 2, 4)
     fixed_mask = torch.ones(1, 2, dtype=torch.bool)
@@ -214,7 +204,7 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
         baseline,
         solution,
         config,
-        case,
+        variant,
         protocol,
         torch.device("cpu"),
         torch.float32,

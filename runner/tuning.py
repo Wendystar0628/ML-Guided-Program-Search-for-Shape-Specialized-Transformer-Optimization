@@ -14,12 +14,13 @@ from runner.candidates import (
     CandidateSpec,
     candidate_spec,
     candidate_spec_for_policy,
-    candidate_specs_for_case,
+    candidate_specs_for_shape,
 )
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
     atomic_write_json,
     new_run_id,
     utc_now,
@@ -69,7 +70,7 @@ def _compact_device_profile(
 
 
 def _compact_routing_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
-    """Drop workload estimates already recoverable from the stored case."""
+    """Drop workload estimates recoverable from the stored shape and variant."""
 
     return {field: plan[field] for field in _ROUTING_PLAN_FIELDS if field in plan}
 
@@ -85,13 +86,19 @@ def _installed_triton_version() -> str:
     return str(version) if version is not None else "unknown"
 
 
-def candidates_for_case(case: WorkloadCase) -> tuple[CandidateSpec, ...]:
-    """Return the small candidate set that is meaningful for one workload case."""
+def candidates_for_shape(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> tuple[CandidateSpec, ...]:
+    """Return the small candidate set meaningful for one shape variant."""
 
-    if not isinstance(case, WorkloadCase):
-        raise TypeError("case must be a WorkloadCase")
-    case.validate()
-    return candidate_specs_for_case(case)
+    if not isinstance(shape, TransformerShape):
+        raise TypeError("shape must be a TransformerShape")
+    if not isinstance(variant, RunVariant):
+        raise TypeError("variant must be a RunVariant")
+    shape.validate()
+    variant.validate()
+    return candidate_specs_for_shape(shape, variant)
 
 
 def is_deployable_candidate(candidate: CandidateSpec) -> bool:
@@ -102,32 +109,37 @@ def is_deployable_candidate(candidate: CandidateSpec) -> bool:
 
 
 def _deployable_candidates_by_policy(
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     *,
     rejected_ids: set[str] | None = None,
 ) -> dict[str, CandidateSpec]:
     rejected = rejected_ids or set()
     by_policy: dict[str, CandidateSpec] = {}
-    for candidate in candidates_for_case(case):
+    for candidate in candidates_for_shape(shape, variant):
         if not is_deployable_candidate(candidate) or candidate.candidate_id in rejected:
             continue
         if candidate.solution_policy in by_policy:
             raise ContractError(
                 f"multiple deployable candidates map to policy "
-                f"{candidate.solution_policy!r} for {case.case_id}"
+                f"{candidate.solution_policy!r} for {shape.case_id}"
             )
         by_policy[candidate.solution_policy] = candidate
     return by_policy
 
 
-def calibration_route_key(case: WorkloadCase) -> tuple[Any, ...]:
+def calibration_route_key(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> tuple[Any, ...]:
     """Return the workload fields visible to one calibrated dispatch route."""
 
-    return workload_route_identity(case)
+    return workload_route_identity(shape, variant)
 
 
 def align_shared_smoke_plans(
-    cases: Sequence[WorkloadCase],
+    shapes: Sequence[TransformerShape],
+    variant: RunVariant,
     plans: Sequence[Mapping[str, Any]],
     incumbent_candidate_ids: Sequence[str | None],
     *,
@@ -135,12 +147,12 @@ def align_shared_smoke_plans(
 ) -> list[dict[str, Any]]:
     """Give cases sharing one route key a common deployable Smoke shortlist."""
 
-    if len(cases) != len(plans) or len(cases) != len(incumbent_candidate_ids):
+    if len(shapes) != len(plans) or len(shapes) != len(incumbent_candidate_ids):
         raise ContractError("Smoke plan inputs must have the same length")
     aligned = [dict(plan) for plan in plans]
     groups: dict[tuple[Any, ...], list[int]] = {}
-    for index, case in enumerate(cases):
-        groups.setdefault(calibration_route_key(case), []).append(index)
+    for index, shape in enumerate(shapes):
+        groups.setdefault(calibration_route_key(shape, variant), []).append(index)
 
     for indices in groups.values():
         if len(indices) == 1:
@@ -148,11 +160,12 @@ def align_shared_smoke_plans(
         policy_candidates: list[dict[str, CandidateSpec]] = []
         ordered_policies: list[list[str]] = []
         for index in indices:
-            case = cases[index]
+            shape = shapes[index]
             rejections = aligned[index].get("capability_rejections", {})
             rejected_ids = set(rejections) if isinstance(rejections, Mapping) else set()
             by_policy = _deployable_candidates_by_policy(
-                case,
+                shape,
+                variant,
                 rejected_ids=rejected_ids,
             )
             by_id = {
@@ -162,7 +175,7 @@ def align_shared_smoke_plans(
             if not isinstance(raw_order, Sequence) or isinstance(
                 raw_order, (str, bytes)
             ):
-                raise ContractError(f"Smoke plan for {case.case_id} has no order")
+                raise ContractError(f"Smoke plan for {shape.case_id} has no order")
             order: list[str] = []
             for candidate_id in raw_order:
                 candidate = by_id.get(candidate_id)
@@ -193,7 +206,7 @@ def align_shared_smoke_plans(
             if candidate is None:
                 raise ContractError(
                     f"incumbent {incumbent_id!r} is unavailable for "
-                    f"{cases[index].case_id}"
+                    f"{shapes[index].case_id}"
                 )
             if candidate.solution_policy not in incumbents:
                 incumbents.append(candidate.solution_policy)
@@ -257,23 +270,29 @@ def align_shared_smoke_plans(
 
 
 def _eligible_smoke_observations(
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     summary: Mapping[str, Any],
 ) -> dict[str, Mapping[str, Any]]:
-    if summary.get("case_id") != case.case_id:
-        raise ContractError(f"Smoke summary does not match {case.case_id}")
+    if summary.get("case_id") != shape.case_id:
+        raise ContractError(f"Smoke summary does not match {shape.case_id}")
     protocol = summary.get("protocol")
     if not isinstance(protocol, Mapping) or protocol.get("preset") != "smoke":
-        raise ContractError(f"{case.case_id} finalist selection requires Smoke results")
+        raise ContractError(
+            f"{shape.case_id} finalist selection requires Smoke results"
+        )
     if (
         summary.get("complete") is not True
         or summary.get("source_consistent") is not True
         or summary.get("implementation_consistent") is not True
         or summary.get("official_consistent") is not True
     ):
-        raise ContractError(f"Smoke screening is incomplete for {case.case_id}")
+        raise ContractError(f"Smoke screening is incomplete for {shape.case_id}")
     eligible: dict[str, Mapping[str, Any]] = {}
-    for policy, candidate in _deployable_candidates_by_policy(case).items():
+    for policy, candidate in _deployable_candidates_by_policy(
+        shape,
+        variant,
+    ).items():
         try:
             observation = select_deployable_winner(
                 summary,
@@ -290,13 +309,16 @@ def _eligible_smoke_observations(
 
 
 def build_formal_candidate_plans(
-    cases: Sequence[WorkloadCase],
+    shapes: Sequence[TransformerShape],
+    variant: RunVariant,
     smoke_summaries: Sequence[Mapping[str, Any]],
     incumbent_candidate_ids: Sequence[str | None],
 ) -> list[dict[str, Any]]:
     """Build measured Formal controls and one shared deployable challenger."""
 
-    if len(cases) != len(smoke_summaries) or len(cases) != len(incumbent_candidate_ids):
+    if len(shapes) != len(smoke_summaries) or len(shapes) != len(
+        incumbent_candidate_ids
+    ):
         raise ContractError("Formal finalist inputs must have the same length")
     implementation_hashes = {
         summary.get("source_implementation_sha256") for summary in smoke_summaries
@@ -325,19 +347,19 @@ def build_formal_candidate_plans(
             "Smoke cases do not share one Solution and official snapshot"
         )
     eligible_by_case = [
-        _eligible_smoke_observations(case, summary)
-        for case, summary in zip(cases, smoke_summaries, strict=True)
+        _eligible_smoke_observations(shape, variant, summary)
+        for shape, summary in zip(shapes, smoke_summaries, strict=True)
     ]
-    plans: list[dict[str, Any] | None] = [None] * len(cases)
+    plans: list[dict[str, Any] | None] = [None] * len(shapes)
     groups: dict[tuple[Any, ...], list[int]] = {}
-    for index, case in enumerate(cases):
-        groups.setdefault(calibration_route_key(case), []).append(index)
+    for index, shape in enumerate(shapes):
+        groups.setdefault(calibration_route_key(shape, variant), []).append(index)
 
     for indices in groups.values():
         incumbent_policies: list[str] = []
         candidate_maps: list[dict[str, CandidateSpec]] = []
         for index in indices:
-            candidates = _deployable_candidates_by_policy(cases[index])
+            candidates = _deployable_candidates_by_policy(shapes[index], variant)
             candidate_maps.append(candidates)
             incumbent_id = incumbent_candidate_ids[index]
             if incumbent_id is not None:
@@ -352,7 +374,7 @@ def build_formal_candidate_plans(
                 if incumbent is None:
                     raise ContractError(
                         f"incumbent {incumbent_id!r} is unavailable for "
-                        f"{cases[index].case_id}"
+                        f"{shapes[index].case_id}"
                     )
                 if incumbent.solution_policy not in incumbent_policies:
                     incumbent_policies.append(incumbent.solution_policy)
@@ -366,7 +388,7 @@ def build_formal_candidate_plans(
             missing = set(control_policies) - set(eligible_by_case[index])
             if missing:
                 raise ContractError(
-                    f"Smoke controls failed for {cases[index].case_id}: "
+                    f"Smoke controls failed for {shapes[index].case_id}: "
                     f"{', '.join(sorted(missing))}"
                 )
 
@@ -385,13 +407,10 @@ def build_formal_candidate_plans(
             for index in group_indices:
                 observations = eligible_by_case[index]
                 control_speedup = max(
-                    float(observations[control]["conservative_speedup"])
-                    for control in controls
+                    float(observations[control]["speedup"]) for control in controls
                 )
                 challenger = observations[policy]
-                relative_gains.append(
-                    float(challenger["conservative_speedup"]) / control_speedup
-                )
+                relative_gains.append(float(challenger["speedup"]) / control_speedup)
                 p90_values.append(float(challenger["target_p90_ms"]))
             return (
                 -min(relative_gains),
@@ -414,7 +433,7 @@ def build_formal_candidate_plans(
             tuning_id = smoke_summaries[index].get("tuning_id")
             if not isinstance(tuning_id, str) or not tuning_id:
                 raise ContractError(
-                    f"Smoke summary is missing tuning_id for {cases[index].case_id}"
+                    f"Smoke summary is missing tuning_id for {shapes[index].case_id}"
                 )
             screening_ids.append(tuning_id)
         for member_offset, index in enumerate(indices):
@@ -444,43 +463,49 @@ def build_formal_candidate_plans(
 
 
 def deployable_candidate_id_for_policy(
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     policy: str,
 ) -> str | None:
     """Map one deployed policy back to its eager calibration candidate."""
 
-    spec = candidate_spec_for_policy(case, policy, deployable_only=True)
+    spec = candidate_spec_for_policy(
+        shape,
+        variant,
+        policy,
+        deployable_only=True,
+    )
     return spec.candidate_id if spec is not None else None
 
 
 def select_candidates(
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     requested_ids: Sequence[str],
 ) -> tuple[CandidateSpec, ...]:
-    """Select explicit candidates while rejecting names that do not fit the case."""
+    """Select explicit candidates that fit the requested shape variant."""
 
-    available = {item.candidate_id: item for item in candidates_for_case(case)}
+    available = {
+        item.candidate_id: item for item in candidates_for_shape(shape, variant)
+    }
     if not requested_ids:
         raise ContractError("at least one explicit tuning candidate is required")
     unknown = sorted(set(requested_ids) - set(available))
     if unknown:
         raise ContractError(
-            f"candidates are not available for {case.case_id}: {unknown}; "
+            f"candidates are not available for {shape.case_id}: {unknown}; "
             f"available={sorted(available)}"
         )
     return tuple(available[candidate_id] for candidate_id in requested_ids)
 
 
-def _candidate_protocol(
-    base: MeasurementProtocol,
-    candidate: CandidateSpec,
-) -> MeasurementProtocol:
+def _tuning_protocol(base: MeasurementProtocol) -> MeasurementProtocol:
+    """Use one uncompiled protocol for every deployable runtime policy."""
+
     protocol = replace(
         base,
         compile_baseline=False,
-        compile_solution=candidate.compile_solution,
-        cuda_graph_solution=candidate.cuda_graph_solution,
-        compile_mode=candidate.compile_mode,
+        compile_solution=False,
     )
     protocol.validate()
     return protocol
@@ -504,39 +529,9 @@ def _observation(
         and isinstance(execution_path, Mapping)
         and spec.evidence_matches(execution_path)
     )
-    baseline_rounds = (
-        baseline.get("round_medians_ms") if isinstance(baseline, dict) else None
-    )
-    target_rounds = target.get("round_medians_ms") if isinstance(target, dict) else None
-    paired_round_speedups: list[float] | None = None
-    if (
-        isinstance(baseline_rounds, list)
-        and isinstance(target_rounds, list)
-        and len(baseline_rounds) == len(target_rounds)
-        and baseline_rounds
-        and all(
-            isinstance(value, (int, float))
-            and not isinstance(value, bool)
-            and isfinite(float(value))
-            and float(value) > 0
-            for value in (*baseline_rounds, *target_rounds)
-        )
-    ):
-        paired_round_speedups = [
-            float(baseline_value) / float(target_value)
-            for baseline_value, target_value in zip(
-                baseline_rounds,
-                target_rounds,
-                strict=True,
-            )
-        ]
-    conservative_speedup = min(paired_round_speedups) if paired_round_speedups else None
     return {
         "candidate_id": candidate.candidate_id,
         "solution_policy": candidate.solution_policy,
-        "compile_solution": candidate.compile_solution,
-        "compile_mode": candidate.compile_mode,
-        "cuda_graph_solution": candidate.cuda_graph_solution,
         "outcome": result.get("outcome"),
         "correctness_passed": (
             correctness.get("passed") if isinstance(correctness, dict) else None
@@ -556,10 +551,6 @@ def _observation(
             target.get("median_ms") if isinstance(target, dict) else None
         ),
         "target_p90_ms": target.get("p90_ms") if isinstance(target, dict) else None,
-        "baseline_round_medians_ms": baseline_rounds,
-        "target_round_medians_ms": target_rounds,
-        "paired_round_speedups": paired_round_speedups,
-        "conservative_speedup": conservative_speedup,
         "speedup": (
             performance.get("speedup") if isinstance(performance, dict) else None
         ),
@@ -581,7 +572,8 @@ def run_tuning_case(
     *,
     workload_set_id: str,
     workload_sha256: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     base_protocol: MeasurementProtocol,
     device: str,
     requested_candidates: Sequence[str],
@@ -592,13 +584,14 @@ def run_tuning_case(
     with device_measurement_lease(
         project_root,
         device,
-        purpose=f"candidate tuning for {case.case_id}",
+        purpose=f"candidate tuning for {shape.case_id}",
     ):
         return _run_tuning_case(
             project_root,
             workload_set_id=workload_set_id,
             workload_sha256=workload_sha256,
-            case=case,
+            shape=shape,
+            variant=variant,
             base_protocol=base_protocol,
             device=device,
             requested_candidates=requested_candidates,
@@ -613,7 +606,8 @@ def _run_tuning_case(
     *,
     workload_set_id: str,
     workload_sha256: str,
-    case: WorkloadCase,
+    shape: TransformerShape,
+    variant: RunVariant,
     base_protocol: MeasurementProtocol,
     device: str,
     requested_candidates: Sequence[str],
@@ -632,13 +626,14 @@ def _run_tuning_case(
     implementation_hash_before = (
         solution_implementation_hash(solution_root) if solution_root.is_dir() else None
     )
-    candidates = select_candidates(case, requested_candidates)
+    candidates = select_candidates(shape, variant, requested_candidates)
+    protocol = _tuning_protocol(base_protocol)
     for candidate in candidates:
-        protocol = _candidate_protocol(base_protocol, candidate)
         result, result_path = run_managed_benchmark(
             project_root,
             workload_set_id=workload_set_id,
-            case=case,
+            shape=shape,
+            variant=variant,
             protocol=protocol,
             device=device,
             target="solution",
@@ -713,16 +708,14 @@ def _run_tuning_case(
         eligible = []
 
     def ranking_speedup(item: dict[str, Any]) -> float:
-        conservative = item.get("conservative_speedup")
-        return float(
-            conservative if isinstance(conservative, (int, float)) else item["speedup"]
-        )
+        return float(item["speedup"])
 
     winner = max(eligible, key=ranking_speedup) if eligible else None
+    deployable_candidate_ids = {
+        candidate.candidate_id for candidate in candidates if candidate.deployable
+    }
     deployable = [
-        item
-        for item in eligible
-        if item["compile_solution"] is False and item["cuda_graph_solution"] is False
+        item for item in eligible if item["candidate_id"] in deployable_candidate_ids
     ]
     deployable_winner = max(deployable, key=ranking_speedup) if deployable else None
     summary = {
@@ -734,7 +727,8 @@ def _run_tuning_case(
         "workload": {
             "set_id": workload_set_id,
             "sha256": workload_sha256,
-            "case": case.as_dict(),
+            "shape": shape.as_dict(),
+            "variant": variant.as_dict(),
         },
         "requested_device": device,
         "device_profile": compact_device_profile,
@@ -746,7 +740,7 @@ def _run_tuning_case(
                 "candidate_order": [item.candidate_id for item in candidates],
             }
         ),
-        "protocol": base_protocol.as_dict(),
+        "protocol": protocol.as_dict(),
         "source_solution_sha256": (
             next(iter(solution_hashes)) if len(solution_hashes) == 1 else None
         ),
@@ -759,8 +753,8 @@ def _run_tuning_case(
             implementation_hash_before if implementation_consistent else None
         ),
         "implementation_consistent": implementation_consistent,
-        "case_id": case.case_id,
-        "winner_basis": "full_transformer_correctness_and_paired_timing",
+        "case_id": shape.case_id,
+        "winner_basis": "full_transformer_correctness_and_median_timing",
         "observations": observations,
         "winner": winner,
         "deployable_winner": deployable_winner,

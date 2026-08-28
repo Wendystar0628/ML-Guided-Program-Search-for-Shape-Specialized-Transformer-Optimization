@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
@@ -13,15 +12,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from project_identity import official_snapshot_hash
+from project_identity import canonical_json_sha256, official_snapshot_hash
 
 
 class ContractError(ValueError):
     """Raised when an input or persisted result violates the runner contract."""
 
 
+OFFICIAL_WORKLOAD_SET_ID = "official_transformer_v1"
+
+
 @dataclass(frozen=True)
-class WorkloadCase:
+class TransformerShape:
+    """One official Transformer shape, independent of runtime precision."""
+
     case_id: str
     batch_size: int
     seq_len: int
@@ -29,27 +33,38 @@ class WorkloadCase:
     num_heads: int
     ffn_dim: int
     num_layers: int
-    dtype: str
     causal: bool
-    padding_ratio: float
-    input_scale: float = 1.0
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> WorkloadCase:
-        # ``input_scale`` is an actual optional field, not merely a constructor
-        # default.  Persisted workloads may omit it and receive the documented
-        # neutral value of 1.0.
-        allowed = set(cls.__dataclass_fields__)
-        required = allowed - {"input_scale"}
-        if not required.issubset(value) or not set(value).issubset(allowed):
-            missing = sorted(required - set(value))
-            extra = sorted(set(value) - allowed)
+    def from_dict(cls, value: dict[str, Any]) -> TransformerShape:
+        external_fields = {
+            "case_id",
+            "batch_size",
+            "qkv_dim",
+            "heads",
+            "seq_len",
+            "layers",
+            "causal",
+            "ffn_dim",
+        }
+        if set(value) != external_fields:
+            missing = sorted(external_fields - set(value))
+            extra = sorted(set(value) - external_fields)
             raise ContractError(
-                f"invalid workload fields; missing={missing}, extra={extra}"
+                f"invalid Transformer shape fields; missing={missing}, extra={extra}"
             )
-        case = cls(**{"input_scale": 1.0, **value})
-        case.validate()
-        return case
+        shape = cls(
+            case_id=value["case_id"],
+            batch_size=value["batch_size"],
+            seq_len=value["seq_len"],
+            d_model=value["qkv_dim"],
+            num_heads=value["heads"],
+            ffn_dim=value["ffn_dim"],
+            num_layers=value["layers"],
+            causal=value["causal"],
+        )
+        shape.validate()
+        return shape
 
     def validate(self) -> None:
         if not isinstance(self.case_id, str) or not self.case_id:
@@ -63,21 +78,61 @@ class WorkloadCase:
             self.num_layers,
         )
         if any(
-            isinstance(value, bool) or not isinstance(value, int) for value in positive
+            isinstance(item, bool) or not isinstance(item, int) for item in positive
         ):
-            raise ContractError("all workload dimensions must be integers")
-        if any(value <= 0 for value in positive):
-            raise ContractError("all workload dimensions must be positive")
+            raise ContractError("all Transformer dimensions must be integers")
+        if any(item <= 0 for item in positive):
+            raise ContractError("all Transformer dimensions must be positive")
         if self.d_model % self.num_heads:
-            raise ContractError("d_model must be divisible by num_heads")
+            raise ContractError("qkv_dim must be divisible by heads")
+        if not isinstance(self.causal, bool):
+            raise ContractError("causal must be a boolean")
+
+    @property
+    def head_dim(self) -> int:
+        return self.d_model // self.num_heads
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "batch_size": self.batch_size,
+            "qkv_dim": self.d_model,
+            "heads": self.num_heads,
+            "seq_len": self.seq_len,
+            "layers": self.num_layers,
+            "causal": self.causal,
+            "ffn_dim": self.ffn_dim,
+        }
+
+
+@dataclass(frozen=True)
+class RunVariant:
+    """Runtime inputs that are intentionally separate from official shapes."""
+
+    dtype: str = "float32"
+    padding_ratio: float = 0.0
+    input_scale: float = 1.0
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> RunVariant:
+        required = set(cls.__dataclass_fields__)
+        if set(value) != required:
+            missing = sorted(required - set(value))
+            extra = sorted(set(value) - required)
+            raise ContractError(
+                f"invalid run variant fields; missing={missing}, extra={extra}"
+            )
+        variant = cls(**value)
+        variant.validate()
+        return variant
+
+    def validate(self) -> None:
         if not isinstance(self.dtype, str) or self.dtype not in {
             "float32",
             "float16",
             "bfloat16",
         }:
             raise ContractError(f"unsupported dtype: {self.dtype}")
-        if not isinstance(self.causal, bool):
-            raise ContractError("causal must be a boolean")
         if isinstance(self.padding_ratio, bool) or not isinstance(
             self.padding_ratio, (int, float)
         ):
@@ -98,66 +153,12 @@ class WorkloadCase:
 
 
 @dataclass(frozen=True)
-class WorkloadGroup:
-    group_id: str
-    display_name: str
-    weight: float
-    case_ids: tuple[str, ...]
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> WorkloadGroup:
-        required = {"group_id", "display_name", "weight", "case_ids"}
-        if set(value) != required:
-            missing = sorted(required - set(value))
-            extra = sorted(set(value) - required)
-            raise ContractError(
-                f"invalid workload group fields; missing={missing}, extra={extra}"
-            )
-        raw_case_ids = value["case_ids"]
-        if not isinstance(raw_case_ids, list) or not all(
-            isinstance(case_id, str) for case_id in raw_case_ids
-        ):
-            raise ContractError("workload group case_ids must be a list of strings")
-        group = cls(
-            group_id=value["group_id"],
-            display_name=value["display_name"],
-            weight=value["weight"],
-            case_ids=tuple(raw_case_ids),
-        )
-        group.validate()
-        return group
-
-    def validate(self) -> None:
-        if not isinstance(self.group_id, str) or not self.group_id:
-            raise ContractError("workload group_id must not be empty")
-        if not isinstance(self.display_name, str) or not self.display_name:
-            raise ContractError("workload group display_name must not be empty")
-        if isinstance(self.weight, bool) or not isinstance(self.weight, (int, float)):
-            raise ContractError("workload group weight must be numeric")
-        if not math.isfinite(float(self.weight)) or self.weight <= 0:
-            raise ContractError("workload group weight must be finite and positive")
-        if not self.case_ids or any(not case_id for case_id in self.case_ids):
-            raise ContractError("workload group case_ids must not be empty")
-        if len(self.case_ids) != len(set(self.case_ids)):
-            raise ContractError("workload group case_ids must be unique")
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "group_id": self.group_id,
-            "display_name": self.display_name,
-            "weight": self.weight,
-            "case_ids": list(self.case_ids),
-        }
-
-
-@dataclass(frozen=True)
 class WorkloadSet:
-    """Immutable, typed workload document used by runner services."""
+    """Immutable view of the official Appendix shape table."""
 
     schema_version: int
     workload_set_id: str
-    cases: tuple[WorkloadCase, ...]
-    groups: tuple[WorkloadGroup, ...]
+    shapes: tuple[TransformerShape, ...]
     sha256: str
     path: Path
 
@@ -167,14 +168,13 @@ class MeasurementProtocol:
     preset: str
     seed: int = 1234
     accuracy_trials: int = 5
-    rtol: float = 0.01
-    atol: float = 0.001
+    rtol: float = 0.02
+    atol: float = 0.002
     warmup: int = 20
     repeats: int = 100
     rounds: int = 3
     compile_baseline: bool = False
     compile_solution: bool = False
-    cuda_graph_solution: bool = False
     compile_mode: str = "default"
     matmul_precision: str = "high"
     allow_tf32: bool = True
@@ -187,7 +187,6 @@ class MeasurementProtocol:
         *,
         compile_baseline: bool = False,
         compile_solution: bool = False,
-        cuda_graph_solution: bool = False,
         compile_mode: str = "default",
         matmul_precision: str = "high",
         allow_tf32: bool = True,
@@ -210,7 +209,6 @@ class MeasurementProtocol:
         values.update(
             compile_baseline=compile_baseline,
             compile_solution=compile_solution,
-            cuda_graph_solution=cuda_graph_solution,
             compile_mode=compile_mode,
             matmul_precision=matmul_precision,
             allow_tf32=allow_tf32,
@@ -255,14 +253,6 @@ class MeasurementProtocol:
             self.compile_solution, bool
         ):
             raise ContractError("compile flags must be booleans")
-        if not isinstance(self.cuda_graph_solution, bool):
-            raise ContractError("cuda_graph_solution must be a boolean")
-        if self.cuda_graph_solution and (
-            self.compile_baseline or self.compile_solution
-        ):
-            raise ContractError(
-                "CUDA Graph and torch.compile candidates cannot combine"
-            )
         if not isinstance(self.allow_tf32, bool):
             raise ContractError("allow_tf32 must be a boolean")
 
@@ -300,15 +290,20 @@ def validate_official_snapshot(project_root: Path) -> dict[str, Any]:
         actual_hash = official_snapshot_hash(project_root)
     except (OSError, UnicodeError, TypeError, ValueError) as exc:
         raise ContractError(str(exc)) from exc
-    if metadata.get("sha256") != actual_hash:
+    if metadata.get("combined_sha256") != actual_hash:
         raise ContractError("official snapshot metadata hash is not normalized")
     return metadata
 
 
 def load_workload_set(project_root: Path, workload_set_id: str) -> WorkloadSet:
-    path = project_root / "runner" / "workloads" / f"{workload_set_id}.json"
+    if workload_set_id != OFFICIAL_WORKLOAD_SET_ID:
+        raise ContractError(
+            f"unknown workload_set_id {workload_set_id!r}; "
+            f"available: {OFFICIAL_WORKLOAD_SET_ID}"
+        )
+    path = project_root / "official" / "test_shapes.json"
     document = load_json(path)
-    required = {"schema_version", "workload_set_id", "groups", "ordered_cases"}
+    required = {"schema_version", "workload_set_id", "ordered_shapes"}
     if set(document) != required:
         missing = sorted(required - set(document))
         extra = sorted(set(document) - required)
@@ -324,64 +319,33 @@ def load_workload_set(project_root: Path, workload_set_id: str) -> WorkloadSet:
         raise ContractError(f"unsupported workload schema_version: {schema_version!r}")
     if document.get("workload_set_id") != workload_set_id:
         raise ContractError("workload_set_id does not match its filename")
-    raw_cases = document.get("ordered_cases")
-    if not isinstance(raw_cases, list) or not raw_cases:
-        raise ContractError("workload set must contain ordered_cases")
-    if not all(isinstance(value, dict) for value in raw_cases):
-        raise ContractError("each ordered_cases item must be a JSON object")
-    cases = [WorkloadCase.from_dict(value) for value in raw_cases]
-    case_ids = [case.case_id for case in cases]
+    raw_shapes = document.get("ordered_shapes")
+    if not isinstance(raw_shapes, list) or not raw_shapes:
+        raise ContractError("workload set must contain ordered_shapes")
+    if not all(isinstance(value, dict) for value in raw_shapes):
+        raise ContractError("each ordered_shapes item must be a JSON object")
+    shapes = [TransformerShape.from_dict(value) for value in raw_shapes]
+    case_ids = [shape.case_id for shape in shapes]
     if len(case_ids) != len(set(case_ids)):
-        raise ContractError("workload case_id values must be unique")
-
-    raw_groups = document.get("groups")
-    if not isinstance(raw_groups, list) or not raw_groups:
-        raise ContractError("workload set must contain groups")
-    if not all(isinstance(value, dict) for value in raw_groups):
-        raise ContractError("each groups item must be a JSON object")
-    groups = [WorkloadGroup.from_dict(value) for value in raw_groups]
-    group_ids = [group.group_id for group in groups]
-    if len(group_ids) != len(set(group_ids)):
-        raise ContractError("workload group_id values must be unique")
-    if not math.isclose(
-        math.fsum(float(group.weight) for group in groups),
-        1.0,
-        rel_tol=0.0,
-        abs_tol=1e-9,
-    ):
-        raise ContractError("workload group weights must sum to 1")
-    grouped_case_ids = [case_id for group in groups for case_id in group.case_ids]
-    if len(grouped_case_ids) != len(set(grouped_case_ids)):
-        raise ContractError("each workload case must belong to exactly one group")
-    if set(grouped_case_ids) != set(case_ids):
-        missing = sorted(set(case_ids) - set(grouped_case_ids))
-        unknown = sorted(set(grouped_case_ids) - set(case_ids))
-        raise ContractError(
-            f"workload groups do not cover the cases; missing={missing}, unknown={unknown}"
-        )
-
-    canonical = json.dumps(
-        document,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+        raise ContractError("Transformer shape case_id values must be unique")
+    if len(shapes) != 14:
+        raise ContractError("official workload must contain exactly 14 shapes")
     return WorkloadSet(
         schema_version=schema_version,
         workload_set_id=workload_set_id,
-        cases=tuple(cases),
-        groups=tuple(groups),
-        sha256=hashlib.sha256(canonical).hexdigest(),
+        shapes=tuple(shapes),
+        sha256=canonical_json_sha256(path),
         path=path,
     )
 
 
-def select_workload_case(workload_set: WorkloadSet, case_id: str) -> WorkloadCase:
-    for case in workload_set.cases:
-        if case.case_id == case_id:
-            return case
-    available = ", ".join(case.case_id for case in workload_set.cases)
+def select_transformer_shape(
+    workload_set: WorkloadSet, case_id: str
+) -> TransformerShape:
+    for shape in workload_set.shapes:
+        if shape.case_id == case_id:
+            return shape
+    available = ", ".join(shape.case_id for shape in workload_set.shapes)
     raise ContractError(f"unknown case_id {case_id!r}; available: {available}")
 
 

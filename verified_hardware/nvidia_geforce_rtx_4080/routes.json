@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "default_policy": "auto",
   "routes": [
     {
@@ -9,40 +9,19 @@
         "triton": "3.7.1",
         "driver": "610.88",
         "cuda_runtime": "13.2",
-        "B": 16,
-        "S": 256,
-        "D": 1024,
-        "heads": 8,
-        "ffn": 4096,
-        "layers": 6,
-        "causal": false,
-        "dtype": "bfloat16",
-        "device_type": "cuda",
-        "device_name": "NVIDIA GeForce RTX 4080",
-        "compute_capability": "8.9"
-      },
-      "policy": "wide-triton-inplace"
-    },
-    {
-      "match": {
-        "platform_system": "Windows",
-        "torch": "2.12.1+cu132",
-        "triton": "3.7.1",
-        "driver": "610.88",
-        "cuda_runtime": "13.2",
-        "B": 8,
-        "S": 512,
-        "D": 512,
-        "heads": 8,
-        "ffn": 2048,
+        "B": 64,
+        "S": 1024,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
         "layers": 4,
         "causal": true,
-        "dtype": "float16",
+        "dtype": "float32",
         "device_type": "cuda",
         "device_name": "NVIDIA GeForce RTX 4080",
         "compute_capability": "8.9"
       },
-      "policy": "s512-native-softmax"
+      "policy": "inplace-block"
     },
     {
       "match": {
@@ -51,40 +30,19 @@
         "triton": "3.7.1",
         "driver": "610.88",
         "cuda_runtime": "13.2",
-        "B": 8,
-        "S": 512,
-        "D": 512,
-        "heads": 8,
-        "ffn": 2048,
-        "layers": 4,
-        "causal": false,
-        "dtype": "float16",
-        "device_type": "cuda",
-        "device_name": "NVIDIA GeForce RTX 4080",
-        "compute_capability": "8.9"
-      },
-      "policy": "s512-native-softmax"
-    },
-    {
-      "match": {
-        "platform_system": "Windows",
-        "torch": "2.12.1+cu132",
-        "triton": "3.7.1",
-        "driver": "610.88",
-        "cuda_runtime": "13.2",
-        "B": 1,
-        "S": 2048,
-        "D": 512,
-        "heads": 8,
-        "ffn": 2048,
+        "B": 64,
+        "S": 32,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
         "layers": 4,
         "causal": true,
-        "dtype": "float16",
+        "dtype": "float32",
         "device_type": "cuda",
         "device_name": "NVIDIA GeForce RTX 4080",
         "compute_capability": "8.9"
       },
-      "policy": "long-tail-online"
+      "policy": "graph"
     },
     {
       "match": {
@@ -93,55 +51,13 @@
         "triton": "3.7.1",
         "driver": "610.88",
         "cuda_runtime": "13.2",
-        "B": 1,
-        "S": 2048,
-        "D": 512,
-        "heads": 8,
-        "ffn": 2048,
+        "B": 64,
+        "S": 128,
+        "D": 128,
+        "heads": 16,
+        "ffn": 128,
         "layers": 4,
-        "causal": false,
-        "dtype": "float16",
-        "device_type": "cuda",
-        "device_name": "NVIDIA GeForce RTX 4080",
-        "compute_capability": "8.9"
-      },
-      "policy": "long-tail-online"
-    },
-    {
-      "match": {
-        "platform_system": "Windows",
-        "torch": "2.12.1+cu132",
-        "triton": "3.7.1",
-        "driver": "610.88",
-        "cuda_runtime": "13.2",
-        "B": 8,
-        "S": 128,
-        "D": 512,
-        "heads": 8,
-        "ffn": 2048,
-        "layers": 6,
-        "causal": false,
-        "dtype": "float16",
-        "device_type": "cuda",
-        "device_name": "NVIDIA GeForce RTX 4080",
-        "compute_capability": "8.9"
-      },
-      "policy": "balanced-cuda-graph"
-    },
-    {
-      "match": {
-        "platform_system": "Windows",
-        "torch": "2.12.1+cu132",
-        "triton": "3.7.1",
-        "driver": "610.88",
-        "cuda_runtime": "13.2",
-        "B": 8,
-        "S": 128,
-        "D": 512,
-        "heads": 8,
-        "ffn": 2048,
-        "layers": 6,
-        "causal": false,
+        "causal": true,
         "dtype": "float32",
         "device_type": "cuda",
         "device_name": "NVIDIA GeForce RTX 4080",
@@ -156,19 +72,208 @@
         "triton": "3.7.1",
         "driver": "610.88",
         "cuda_runtime": "13.2",
-        "B": 1,
-        "S": 64,
-        "D": 256,
-        "heads": 8,
-        "ffn": 1024,
+        "B": 64,
+        "S": 128,
+        "D": 128,
+        "heads": 2,
+        "ffn": 128,
         "layers": 4,
-        "causal": false,
-        "dtype": "float16",
+        "causal": true,
+        "dtype": "float32",
         "device_type": "cuda",
         "device_name": "NVIDIA GeForce RTX 4080",
         "compute_capability": "8.9"
       },
-      "policy": "cuda-graph"
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 64,
+        "S": 128,
+        "D": 128,
+        "heads": 1,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 64,
+        "S": 128,
+        "D": 1024,
+        "heads": 4,
+        "ffn": 1024,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "auto"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 64,
+        "S": 128,
+        "D": 32,
+        "heads": 4,
+        "ffn": 32,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 10000,
+        "S": 128,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "auto"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 128,
+        "S": 128,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 16,
+        "S": 128,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 4,
+        "S": 128,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 1,
+        "S": 128,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
+    },
+    {
+      "match": {
+        "platform_system": "Windows",
+        "torch": "2.12.1+cu132",
+        "triton": "3.7.1",
+        "driver": "610.88",
+        "cuda_runtime": "13.2",
+        "B": 64,
+        "S": 128,
+        "D": 128,
+        "heads": 4,
+        "ffn": 128,
+        "layers": 4,
+        "causal": true,
+        "dtype": "float32",
+        "device_type": "cuda",
+        "device_name": "NVIDIA GeForce RTX 4080",
+        "compute_capability": "8.9"
+      },
+      "policy": "graph"
     }
   ]
 }

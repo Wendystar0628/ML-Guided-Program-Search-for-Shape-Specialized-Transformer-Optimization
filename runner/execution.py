@@ -23,9 +23,11 @@ from project_identity import solution_implementation_hash
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
 )
 from runner.probe import collect_environment
+from runner.resource_guard import ResourceGuardError, ensure_local_benchmark_allowed
 from runner.result_contracts import WorkerRequest
 
 
@@ -112,105 +114,11 @@ def _validate_output(
     return output
 
 
-class _CudaGraphSolution(nn.Module):
-    """Bounded eager CUDA Graph wrapper used only by the tuning runner."""
-
-    def __init__(self, module: nn.Module) -> None:
-        super().__init__()
-        self.module = module
-        self.train(module.training)
-        self._signature: tuple[object, ...] | None = None
-        self._graph: torch.cuda.CUDAGraph | None = None
-        self._static_input: torch.Tensor | None = None
-        self._static_mask: torch.Tensor | None = None
-        self._static_output: torch.Tensor | None = None
-
-    @staticmethod
-    def _input_signature(
-        value: torch.Tensor,
-        valid_mask: torch.Tensor | None,
-    ) -> tuple[object, ...]:
-        mask_signature = None
-        if valid_mask is not None:
-            mask_signature = (
-                valid_mask.device,
-                valid_mask.dtype,
-                tuple(valid_mask.shape),
-                tuple(valid_mask.stride()),
-            )
-        return (
-            value.device,
-            value.dtype,
-            tuple(value.shape),
-            tuple(value.stride()),
-            mask_signature,
-        )
-
-    def _capture(
-        self,
-        value: torch.Tensor,
-        valid_mask: torch.Tensor | None,
-    ) -> None:
-        if not value.is_cuda:
-            raise ContractError("the eager CUDA Graph candidate requires CUDA input")
-        if self.training or torch.is_grad_enabled():
-            raise ContractError(
-                "the eager CUDA Graph candidate requires eval inference mode"
-            )
-        self._signature = self._input_signature(value, valid_mask)
-        self._static_input = value.detach().clone()
-        self._static_mask = None if valid_mask is None else valid_mask.detach().clone()
-
-        current_stream = torch.cuda.current_stream(value.device)
-        capture_stream = torch.cuda.Stream(device=value.device)
-        capture_stream.wait_stream(current_stream)
-        with torch.cuda.stream(capture_stream), torch.inference_mode():
-            for _ in range(3):
-                self.module(self._static_input, self._static_mask)
-        current_stream.wait_stream(capture_stream)
-
-        graph = torch.cuda.CUDAGraph()
-        with (
-            torch.inference_mode(),
-            torch.cuda.graph(
-                graph,
-                stream=capture_stream,
-            ),
-        ):
-            static_output = self.module(self._static_input, self._static_mask)
-        current_stream.wait_stream(capture_stream)
-        self._graph = graph
-        self._static_output = static_output
-
-    def forward(
-        self,
-        value: torch.Tensor,
-        valid_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        signature = self._input_signature(value, valid_mask)
-        if self._graph is None:
-            self._capture(value, valid_mask)
-        elif signature != self._signature:
-            raise ContractError(
-                "the eager CUDA Graph candidate received a different input signature"
-            )
-
-        assert self._static_input is not None
-        assert self._static_output is not None
-        assert self._graph is not None
-        self._static_input.copy_(value)
-        if valid_mask is not None:
-            assert self._static_mask is not None
-            self._static_mask.copy_(valid_mask)
-        self._graph.replay()
-        return self._static_output.clone()
-
-
 def run_correctness(
     baseline: nn.Module,
     solution: nn.Module,
     config: official.TransformerConfig,
-    case: WorkloadCase,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: torch.device,
     dtype: torch.dtype,
@@ -232,8 +140,8 @@ def run_correctness(
                 device=device,
                 dtype=dtype,
                 seed=seed,
-                padding_ratio=case.padding_ratio,
-                input_scale=case.input_scale,
+                padding_ratio=variant.padding_ratio,
+                input_scale=variant.input_scale,
             )
             input_snapshot = inputs.clone()
             mask_snapshot = valid_mask.clone()
@@ -272,11 +180,10 @@ def run_correctness(
         summary["failed_elements"] = failed_elements
     if max_abs_errors:
         summary["max_abs_error"] = max(max_abs_errors)
-    if not passed:
-        if max_relative_errors:
-            summary["max_relative_error"] = max(max_relative_errors)
-        if diagnostic is not None:
-            summary["diagnostic"] = diagnostic[-500:]
+    if max_relative_errors:
+        summary["max_relative_error"] = max(max_relative_errors)
+    if not passed and diagnostic is not None:
+        summary["diagnostic"] = diagnostic[-500:]
     return summary
 
 
@@ -320,7 +227,7 @@ def run_performance(
     baseline: nn.Module,
     solution: nn.Module,
     config: official.TransformerConfig,
-    case: WorkloadCase,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: torch.device,
     dtype: torch.dtype,
@@ -330,8 +237,8 @@ def run_performance(
         device=device,
         dtype=dtype,
         seed=protocol.seed + 100000,
-        padding_ratio=case.padding_ratio,
-        input_scale=case.input_scale,
+        padding_ratio=variant.padding_ratio,
+        input_scale=variant.input_scale,
     )
     input_snapshot = inputs.clone()
     mask_snapshot = valid_mask.clone()
@@ -390,7 +297,7 @@ def run_performance(
 def run_baseline_performance(
     baseline: nn.Module,
     config: official.TransformerConfig,
-    case: WorkloadCase,
+    variant: RunVariant,
     protocol: MeasurementProtocol,
     device: torch.device,
     dtype: torch.dtype,
@@ -400,8 +307,8 @@ def run_baseline_performance(
         device=device,
         dtype=dtype,
         seed=protocol.seed + 100000,
-        padding_ratio=case.padding_ratio,
-        input_scale=case.input_scale,
+        padding_ratio=variant.padding_ratio,
+        input_scale=variant.input_scale,
     )
     input_snapshot = inputs.clone()
     mask_snapshot = valid_mask.clone()
@@ -426,15 +333,15 @@ def run_baseline_performance(
     }
 
 
-def _config_for_case(case: WorkloadCase) -> official.TransformerConfig:
+def _config_for_shape(shape: TransformerShape) -> official.TransformerConfig:
     config = official.TransformerConfig(
-        batch_size=case.batch_size,
-        seq_len=case.seq_len,
-        d_model=case.d_model,
-        num_heads=case.num_heads,
-        ffn_dim=case.ffn_dim,
-        num_layers=case.num_layers,
-        causal=case.causal,
+        batch_size=shape.batch_size,
+        seq_len=shape.seq_len,
+        d_model=shape.d_model,
+        num_heads=shape.num_heads,
+        ffn_dim=shape.ffn_dim,
+        num_layers=shape.num_layers,
+        causal=shape.causal,
     )
     config.validate()
     return config
@@ -482,7 +389,8 @@ class PreparedExecution:
 
     request: WorkerRequest
     project_root: Path
-    case: WorkloadCase
+    shape: TransformerShape
+    variant: RunVariant
     protocol: MeasurementProtocol
     device: torch.device
     dtype: torch.dtype
@@ -546,20 +454,18 @@ def prepare_execution(
             )
 
         assert parsed_request.project_root is not None
-        assert parsed_request.case is not None
+        assert parsed_request.shape is not None
+        assert parsed_request.variant is not None
         assert parsed_request.protocol is not None
         assert parsed_request.target is not None
         project_root = parsed_request.project_root
-        case = parsed_request.case
+        shape = parsed_request.shape
+        variant = parsed_request.variant
         protocol = parsed_request.protocol
         target = parsed_request.target
 
-        if parsed_request.run_kind == "profile" and protocol.cuda_graph_solution:
-            raise ContractError(
-                "the eager CUDA Graph candidate is supported only by benchmark runs"
-            )
-        if target == "baseline" and protocol.cuda_graph_solution:
-            raise ContractError("CUDA Graph wrapping applies only to the Solution")
+        stage = "resource_guard"
+        ensure_local_benchmark_allowed(shape)
 
         stage = "device"
         device = official.resolve_device(parsed_request.device)
@@ -570,9 +476,9 @@ def prepare_execution(
         environment = collect_environment(device)
 
         stage = "dtype"
-        dtype = official.resolve_dtype(case.dtype)
+        dtype = official.resolve_dtype(variant.dtype)
         _configure_runtime(protocol, device)
-        config = _config_for_case(case)
+        config = _config_for_shape(shape)
 
         stage = "build_model"
         baseline = official.BaselineTransformer(config)
@@ -601,16 +507,11 @@ def prepare_execution(
 
         execution_path = _describe_execution_path(
             solution if solution is not None else baseline,
-            case=case,
+            shape=shape,
         )
         _validate_cuda_graph_composition(execution_path, protocol)
         if parsed_request.run_kind == "profile":
             _validate_profile_execution_path(execution_path)
-        elif solution is not None and protocol.cuda_graph_solution:
-            if device.type != "cuda":
-                raise ContractError("the eager CUDA Graph candidate requires CUDA")
-            solution = _CudaGraphSolution(solution).eval()
-            execution_path["runtime_wrapper"] = "eager_cuda_graph"
 
         stage = "compile"
         baseline = official.maybe_compile(
@@ -630,7 +531,8 @@ def prepare_execution(
         return PreparedExecution(
             request=parsed_request,
             project_root=project_root,
-            case=case,
+            shape=shape,
+            variant=variant,
             protocol=protocol,
             device=device,
             dtype=dtype,
@@ -661,17 +563,15 @@ def _run_prepared_correctness(
     if prepared.reporting_solution is None:
         return None, execution_path
 
-    observe_execution = (
-        not prepared.protocol.compile_solution
-        and not prepared.protocol.cuda_graph_solution
-        and _set_execution_observation(prepared.reporting_solution, True)
+    observe_execution = not prepared.protocol.compile_solution and (
+        _set_execution_observation(prepared.reporting_solution, True)
     )
     try:
         correctness = run_correctness(
             prepared.baseline,
             prepared.target_model,
             prepared.config,
-            prepared.case,
+            prepared.variant,
             prepared.protocol,
             prepared.device,
             prepared.dtype,
@@ -682,7 +582,7 @@ def _run_prepared_correctness(
     if observe_execution:
         execution_path = _describe_execution_path(
             prepared.reporting_solution,
-            case=prepared.case,
+            shape=prepared.shape,
         )
     return correctness, execution_path
 
@@ -728,7 +628,11 @@ def _exception_outcome(exc: BaseException, stage: str) -> str:
         return "oom"
     if isinstance(exc, KeyboardInterrupt):
         return "cancelled"
-    if stage in {"device", "dtype"}:
+    if isinstance(exc, ResourceGuardError) or stage in {
+        "resource_guard",
+        "device",
+        "dtype",
+    }:
         return "unsupported"
     if stage in {
         "load_solution",
@@ -805,7 +709,7 @@ def execute_benchmark(
                 prepared.baseline,
                 prepared.target_model,
                 prepared.config,
-                prepared.case,
+                prepared.variant,
                 prepared.protocol,
                 prepared.device,
                 prepared.dtype,
@@ -822,7 +726,7 @@ def execute_benchmark(
             performance = run_baseline_performance(
                 prepared.baseline,
                 prepared.config,
-                prepared.case,
+                prepared.variant,
                 prepared.protocol,
                 prepared.device,
                 prepared.dtype,
@@ -881,7 +785,7 @@ def _profile_time(event: Any, device: torch.device) -> float:
 def _describe_execution_path(
     model: nn.Module,
     *,
-    case: WorkloadCase,
+    shape: TransformerShape,
 ) -> dict[str, Any]:
     description: dict[str, Any]
     describe = getattr(model, "describe_execution_path", None)
@@ -893,7 +797,7 @@ def _describe_execution_path(
             "qkv_projection": "separate",
             "attention_policy": "official_explicit",
             "selected_attention_backend": "explicit",
-            "causal_mask": "per_forward" if case.causal else "none",
+            "causal_mask": "per_forward" if shape.causal else "none",
         }
     return description
 
@@ -912,28 +816,21 @@ def _validate_cuda_graph_composition(
     execution_path: dict[str, Any],
     protocol: MeasurementProtocol,
 ) -> None:
-    """Reject nested or compiled use of a Solution-owned CUDA Graph route."""
+    """Reject compiling a Solution-owned CUDA Graph route."""
 
-    if execution_path.get("runtime_wrapper") != "solution_eager_cuda_graph":
+    if execution_path.get("runtime_wrapper") != "cuda_graph":
         return
     if protocol.compile_solution:
-        raise ContractError(
-            "the Solution CUDA Graph route cannot combine with torch.compile; "
-            "select the auto policy for compile screening"
-        )
-    if protocol.cuda_graph_solution:
-        raise ContractError(
-            "the Solution CUDA Graph route cannot be wrapped by another CUDA Graph"
-        )
+        raise ContractError("the graph policy cannot combine with torch.compile")
 
 
 def _validate_profile_execution_path(execution_path: dict[str, Any]) -> None:
     """Keep operator profiling on an eager path with visible ATen work."""
 
-    if execution_path.get("runtime_wrapper") == "solution_eager_cuda_graph":
+    if execution_path.get("runtime_wrapper") == "cuda_graph":
         raise ContractError(
-            "the Solution CUDA Graph route hides per-operator profile work; "
-            "select the auto policy to profile its eager computation body"
+            "the graph policy hides per-operator profile work; select an eager "
+            "policy for operator profiling"
         )
 
 
@@ -989,8 +886,8 @@ def execute_profile(
             device=prepared.device,
             dtype=prepared.dtype,
             seed=prepared.protocol.seed + 100000,
-            padding_ratio=prepared.case.padding_ratio,
-            input_scale=prepared.case.input_scale,
+            padding_ratio=prepared.variant.padding_ratio,
+            input_scale=prepared.variant.input_scale,
         )
         input_snapshot = inputs.clone()
         mask_snapshot = valid_mask.clone()
@@ -1033,8 +930,7 @@ def execute_profile(
             key=lambda event: _profile_time(event, prepared.device), reverse=True
         )
         total_operator_self_time_us = math.fsum(
-            max(_profile_time(event, prepared.device), 0.0)
-            for event in operator_events
+            max(_profile_time(event, prepared.device), 0.0) for event in operator_events
         )
         if (
             not math.isfinite(total_operator_self_time_us)

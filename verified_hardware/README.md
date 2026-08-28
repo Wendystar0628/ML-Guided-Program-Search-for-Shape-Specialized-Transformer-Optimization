@@ -1,102 +1,76 @@
 # Verified hardware packages
 
-This directory separates hardware-neutral optimization code from conclusions
-that have been measured on one exact GPU and software stack.
+This directory separates the hardware-neutral optimizer from routes that have
+been measured on a specific GPU and software stack. A package is a compact,
+executable conclusion for one device; it is not a copy of the Transformer,
+kernels, workload, or runner.
 
-It is deliberately a small package catalog, not a performance database. The
-shared implementation remains in `solution/`, the shared workload and Runner
-remain in `runner/`, and generated exploratory measurements remain untracked.
+```text
+verified_hardware/<device_id>/
+├── README.md             Human-readable device and result summary
+├── profile.json          Compact measured hardware/runtime profile
+├── routes.json           Exact published routes
+├── manifest.json         Identity binding for the complete package
+├── results/
+│   └── reference_formal.json Compact official_01–official_13 formal result
+└── run_verified.py        Thin entry into the shared runner
+```
 
 ## Package contract
 
-Each verified GPU uses one stable directory name and contains:
+`routes.json` is the only deployed route table for that device. A route binds
+an exact published Transformer shape and measurement dtype to an exact GPU and
+runtime identity. Unmatched inputs use `auto`.
 
-```text
-<device_id>/
-  README.md                Human-readable conclusions, routes, and limitations
-  profile.json             Most recently calibrated hardware and runtime profile
-  routes.json              Exact routes for measured runtime/workload keys
-  manifest.json            Official, Workload, Solution, route, and Formal binding
-  run_verified.py          Thin entry into the shared Runner
-  results/
-    reference_formal.json  The latest tracked unified Formal SweepSummary
-    sweeps/                Generated isolated sweeps, ignored by Git
-```
+`manifest.json` binds the route table to:
 
-The package must not copy the Transformer implementation, kernels, workload,
-comparator, or benchmark logic. `run_verified.py` validates the local device,
-loads the sibling package through the normal verified catalog, invokes the
-shared Runner, confirms its route attribution, and keeps generated results
-inside the package.
+- `official/torch_transformer_benchmark.py`;
+- `official/test_shapes.json` and `official_transformer_v1`;
+- the current `solution/` implementation;
+- the formal measurement protocol;
+- the route table and compact formal summary.
 
-`routes.json` is the only machine-readable source for that device's deployed
-route decisions. `manifest.json` is the small trust boundary around those
-decisions: it binds the route-table hash to the official snapshot, exact
-Workload hash, current Solution implementation hash, Formal protocol, and
-compact Summary/Route identities.
-The shared dispatcher discovers only current packages. A missing, invalid, or
-stale manifest causes that package to be skipped closed, so its routes cannot
-silently control changed code; unmatched inputs use the shared `auto` fallback.
-The checked package launcher rejects the same condition before reporting a
-performance result. Duplicate exact keys across accepted packages are rejected
-rather than resolved by directory order.
+The loader skips a stale or incomplete package instead of applying old
+evidence to changed code. Package updates are written under a package lock and
+published as one transaction.
 
-`reference_formal.json` is a concise evidence snapshot, not raw history. It
-is the same unified `SweepSummary` written by the normal Sweep service; it is
-not converted into a second evidence schema. Case entries use stable `run_id`
-values rather than paths tied to the generated summary location. A later
-Formal run atomically replaces this one mutable reference; generated runs and
-sweep summaries remain immutable. Generated sweep directories are useful
-locally but remain ignored.
+## Calibration and execution
 
-## Adding another GPU
-
-Run the normal formal calibration on the target device:
+A new or changed GPU is calibrated through the shared service:
 
 ```powershell
 python -m runner calibrate --preset formal --device cuda:0
 ```
 
-Runner probes the device once, measures the bounded candidates with the complete
-Transformer Workloads, applies every correctness and promotion gate, then
-automatically locates or creates the stable package for the measured GPU
-identity. Internally, the command uses one Probe, a
-deployable Smoke Top-3 screen by default, and a dynamically reduced Formal set.
-On a new device the Formal set contains at most `eager-auto` and the best valid
-Smoke challenger. If an exact specialized route already exists, that incumbent
-is retained as a third possible Formal candidate. These controls are
-deduplicated before measurement.
+The service probes the device, analyzes `official_01` through `official_13`,
+runs a bounded smoke screen, formally remeasures the dynamic finalists, and
+creates or updates the matching package after correctness, observed-execution,
+and conservative-gain checks pass.
 
-Formal publication uses only the strict remeasurements, not the Smoke ranking.
-Workloads that share one runtime route key are evaluated jointly. Every Runner
-CUDA measurement uses the same reentrant device lease, so calibration, tuning,
-sweeps, probes, and direct measurements cannot overlap on one GPU. Formal
-calibration holds that lease for its complete run, and publication separately
-holds one package lock.
-`profile.json`, `routes.json`, and `manifest.json` are validated before writing
-and restored together if publication fails. Any incomplete package fails
-closed. A challenger below the promotion margin keeps the measured incumbent,
-while a new exact key without a qualified specialized winner records the
-formally measured `auto` decision.
+Run a known package through its thin launcher:
 
-Smoke calibration, plan-only calibration, and `tune` are non-deploying
-workflows. `tune` measures only an explicitly supplied `--candidate` list;
-automatic candidate planning, ranking, and publication belong to `calibrate`.
-An interrupted calibration retains one small checkpoint instead of exposing a
-second manual deployment path.
+```powershell
+python verified_hardware/<device_id>/run_verified.py --preset smoke
+python verified_hardware/<device_id>/run_verified.py --preset formal
+```
 
-After automatic publication, use the package launcher to reproduce the checked
-routes and retain one compact formal reference summary when needed.
+The launcher verifies the device and manifest, invokes the normal benchmark
+service, confirms the sibling route table was used, and writes generated runs
+under the same device package. It does not duplicate comparison, measurement,
+or route-selection logic.
 
-The package name is a stable GPU index, not the complete route condition. One
-GPU directory may contain multiple measured runtime routes. Exact matching
-still uses platform, PyTorch, CUDA Runtime, Triton, NVIDIA driver, dtype, and
-Transformer shape fields inside `routes.json`. A new runtime therefore requires
-measurement but does not create a second suffixed directory for the same GPU.
-Changing the official snapshot, Workload definition, Solution source, or route
-table makes the previous manifest stale until a complete Formal calibration
-refreshes it. Another package's winner is only a candidate-ordering hint.
+## Evidence boundary
 
-## Verified devices
+The compact `results/reference_formal.json` summary reports one row per
+`official_01`–`official_13`
+with baseline/solution median and P90 latency, speedup, correctness, and the
+observed policy. `official_14` remains in the published shape contract but is
+not part of the current default formal summary.
+
+Generated smoke runs, raw timing samples, profiler traces, failed candidates,
+and historical development results are not tracked in a device package. A
+result applies only to the recorded device and software stack.
+
+## Available packages
 
 - [NVIDIA GeForce RTX 4080](nvidia_geforce_rtx_4080/README.md)

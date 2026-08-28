@@ -1,4 +1,4 @@
-"""Boundary tests for explicit worker requests and shared result validation."""
+"""Boundary tests for worker IPC and compact benchmark results."""
 
 from __future__ import annotations
 
@@ -8,42 +8,28 @@ from typing import Any
 import pytest
 
 from runner import supervisor
-from runner.contracts import ContractError, MeasurementProtocol, WorkloadCase
+from runner.contracts import ContractError, RunVariant
 from runner.result_contracts import WorkerRequest, validate_benchmark_performance
+from tests.support.runner_fixtures import tiny_protocol, tiny_shape
 
 
-def _case() -> WorkloadCase:
-    return WorkloadCase(
-        case_id="fixture",
-        batch_size=1,
-        seq_len=16,
-        d_model=32,
-        num_heads=4,
-        ffn_dim=64,
-        num_layers=1,
-        dtype="float16",
-        causal=False,
-        padding_ratio=0.0,
-    )
-
-
-def test_worker_request_round_trips_an_explicit_solution_policy(
-    tmp_path: Path,
-) -> None:
+def test_worker_request_round_trips_shape_variant_and_policy(tmp_path: Path) -> None:
     request = WorkerRequest(
         run_kind="benchmark",
         project_root=tmp_path,
-        case=_case(),
-        protocol=MeasurementProtocol.for_preset("smoke"),
+        shape=tiny_shape(),
+        variant=RunVariant(),
+        protocol=tiny_protocol(),
         device="cuda:0",
         target="solution",
-        solution_policy="preprocess",
+        solution_policy="causal-sdpa",
     )
 
     parsed = WorkerRequest.from_dict(request.as_dict())
 
     assert parsed == request
-    assert parsed.solution_policy == "preprocess"
+    assert parsed.shape == tiny_shape()
+    assert parsed.variant == RunVariant()
 
 
 @pytest.mark.parametrize(
@@ -51,9 +37,10 @@ def test_worker_request_round_trips_an_explicit_solution_policy(
     [
         lambda request: request.update(solution_policy=""),
         lambda request: request.update(unexpected=True),
-        lambda request: request.pop("case"),
+        lambda request: request.pop("shape"),
+        lambda request: request.pop("variant"),
     ],
-    ids=("blank-policy", "unknown-field", "missing-case"),
+    ids=("blank-policy", "unknown-field", "missing-shape", "missing-variant"),
 )
 def test_worker_request_rejects_malformed_documents(
     tmp_path: Path,
@@ -62,8 +49,9 @@ def test_worker_request_rejects_malformed_documents(
     request = WorkerRequest(
         run_kind="benchmark",
         project_root=tmp_path,
-        case=_case(),
-        protocol=MeasurementProtocol.for_preset("smoke"),
+        shape=tiny_shape(),
+        variant=RunVariant(),
+        protocol=tiny_protocol(),
         device="cuda:0",
         target="solution",
         solution_policy="auto",
@@ -74,7 +62,7 @@ def test_worker_request_rejects_malformed_documents(
         WorkerRequest.from_dict(request)
 
 
-def test_managed_benchmark_forwards_explicit_policy(
+def test_managed_benchmark_forwards_explicit_variant_and_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -98,7 +86,6 @@ def test_managed_benchmark_forwards_explicit_policy(
                 "stage": "fixture",
                 "type": "FixtureUnsupported",
                 "message": "fixture",
-                "exit_code": None,
             },
         }
 
@@ -106,36 +93,31 @@ def test_managed_benchmark_forwards_explicit_policy(
     monkeypatch.setattr(
         supervisor,
         "validate_official_snapshot",
-        lambda _root: {"sha256": "fixture-official"},
+        lambda _root: {"combined_sha256": "fixture-official"},
     )
     supervisor.run_managed_benchmark(
         tmp_path,
-        workload_set_id="fixture",
+        workload_set_id="official_transformer_v1",
         workload_sha256="fixture-workload",
-        case=_case(),
-        protocol=MeasurementProtocol.for_preset("smoke"),
+        shape=tiny_shape(),
+        variant=RunVariant(),
+        protocol=tiny_protocol(),
         device="cuda:0",
-        solution_policy="preprocess",
+        solution_policy="causal-sdpa",
         result_dir=tmp_path / "results",
     )
 
-    assert captured_request["solution_policy"] == "preprocess"
+    assert captured_request["shape"] == tiny_shape().as_dict()
+    assert captured_request["variant"] == RunVariant().as_dict()
+    assert captured_request["solution_policy"] == "causal-sdpa"
 
 
 def test_shared_performance_contract_rejects_invalid_percentiles() -> None:
     performance = {
         "timer": "cuda_event",
         "sample_count": 2,
-        "baseline": {
-            "median_ms": 2.0,
-            "p90_ms": 1.0,
-            "round_medians_ms": [2.0],
-        },
-        "target": {
-            "median_ms": 1.0,
-            "p90_ms": 1.1,
-            "round_medians_ms": [1.0],
-        },
+        "baseline": {"median_ms": 2.0, "p90_ms": 1.0},
+        "target": {"median_ms": 1.0, "p90_ms": 1.1},
         "speedup": 2.0,
     }
 

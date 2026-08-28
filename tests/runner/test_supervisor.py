@@ -11,8 +11,8 @@ import pytest
 import torch
 
 from runner import supervisor
-from runner.contracts import ContractError
-from tests.support.runner_fixtures import PROJECT_ROOT, tiny_case, tiny_protocol
+from runner.contracts import ContractError, RunVariant
+from tests.support.runner_fixtures import PROJECT_ROOT, tiny_protocol, tiny_shape
 
 
 def test_managed_failure_persists_only_known_context(
@@ -116,7 +116,8 @@ def test_correctness_failure_persists_summary_not_trials(
     result, result_path = supervisor.run_managed_benchmark(
         PROJECT_ROOT,
         workload_set_id="tiny_test_fixture",
-        case=tiny_case(),
+        shape=tiny_shape(),
+        variant=RunVariant(),
         protocol=tiny_protocol(),
         device="cpu",
         target="solution",

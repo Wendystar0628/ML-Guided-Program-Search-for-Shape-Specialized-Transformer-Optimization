@@ -13,11 +13,13 @@ from runner.calibration import (
     CalibrationService,
 )
 from runner.contracts import (
+    OFFICIAL_WORKLOAD_SET_ID,
     ContractError,
     MeasurementProtocol,
-    WorkloadCase,
+    RunVariant,
+    TransformerShape,
     load_workload_set,
-    select_workload_case,
+    select_transformer_shape,
 )
 from runner.supervisor import (
     run_managed_benchmark,
@@ -29,12 +31,12 @@ from runner.sweep import (
     BenchmarkSweepService,
 )
 from runner.tuning import (
-    candidates_for_case,
+    candidates_for_shape,
     run_tuning_case,
 )
 from solution.policies import POLICY_SELECTORS, policy_ids
 
-DEFAULT_WORKLOAD_SET = "transformer_core_v1"
+DEFAULT_WORKLOAD_SET = OFFICIAL_WORKLOAD_SET_ID
 DEFAULT_CALIBRATION_SMOKE_LIMIT = 3
 
 
@@ -50,7 +52,6 @@ def _add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeout", type=float)
     parser.add_argument("--compile-baseline", action="store_true")
     parser.add_argument("--compile-solution", action="store_true")
-    parser.add_argument("--cuda-graph-solution", action="store_true")
     parser.add_argument(
         "--compile-mode",
         choices=("default", "reduce-overhead", "max-autotune"),
@@ -66,6 +67,16 @@ def _add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+
+
+def _add_variant_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float16", "bfloat16"),
+        default="float32",
+    )
+    parser.add_argument("--padding-ratio", type=float, default=0.0)
+    parser.add_argument("--input-scale", type=float, default=1.0)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -123,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="select the project-specific Solution path",
     )
     _add_protocol_arguments(benchmark)
+    _add_variant_arguments(benchmark)
 
     profile = subparsers.add_parser(
         "profile", help="collect a compact top-operation profile for one case"
@@ -140,6 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="select the project-specific Solution path",
     )
     _add_protocol_arguments(profile)
+    _add_variant_arguments(profile)
 
     tune = subparsers.add_parser(
         "tune",
@@ -174,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    _add_variant_arguments(tune)
 
     calibrate = subparsers.add_parser(
         "calibrate",
@@ -222,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    _add_variant_arguments(calibrate)
 
     return parser
 
@@ -231,12 +246,21 @@ def _protocol_from_args(args: argparse.Namespace) -> MeasurementProtocol:
         args.preset,
         compile_baseline=args.compile_baseline,
         compile_solution=args.compile_solution,
-        cuda_graph_solution=args.cuda_graph_solution,
         compile_mode=args.compile_mode,
         matmul_precision=args.matmul_precision,
         allow_tf32=args.allow_tf32,
         timeout_seconds=args.timeout,
     )
+
+
+def _variant_from_args(args: argparse.Namespace) -> RunVariant:
+    variant = RunVariant(
+        dtype=args.dtype,
+        padding_ratio=args.padding_ratio,
+        input_scale=args.input_scale,
+    )
+    variant.validate()
+    return variant
 
 
 def _exit_code(outcome: str) -> int:
@@ -285,19 +309,18 @@ def _print_run_summary(result: dict[str, Any], result_path: Path) -> None:
 def _print_sweep_summary(summary: dict[str, Any]) -> None:
     print("\n=== Sweep summary ===")
     print(f"outcome: {summary['sweep_outcome']}")
-    for case in summary["case_results"]:
-        speedup = case["speedup"]
+    for case_result in summary["case_results"]:
+        speedup = case_result["speedup"]
         suffix = f" | {speedup:.4f}x" if speedup is not None else ""
-        print(f"{case['case_id']}: {case['outcome']}{suffix}")
-    if summary["sweep_outcome"] == "complete" and summary["groups"]:
-        print("groups:")
-        for group in summary["groups"]:
-            print(f"  {group['display_name']}: {group['geomean_speedup']:.4f}x")
+        policy = case_result.get("actual_policy")
+        policy_suffix = f" | {policy}" if isinstance(policy, str) else ""
         print(
-            f"group-balanced geomean: {summary['group_balanced_geomean_speedup']:.4f}x"
+            f"{case_result['case_id']}: {case_result['outcome']}{suffix}{policy_suffix}"
         )
-        print(f"worst case: {summary['worst_case_speedup']:.4f}x")
-    elif summary["failed_cases"]:
+    geomean = summary.get("geomean_speedup")
+    if isinstance(geomean, (int, float)):
+        print(f"unweighted geomean: {geomean:.4f}x")
+    if summary["failed_cases"]:
         failures = ", ".join(
             f"{item['case_id']}={item['outcome']}" for item in summary["failed_cases"]
         )
@@ -306,13 +329,15 @@ def _print_sweep_summary(summary: dict[str, Any]) -> None:
 
 def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
     protocol = _protocol_from_args(args)
+    variant = _variant_from_args(args)
     if args.case_id is not None:
         workload_set = load_workload_set(project_root, args.workload_set)
-        case = select_workload_case(workload_set, args.case_id)
+        shape = select_transformer_shape(workload_set, args.case_id)
         result, result_path = run_managed_benchmark(
             project_root,
             workload_set_id=args.workload_set,
-            case=case,
+            shape=shape,
+            variant=variant,
             protocol=protocol,
             device=args.device,
             target=args.target,
@@ -323,8 +348,8 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
         _print_run_summary(result, result_path)
         return _exit_code(result["outcome"])
 
-    def on_case_started(index: int, total: int, case: WorkloadCase) -> None:
-        print(f"\n[{index}/{total}] {case.case_id}")
+    def on_case_started(index: int, total: int, shape: TransformerShape) -> None:
+        print(f"\n[{index}/{total}] {shape.case_id}")
 
     def on_case_completed(result: dict[str, Any], result_path: Path) -> None:
         _print_run_summary(result, result_path)
@@ -335,6 +360,7 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
             workload_set_id=args.workload_set,
             protocol=protocol,
             device=args.device,
+            variant=variant,
             target=args.target,
             solution_policy=args.solution_policy,
             output_root=args.result_dir,
@@ -351,11 +377,12 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
 
 def _run_profile(args: argparse.Namespace, project_root: Path) -> int:
     workload_set = load_workload_set(project_root, args.workload_set)
-    case = select_workload_case(workload_set, args.case_id)
+    shape = select_transformer_shape(workload_set, args.case_id)
     result, result_path = run_managed_profile(
         project_root,
         workload_set_id=args.workload_set,
-        case=case,
+        shape=shape,
+        variant=_variant_from_args(args),
         protocol=_protocol_from_args(args),
         device=args.device,
         target=args.target,
@@ -445,15 +472,11 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
             route = " | ".join(
                 str(value)
                 for value in (
-                    execution_path.get("resolved_qkv_layout"),
-                    execution_path.get("resolved_attention"),
-                    execution_path.get("padding_route"),
-                    execution_path.get("block_fusion"),
-                    (
-                        execution_path.get("resolved_ffn")
-                        if execution_path.get("resolved_ffn") != "torch_exact_gelu"
-                        else None
-                    ),
+                    execution_path.get("selected_policy"),
+                    execution_path.get("attention_backend"),
+                    execution_path.get("runtime_wrapper"),
+                    execution_path.get("batch_strategy"),
+                    execution_path.get("block_backend"),
                 )
                 if value not in (None, "none")
             )
@@ -485,6 +508,7 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
 
 def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
     workload_set = load_workload_set(project_root, args.workload_set)
+    variant = _variant_from_args(args)
     protocol = MeasurementProtocol.for_preset(
         args.preset,
         matmul_precision=args.matmul_precision,
@@ -493,8 +517,8 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
     )
     summaries: list[dict[str, Any]] = []
     for case_id in args.case_id:
-        case = select_workload_case(workload_set, case_id)
-        available = {item.candidate_id for item in candidates_for_case(case)}
+        shape = select_transformer_shape(workload_set, case_id)
+        available = {item.candidate_id for item in candidates_for_shape(shape, variant)}
         unavailable = sorted(set(args.candidate) - available)
         if unavailable:
             raise ContractError(
@@ -513,7 +537,8 @@ def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
             project_root,
             workload_set_id=args.workload_set,
             workload_sha256=workload_set.sha256,
-            case=case,
+            shape=shape,
+            variant=variant,
             base_protocol=protocol,
             device=args.device,
             requested_candidates=requested_candidates,
@@ -576,12 +601,12 @@ def _print_calibration_event(event: CalibrationEvent) -> None:
         print(f"Formal finalist verification skipped: {event.data['message']}")
     elif event.kind == "formal_plans_ready":
         print("\n=== Formal finalists selected from Smoke measurements ===")
-        for case, plan in zip(
-            event.data["cases"],
+        for shape, plan in zip(
+            event.data["shapes"],
             event.data["plans"],
             strict=True,
         ):
-            print(f"{case.case_id}: {', '.join(plan['candidate_order'])}")
+            print(f"{shape.case_id}: {', '.join(plan['candidate_order'])}")
     elif event.kind == "promotion_skipped":
         print(f"automatic route update skipped: {event.data['message']}")
     elif event.kind == "promotion_started":
@@ -589,13 +614,13 @@ def _print_calibration_event(event: CalibrationEvent) -> None:
     elif event.kind == "promotion_failed":
         print(f"automatic route update failed: {event.data['message']}")
     elif event.kind == "promotion_completed":
-        for case, winner in zip(
-            event.data["cases"],
+        for shape, winner in zip(
+            event.data["shapes"],
             event.data["winners"],
             strict=True,
         ):
             print(
-                f"{case.case_id}: deployed {winner['candidate_id']} -> "
+                f"{shape.case_id}: deployed {winner['candidate_id']} -> "
                 f"{winner['solution_policy']}"
             )
         route_path = event.data["route_path"]
@@ -615,6 +640,7 @@ def _run_calibrate(args: argparse.Namespace, project_root: Path) -> int:
         plan_only=args.plan_only,
         matmul_precision=args.matmul_precision,
         allow_tf32=args.allow_tf32,
+        variant=_variant_from_args(args),
     )
     result = CalibrationService().run(
         request,

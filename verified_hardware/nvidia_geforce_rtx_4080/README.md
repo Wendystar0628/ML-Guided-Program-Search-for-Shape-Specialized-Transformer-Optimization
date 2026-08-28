@@ -1,167 +1,116 @@
 # NVIDIA GeForce RTX 4080 verified package
 
-This directory contains the RTX 4080-specific conclusion. It is intentionally
-separate from the cross-hardware optimizer: the shared code can run on other
-devices, while the routes and speedups below only describe the exact measured
-RTX 4080 stack.
+This directory contains the RTX 4080-specific routes and compact measurements
+for the published `official_transformer_v1` workload. Shared Transformer,
+kernel, workload, and runner code remains at the repository root.
 
-## Verified environment
+## Scope
 
-| Item | Verified value |
-|---|---|
-| GPU | NVIDIA GeForce RTX 4080 |
-| Architecture key | Ada, compute capability `8.9` (`sm_89`) |
-| SM count | 76 |
-| L2 cache | 64 MiB |
-| Device memory | 16 GiB |
-| Memory bus | 256 bit |
-| Operating system | Windows |
-| Python | 3.12 |
-| PyTorch | `2.12.1+cu132` |
-| CUDA runtime | `13.2` |
-| Triton | `3.7.1` |
-| NVIDIA driver in the reference run | `610.88` |
+| Field | Value |
+| --- | --- |
+| GPU family | NVIDIA GeForce RTX 4080 |
+| CUDA architecture | Ada Lovelace, compute capability 8.9 |
+| Workload | `official_01` through `official_13` |
+| Published but excluded from the default sweep | `official_14` |
+| Correctness | `rtol=0.02`, `atol=0.002` |
+| Performance unit | Complete Transformer forward latency |
 
-[`profile.json`](profile.json) is the machine-readable identity used by the
-device launcher. The GPU name and Compute Capability identify this stable
-device directory; platform, PyTorch, CUDA Runtime, Triton, driver, dtype, and
-Workload shape remain mandatory exact-match fields in [`routes.json`](routes.json).
+The exact GPU name, driver, CUDA runtime, PyTorch, Triton, operating system,
+official snapshot, solution source, and protocol are machine-checked in the
+package files rather than approximated in this page.
 
-## Directory contents
+## Files
 
 ```text
 nvidia_geforce_rtx_4080/
-  README.md
-  profile.json
-  routes.json
-  manifest.json
-  run_verified.py
-  results/
-    reference_formal.json
-    sweeps/
+├── README.md
+├── profile.json
+├── routes.json
+├── manifest.json
+├── run_verified.py
+└── results/
+    └── reference_formal.json
 ```
 
-- `routes.json` is the only deployed RTX 4080 route table.
-- `manifest.json` binds that table to the official snapshot, measured Workload,
-  current Solution implementation, Formal protocol, and compact Summary/Route
-  identities.
-- `run_verified.py` calls the shared project Runner; it does not copy kernels or
-  Transformer code.
-- `results/reference_formal.json` is the tracked unified nine-case
-  `SweepSummary`.
-- `results/sweeps/` holds generated isolated sweeps and is ignored by Git.
+- `profile.json` records the compact RTX 4080 hardware/runtime profile.
+- `routes.json` contains only exact routes measured for the published shapes.
+- `manifest.json` binds those routes to the official benchmark, shapes,
+  solution, formal protocol, and compact result.
+- `results/reference_formal.json` is the authoritative per-shape result table.
+- `run_verified.py` is a thin entry into the shared verified runner.
 
-## Run the verified route
+No previous workload routes or historical development results belong in this
+package. A changed solution or runtime invalidates the manifest and falls back
+to `auto` until a new formal calibration is published.
 
-From the repository root:
+## Reproduce
+
+Run a quick checked sweep:
 
 ```powershell
 python verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --preset smoke
 ```
 
-For the complete formal protocol:
+Run the complete formal protocol:
 
 ```powershell
 python verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --preset formal
 ```
 
-The launcher performs five bounded actions:
+The launcher confirms the current device and package identities, runs the
+shared benchmark service over `official_01` through `official_13`, checks that
+the sibling route table supplied every matched route, and writes generated
+runs below this directory.
 
-1. reads the sibling profile, route table, and manifest;
-2. rejects the package if its route, official snapshot, Workload, or Solution
-   hash is stale;
-3. checks that the selected CUDA device and relevant software stack match this
-   package;
-4. calls the shared `BenchmarkSweepService` directly with the Workload named by
-   the manifest and the `dispatch` policy; and
-5. writes one isolated sweep directory containing per-case results and the
-   unified summary. A Formal run atomically refreshes `reference_formal.json`
-   with that same summary document; Case records use location-independent
-   `run_id` values.
+To recalibrate after a code or runtime change, use the shared entry:
 
-A hardware mismatch or stale manifest stops before performance claims are
-produced. To investigate a new GPU, changed software stack, modified Workload,
-or new Solution implementation, use the cross-hardware probe/calibration
-workflow from the [root README](../../README.md) instead of weakening this
-guard.
+```powershell
+python -m runner calibrate --preset formal --device cuda:0
+```
 
-## Exact route decisions
+## Results
 
-The table contains eight exact runtime keys and covers all nine core cases. The
-two non-causal S512 mask cases have the same runtime-visible shape key and
-deliberately share one route. Balanced FP32 has an explicit measured
-`auto` route, making that decision part of the RTX 4080 package rather than an
-accidental catalog fallback.
+The formal FP32 sweep used five accuracy trials, 20 warm-up iterations, 100
+timed repeats, three alternating timing rounds, high matmul precision, and TF32
+enabled. All 13 default shapes completed successfully. Across the complete
+sweep:
 
-| Core case | Selected policy | Main measured reason |
-|---|---|---|
-| `launch_s64_fp16` | `cuda-graph` | Full-model replay removes dominant host launch and framework gaps |
-| `balanced_s128_fp32` | `auto` (explicit route) | No specialized candidate justified replacing the shared safe path |
-| `balanced_s128_fp16` | `balanced-cuda-graph` | Fixed-shape graph replay reduces repeated launch overhead |
-| `attention_s2048_fp16` | `long-tail-online` | Final-block streaming attention avoids one full score/probability materialization |
-| `attention_s2048_causal_fp16` | `long-tail-online` | Same bounded streaming mechanism with causal handling |
-| `mask_s512_full_fp16` | `s512-native-softmax` | Fused scale/mask plus native half-output softmax removes avoidable conversions |
-| `mask_s512_padding_fp16` | `s512-native-softmax` | Shares the non-causal S512 exact shape key and consumes the original padding mask |
-| `mask_s512_causal_padding_fp16` | `s512-native-softmax` | Same S512 mechanism with the exact causal route key |
-| `wide_s256_bf16` | `wide-triton-inplace` | Single-pass QKV layout plus exact in-place GELU reuses the FFN buffer |
+- geometric-mean speedup: **4.1827x**;
+- failed output elements: **0**;
+- maximum absolute error: **0.00134444**, below `atol=0.002`;
+- `official_14`: excluded from the default sweep.
 
-Dispatch does not inspect mask contents or benchmark candidates during
-`forward`. Any hardware, software, dtype, shape, or causal condition outside
-these eight exact keys falls back to the shared default `auto` policy.
+The table below is a rounded presentation of
+[`results/reference_formal.json`](results/reference_formal.json). The JSON file
+is the authoritative result if displayed rounding differs.
 
-## Formal reference result
+| Shape | Baseline median | Baseline P90 | Solution median | Solution P90 | Speedup | Policy |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `official_01` | 1.6362 ms | 4.5255 ms | 0.6764 ms | 0.7352 ms | 2.419x | `graph` |
+| `official_02` | 1.7675 ms | 4.4503 ms | 0.1608 ms | 0.1608 ms | 10.994x | `graph` |
+| `official_03` | 1.8625 ms | 4.4392 ms | 0.1690 ms | 0.1700 ms | 11.024x | `graph` |
+| `official_04` | 1.6947 ms | 5.0818 ms | 0.2734 ms | 0.2756 ms | 6.198x | `graph` |
+| `official_05` | 4.1389 ms | 4.5259 ms | 1.2360 ms | 1.2421 ms | 3.349x | `graph` |
+| `official_06` | 446.5157 ms | 447.4913 ms | 131.3004 ms | 131.8300 ms | 3.401x | `auto` |
+| `official_07` | 1.6671 ms | 2.0549 ms | 0.5069 ms | 0.7384 ms | 3.289x | `graph` |
+| `official_08` | 13.2070 ms | 13.4277 ms | 11.7720 ms | 11.9963 ms | 1.122x | `auto` |
+| `official_09` | 1.4581 ms | 3.8819 ms | 0.6021 ms | 0.6574 ms | 2.422x | `graph` |
+| `official_10` | 1.6748 ms | 4.4538 ms | 0.6134 ms | 0.6687 ms | 2.730x | `graph` |
+| `official_11` | 7.1368 ms | 7.3575 ms | 1.6888 ms | 2.0576 ms | 4.226x | `auto` |
+| `official_12` | 1.7233 ms | 4.4845 ms | 0.2478 ms | 0.2488 ms | 6.954x | `graph` |
+| `official_13` | 108.5486 ms | 114.5298 ms | 13.4292 ms | 13.9710 ms | 8.083x | `inplace-block` |
 
-The current `transformer_core_v1` formal dispatch sweep used five correctness
-trials, 20 warm-up iterations, three alternating timing rounds, and 100
-samples per round. All 45 correctness trials passed the full Transformer
-comparator, and all nine case decisions came from calibrated RTX 4080 routes.
+CUDA Graph is the measured winner for the launch-sensitive fixed shapes;
+`auto` remains strongest for the extreme-batch, wide-GEMM, and 16-head cases;
+`inplace-block` wins the `S=1024` long-sequence case. The comparatively small
+`1.122x` improvement on `official_08` identifies the wide `D=1024` GEMM/FFN
+path as the clearest remaining optimization target.
 
-The tracked reference keeps the decision-facing fields compact: same-run
-baseline median, optimized median, speedup, and the actually observed route.
-Detailed per-run timing files remain generated locally under `results/sweeps/`
-when a deeper latency-distribution investigation is needed.
+## Interpretation
 
-| Case | Baseline median | Target median | Speedup | Observed route |
-|---|---:|---:|---:|---|
-| `launch_s64_fp16` | 1.7039 ms | 0.1341 ms | `12.7019x` | `cuda-graph` |
-| `balanced_s128_fp32` | 5.7135 ms | 3.1620 ms | `1.8069x` | `auto` |
-| `balanced_s128_fp16` | 6.0218 ms | 0.8776 ms | `6.8619x` | `balanced-cuda-graph` |
-| `attention_s2048_fp16` | 9.5867 ms | 5.3822 ms | `1.7812x` | `long-tail-online` |
-| `attention_s2048_causal_fp16` | 11.4540 ms | 5.3565 ms | `2.1383x` | `long-tail-online` |
-| `mask_s512_full_fp16` | 5.0591 ms | 2.8017 ms | `1.8057x` | `s512-native-softmax` |
-| `mask_s512_padding_fp16` | 5.1610 ms | 2.7996 ms | `1.8435x` | `s512-native-softmax` |
-| `mask_s512_causal_padding_fp16` | 5.4932 ms | 2.8037 ms | `1.9593x` | `s512-native-softmax` |
-| `wide_s256_bf16` | 10.7643 ms | 10.1873 ms | `1.0566x` | `wide-triton-inplace` |
-
-| Performance group | Geometric-mean speedup |
-|---|---:|
-| Launch / Graph | `12.7019x` |
-| Balanced / Precision | `3.5212x` |
-| Long Attention | `1.9516x` |
-| Padding / Mask | `1.8684x` |
-| Wide GEMM / FFN | `1.0566x` |
-| Equal-weight group-balanced score | `2.8007x` |
-
-The compact machine-readable evidence is
-[`results/reference_formal.json`](results/reference_formal.json). Same-run
-baseline and target timings are the performance evidence.
-
-## What this result does and does not establish
-
-The result establishes correctness and performance for this workload, this
-RTX 4080, and the recorded software stack. It also provides useful mechanism
-hypotheses for similar GPUs.
-
-It does not establish that:
-
-- these route choices are best on another GPU, another architecture, or another
-  PyTorch/CUDA/Triton stack;
-- `12.7019x` CUDA Graph acceleration generalizes beyond the small launch-bound
-  fixed-shape case;
-- the Wide BF16 path has large remaining headroom—the measured result is only
-  `1.0566x` because tuned library GEMMs already dominate that case; or
-- a route remains valid after shape, dtype, causal behavior, or numerical
-  tolerance changes.
-
-Those changes return to the shared probe, white-box plan, comparator, and
-paired candidate measurement loop before promotion into an exact route.
+The RTX 4080 package demonstrates that the shared shape analysis, candidates,
+formal measurement, and exact dispatcher can produce a concrete route table on
+one consumer GPU. It does not imply that another Ada card, a different CUDA
+stack, or a professional accelerator has the same winners. Those systems begin
+with `auto`, run their own probe and bounded calibration, and receive their own
+package.

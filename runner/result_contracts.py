@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
-from runner.contracts import ContractError, MeasurementProtocol, WorkloadCase
+from runner.contracts import (
+    ContractError,
+    MeasurementProtocol,
+    RunVariant,
+    TransformerShape,
+)
 
 RunKind = Literal["benchmark", "profile", "probe"]
 RunTarget = Literal["baseline", "solution"]
@@ -37,7 +42,8 @@ class WorkerRequestDocument(TypedDict, total=False):
 
     run_kind: RunKind
     project_root: str
-    case: dict[str, Any]
+    shape: dict[str, Any]
+    variant: dict[str, Any]
     protocol: dict[str, Any]
     device: str
     target: RunTarget
@@ -72,10 +78,8 @@ class CorrectnessDocument(TypedDict, total=False):
 
 
 class TimingDocument(TypedDict, total=False):
-    sample_count: int
     median_ms: float
     p90_ms: float
-    round_medians_ms: list[float]
 
 
 class BenchmarkPerformanceDocument(TypedDict, total=False):
@@ -93,7 +97,8 @@ class WorkerRequest:
     run_kind: RunKind
     device: str
     project_root: Path | None = None
-    case: WorkloadCase | None = None
+    shape: TransformerShape | None = None
+    variant: RunVariant | None = None
     protocol: MeasurementProtocol | None = None
     target: RunTarget | None = None
     solution_policy: str | None = None
@@ -118,8 +123,10 @@ class WorkerRequest:
             return
         if not isinstance(self.project_root, Path):
             raise ContractError("worker request project_root must be a Path")
-        if not isinstance(self.case, WorkloadCase):
-            raise ContractError("worker request case must be a WorkloadCase")
+        if not isinstance(self.shape, TransformerShape):
+            raise ContractError("worker request shape must be a TransformerShape")
+        if not isinstance(self.variant, RunVariant):
+            raise ContractError("worker request variant must be a RunVariant")
         if not isinstance(self.protocol, MeasurementProtocol):
             raise ContractError("worker request protocol must be a MeasurementProtocol")
         if self.target not in {"baseline", "solution"}:
@@ -129,7 +136,8 @@ class WorkerRequest:
             or not self.solution_policy.strip()
         ):
             raise ContractError("solution_policy must be a non-empty string")
-        self.case.validate()
+        self.shape.validate()
+        self.variant.validate()
         self.protocol.validate()
 
     @classmethod
@@ -176,7 +184,8 @@ class WorkerRequest:
         allowed = {
             "run_kind",
             "project_root",
-            "case",
+            "shape",
+            "variant",
             "protocol",
             "device",
             "target",
@@ -192,9 +201,12 @@ class WorkerRequest:
         project_root_value = value.get("project_root")
         if not isinstance(project_root_value, str) or not project_root_value:
             raise ContractError("worker request project_root must be a path string")
-        raw_case = value.get("case")
-        if not isinstance(raw_case, dict):
-            raise ContractError("worker request case must be an object")
+        raw_shape = value.get("shape")
+        if not isinstance(raw_shape, dict):
+            raise ContractError("worker request shape must be an object")
+        raw_variant = value.get("variant")
+        if not isinstance(raw_variant, dict):
+            raise ContractError("worker request variant must be an object")
         raw_protocol = value.get("protocol")
         if not isinstance(raw_protocol, dict):
             raise ContractError("worker request protocol must be an object")
@@ -215,7 +227,8 @@ class WorkerRequest:
             run_kind=run_kind,
             device=device,
             project_root=Path(project_root_value).resolve(),
-            case=WorkloadCase.from_dict(raw_case),
+            shape=TransformerShape.from_dict(raw_shape),
+            variant=RunVariant.from_dict(raw_variant),
             protocol=protocol,
             target=target,
             solution_policy=solution_policy,
@@ -237,12 +250,14 @@ class WorkerRequest:
             )
             return document
         assert self.project_root is not None
-        assert self.case is not None
+        assert self.shape is not None
+        assert self.variant is not None
         assert self.protocol is not None
         assert self.target is not None
         document.update(
             project_root=str(self.project_root),
-            case=self.case.as_dict(),
+            shape=self.shape.as_dict(),
+            variant=self.variant.as_dict(),
             protocol=self.protocol.as_dict(),
             target=self.target,
         )
@@ -255,7 +270,6 @@ class WorkerRequest:
 class TimingStats:
     median_ms: float
     p90_ms: float
-    round_medians_ms: tuple[float, ...]
 
     @classmethod
     def from_dict(
@@ -272,7 +286,6 @@ class TimingStats:
         return cls(
             median_ms=float(value["median_ms"]),
             p90_ms=float(value["p90_ms"]),
-            round_medians_ms=tuple(float(item) for item in value["round_medians_ms"]),
         )
 
 
@@ -325,7 +338,7 @@ def _compact_timing(value: Any) -> TimingDocument | None:
         return None
     compact: TimingDocument = {
         key: value[key]
-        for key in ("median_ms", "p90_ms", "round_medians_ms")
+        for key in ("median_ms", "p90_ms")
         if value.get(key) is not None
     }
     return compact or None
@@ -397,11 +410,6 @@ def validate_timing_side(
         return None, f"invalid_{side}_p90"
     if p90 < median and not math.isclose(p90, median, rel_tol=1e-12, abs_tol=1e-12):
         return None, f"{side}_p90_below_median"
-    round_medians = value.get("round_medians_ms")
-    if not isinstance(round_medians, list) or len(round_medians) != expected_rounds:
-        return None, f"{side}_round_count_mismatch"
-    if any(finite_positive(item) is None for item in round_medians):
-        return None, f"invalid_{side}_round_medians"
     return median, None
 
 
