@@ -9,7 +9,11 @@ import pytest
 
 from runner import supervisor
 from runner.contracts import ContractError, RunVariant
-from runner.result_contracts import WorkerRequest, validate_benchmark_performance
+from runner.result_contracts import (
+    WorkerRequest,
+    validate_benchmark_performance,
+    validate_execution_path,
+)
 from tests.support.runner_fixtures import tiny_protocol, tiny_shape
 
 
@@ -22,7 +26,7 @@ def test_worker_request_round_trips_shape_variant_and_policy(tmp_path: Path) -> 
         protocol=tiny_protocol(),
         device="cuda:0",
         target="solution",
-        solution_policy="causal-sdpa",
+        solution_policy="auto",
     )
 
     parsed = WorkerRequest.from_dict(request.as_dict())
@@ -103,13 +107,13 @@ def test_managed_benchmark_forwards_explicit_variant_and_policy(
         variant=RunVariant(),
         protocol=tiny_protocol(),
         device="cuda:0",
-        solution_policy="causal-sdpa",
+        solution_policy="auto",
         result_dir=tmp_path / "results",
     )
 
     assert captured_request["shape"] == tiny_shape().as_dict()
     assert captured_request["variant"] == RunVariant().as_dict()
-    assert captured_request["solution_policy"] == "causal-sdpa"
+    assert captured_request["solution_policy"] == "auto"
 
 
 def test_shared_performance_contract_rejects_invalid_percentiles() -> None:
@@ -131,3 +135,22 @@ def test_shared_performance_contract_rejects_invalid_percentiles() -> None:
 
     assert parsed is None
     assert error == "baseline_p90_below_median"
+
+
+def test_execution_path_contract_uses_one_common_truth_shape() -> None:
+    path = {
+        "requested_policy": "auto",
+        "selected_policy": "auto",
+        "qkv_projection": "packed",
+        "attention_backend": "causal_sdpa",
+        "runtime_wrapper": "eager",
+        "block_backend": "torch",
+        "causal_mask": "native",
+        "valid_token_mask": "none",
+        "fallback_reasons": [],
+        "execution_mode": "eager",
+    }
+
+    assert validate_execution_path(path) is None
+    del path["attention_backend"]
+    assert validate_execution_path(path) == "missing_attention_backend"

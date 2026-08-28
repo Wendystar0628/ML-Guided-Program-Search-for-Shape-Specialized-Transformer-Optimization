@@ -211,15 +211,10 @@ def _measurement_stats(
     if not math.isfinite(median) or median <= 0:
         raise ContractError("timing median must be a finite positive number")
     p90 = official.percentile(normalized, 0.9)
-    round_medians = [
-        statistics.median(normalized[index * repeats : (index + 1) * repeats])
-        for index in range(rounds)
-    ]
     return {
         "sample_count": expected_count,
         "median_ms": median,
         "p90_ms": p90,
-        "round_medians_ms": round_medians,
     }
 
 
@@ -505,9 +500,18 @@ def prepare_execution(
             solution = solution.to(device=device, dtype=dtype).eval()
         reporting_solution = solution
 
+        stage = "execution_plan"
         execution_path = _describe_execution_path(
             solution if solution is not None else baseline,
             shape=shape,
+        )
+        target_is_compiled = (
+            protocol.compile_solution
+            if target == "solution"
+            else protocol.compile_baseline
+        )
+        execution_path["execution_mode"] = (
+            "torch_compile" if target_is_compiled else "eager"
         )
         _validate_cuda_graph_composition(execution_path, protocol)
         if parsed_request.run_kind == "profile":
@@ -584,6 +588,7 @@ def _run_prepared_correctness(
             prepared.reporting_solution,
             shape=prepared.shape,
         )
+        execution_path["execution_mode"] = prepared.execution_path["execution_mode"]
     return correctness, execution_path
 
 
@@ -794,10 +799,15 @@ def _describe_execution_path(
         description = dict(value) if isinstance(value, dict) else {}
     else:
         description = {
+            "requested_policy": "official-baseline",
+            "selected_policy": "official-baseline",
             "qkv_projection": "separate",
-            "attention_policy": "official_explicit",
-            "selected_attention_backend": "explicit",
+            "attention_backend": "official_explicit",
+            "runtime_wrapper": "eager",
+            "block_backend": "torch",
             "causal_mask": "per_forward" if shape.causal else "none",
+            "valid_token_mask": "direct_key_mask",
+            "fallback_reasons": [],
         }
     return description
 
@@ -920,7 +930,7 @@ def execute_profile(
         observed_attention_backend = _observed_attention_backend(events)
         if (
             observed_attention_backend is None
-            and execution_path.get("selected_attention_backend") == "explicit"
+            and execution_path.get("attention_backend") == "official_explicit"
         ):
             observed_attention_backend = "explicit"
         operator_events = [

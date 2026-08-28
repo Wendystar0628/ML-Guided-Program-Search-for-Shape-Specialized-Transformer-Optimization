@@ -13,8 +13,10 @@ from solution.kernels import (
     can_use_residual_add,
     causal_sdpa,
     linear_exact_gelu,
+    reference_causal_attention,
     residual_add,
     split_qkv,
+    supports_inplace_exact_gelu,
 )
 
 
@@ -55,6 +57,36 @@ def test_causal_sdpa_validates_shape_dtype_and_optional_token_mask() -> None:
         causal_sdpa(query, query, query, mask[:, :3])
 
 
+def test_bfloat16_is_kept_on_the_comparator_safe_attention_path() -> None:
+    query = torch.randn(1, 2, 4, 8, dtype=torch.bfloat16)
+
+    assert not can_use_causal_sdpa(query, query, query)
+
+
+def test_query_block_reference_matches_full_official_operation_order() -> None:
+    generator = torch.Generator().manual_seed(19)
+    query = torch.randn(2, 2, 9, 4, generator=generator)
+    key = torch.randn(2, 2, 9, 4, generator=generator)
+    value = torch.randn(2, 2, 9, 4, generator=generator)
+    valid = torch.tensor(
+        [
+            [True, True, True, True, True, False, False, False, False],
+            [True, True, True, True, True, True, True, False, False],
+        ]
+    )
+
+    actual = reference_causal_attention(query, key, value, valid)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(4)
+    scores.masked_fill_(
+        torch.ones(9, 9, dtype=torch.bool).triu(diagonal=1),
+        float("-inf"),
+    )
+    scores.masked_fill_((~valid)[:, None, None, :], float("-inf"))
+    expected = torch.matmul(torch.softmax(scores.float(), dim=-1), value)
+
+    torch.testing.assert_close(actual, expected)
+
+
 def test_linear_exact_gelu_preserves_exact_gelu_semantics() -> None:
     value = torch.randn(3, 5)
     weight = torch.randn(7, 5)
@@ -64,6 +96,7 @@ def test_linear_exact_gelu_preserves_exact_gelu_semantics() -> None:
     with torch.inference_mode():
         actual, backend = linear_exact_gelu(value, weight, bias)
         assert can_use_linear_exact_gelu(value, weight, bias)
+        assert supports_inplace_exact_gelu()
     expected = F.gelu(F.linear(value, weight, bias), approximate="none")
 
     assert backend == "inplace_exact_gelu"

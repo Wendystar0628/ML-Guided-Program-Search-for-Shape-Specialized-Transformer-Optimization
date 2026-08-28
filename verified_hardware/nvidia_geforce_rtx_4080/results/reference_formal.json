@@ -1,7 +1,7 @@
 {
-  "schema_version": 2,
-  "sweep_id": "20260828T044045.539151Z-bc8bc104",
-  "created_at": "2026-08-28T04:40:45.539651+00:00",
+  "schema_version": 3,
+  "sweep_id": "20260828T053607.420447Z-e9b6b006",
+  "created_at": "2026-08-28T05:36:07.420950+00:00",
   "workload_set_id": "official_transformer_v1",
   "workload_sha256": "621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9",
   "variant": {
@@ -12,7 +12,7 @@
   "target": "solution",
   "source": {
     "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
-    "solution_sha256": "fd7ce10b12c06c9101f92995cea567d7169c6fdb5a1c9e6f0dd28b98093298bf"
+    "solution_sha256": "d895f1c82756e66be5d1ff3f7fbc7e02963592fc70567903bb1b1caf942beb29"
   },
   "protocol": {
     "preset": "formal",
@@ -42,7 +42,7 @@
   },
   "dispatch": {
     "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
-    "sha256": "c48bc3db5ce27ea212dec3aabf16143fd06e8a455b1320c2f598b03578cd1f70"
+    "sha256": "74945e8fd6a3f7580dfe11aa33bfa4b2acc08df10e13e04a743ea7c8479c7387"
   },
   "sweep_outcome": "complete",
   "case_results": [
@@ -50,14 +50,14 @@
       "case_id": "official_01",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.6361759901046753,
-        "p90_ms": 4.525516796112061
+        "median_ms": 1.5328319668769836,
+        "p90_ms": 1.8752352118492133
       },
       "solution": {
-        "median_ms": 0.6763520240783691,
-        "p90_ms": 0.7352319955825806
+        "median_ms": 0.6737920045852661,
+        "p90_ms": 0.6768640279769897
       },
-      "speedup": 2.4191189378551945,
+      "speedup": 2.2749334459978874,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -65,6 +65,8 @@
         "max_abs_error": 0.001018613576889038,
         "max_relative_error": 349.0494384765625
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -72,14 +74,14 @@
       "case_id": "official_02",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.767520010471344,
-        "p90_ms": 4.45032000541687
+        "median_ms": 1.7341439723968506,
+        "p90_ms": 2.027065515518189
       },
       "solution": {
         "median_ms": 0.16076800227165222,
         "p90_ms": 0.16076800227165222
       },
-      "speedup": 10.994227616791168,
+      "speedup": 10.78662387971109,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -87,6 +89,8 @@
         "max_abs_error": 0.0006857216358184814,
         "max_relative_error": 9.548253059387207
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -94,14 +98,14 @@
       "case_id": "official_03",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.8625440001487732,
-        "p90_ms": 4.439164686203003
+        "median_ms": 1.7511520385742188,
+        "p90_ms": 2.0470399856567387
       },
       "solution": {
         "median_ms": 0.16896000504493713,
         "p90_ms": 0.16998399794101715
       },
-      "speedup": 11.023579217184594,
+      "speedup": 10.364299161262908,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -109,6 +113,8 @@
         "max_abs_error": 0.0009073615074157715,
         "max_relative_error": 35.539493560791016
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -116,14 +122,14 @@
       "case_id": "official_04",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.6946880221366882,
-        "p90_ms": 5.081814193725586
+        "median_ms": 1.645039975643158,
+        "p90_ms": 1.9231456279754637
       },
       "solution": {
         "median_ms": 0.2734079957008362,
-        "p90_ms": 0.2755584090948105
+        "p90_ms": 0.2744320034980774
       },
-      "speedup": 6.198385009892032,
+      "speedup": 6.01679541750917,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -131,6 +137,8 @@
         "max_abs_error": 0.0009307265281677246,
         "max_relative_error": 349.0494384765625
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -138,14 +146,14 @@
       "case_id": "official_05",
       "outcome": "success",
       "baseline": {
-        "median_ms": 4.138944149017334,
-        "p90_ms": 4.525945615768433
+        "median_ms": 2.5297919511795044,
+        "p90_ms": 4.427135801315308
       },
       "solution": {
-        "median_ms": 1.235967993736267,
-        "p90_ms": 1.2421120405197144
+        "median_ms": 1.233407974243164,
+        "p90_ms": 1.2390400171279907
       },
-      "speedup": 3.34874703066179,
+      "speedup": 2.0510585337603473,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -153,6 +161,8 @@
         "max_abs_error": 0.0011766254901885986,
         "max_relative_error": 349.0494384765625
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -160,14 +170,14 @@
       "case_id": "official_06",
       "outcome": "success",
       "baseline": {
-        "median_ms": 446.5157165527344,
-        "p90_ms": 447.49126586914065
+        "median_ms": 446.76710510253906,
+        "p90_ms": 447.4194030761719
       },
       "solution": {
-        "median_ms": 131.30035400390625,
-        "p90_ms": 131.83004302978514
+        "median_ms": 131.26707458496094,
+        "p90_ms": 131.7090301513672
       },
-      "speedup": 3.400719822426757,
+      "speedup": 3.4034970803998132,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -175,6 +185,8 @@
         "max_abs_error": 0.0013269931077957153,
         "max_relative_error": 258616528.0
       },
+      "selected_policy": "auto",
+      "policy_applied": true,
       "actual_policy": "auto",
       "failure": null
     },
@@ -182,14 +194,14 @@
       "case_id": "official_07",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.6671199798583984,
-        "p90_ms": 2.0548863649368285
+        "median_ms": 1.626255989074707,
+        "p90_ms": 1.8267263650894165
       },
       "solution": {
-        "median_ms": 0.506879985332489,
-        "p90_ms": 0.7384064197540284
+        "median_ms": 0.5478399991989136,
+        "p90_ms": 0.549888014793396
       },
-      "speedup": 3.288983641294985,
+      "speedup": 2.9684871339309318,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -197,6 +209,8 @@
         "max_abs_error": 0.001344442367553711,
         "max_relative_error": 1193.36181640625
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -204,14 +218,14 @@
       "case_id": "official_08",
       "outcome": "success",
       "baseline": {
-        "median_ms": 13.207039833068848,
-        "p90_ms": 13.427712440490723
+        "median_ms": 13.191679954528809,
+        "p90_ms": 13.414707279205324
       },
       "solution": {
-        "median_ms": 11.771967887878418,
-        "p90_ms": 11.996261978149413
+        "median_ms": 11.786239624023438,
+        "p90_ms": 11.997388648986817
       },
-      "speedup": 1.121905866449748,
+      "speedup": 1.1192441673797906,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -219,6 +233,8 @@
         "max_abs_error": 0.0010819435119628906,
         "max_relative_error": 14516.63671875
       },
+      "selected_policy": "auto",
+      "policy_applied": true,
       "actual_policy": "auto",
       "failure": null
     },
@@ -226,14 +242,14 @@
       "case_id": "official_09",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.4580959677696228,
-        "p90_ms": 3.881942415237427
+        "median_ms": 1.4652639627456665,
+        "p90_ms": 1.6486592292785645
       },
       "solution": {
-        "median_ms": 0.6021119952201843,
-        "p90_ms": 0.6574079990386963
+        "median_ms": 0.6041600108146667,
+        "p90_ms": 0.6584320068359375
       },
-      "speedup": 2.421635807531814,
+      "speedup": 2.42529120848277,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -241,6 +257,8 @@
         "max_abs_error": 0.001196831464767456,
         "max_relative_error": 200.35043334960938
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -248,14 +266,14 @@
       "case_id": "official_10",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.674784004688263,
-        "p90_ms": 4.453801441192628
+        "median_ms": 1.619871973991394,
+        "p90_ms": 4.345107316970825
       },
       "solution": {
-        "median_ms": 0.6133760213851929,
-        "p90_ms": 0.6686720252037048
+        "median_ms": 0.6113280057907104,
+        "p90_ms": 0.6144000291824341
       },
-      "speedup": 2.7304360560200616,
+      "speedup": 2.6497591450864446,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -263,6 +281,8 @@
         "max_abs_error": 0.0010130703449249268,
         "max_relative_error": 168.7611846923828
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -270,14 +290,14 @@
       "case_id": "official_11",
       "outcome": "success",
       "baseline": {
-        "median_ms": 7.136768102645874,
-        "p90_ms": 7.3575423717498785
+        "median_ms": 7.116799831390381,
+        "p90_ms": 7.314451313018799
       },
       "solution": {
-        "median_ms": 1.6888480186462402,
-        "p90_ms": 2.057638382911682
+        "median_ms": 1.2339199781417847,
+        "p90_ms": 1.2380160093307495
       },
-      "speedup": 4.225820218190278,
+      "speedup": 5.767634820296766,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -285,21 +305,23 @@
         "max_abs_error": 0.0011588335037231445,
         "max_relative_error": 117.79923248291016
       },
-      "actual_policy": "auto",
+      "selected_policy": "graph",
+      "policy_applied": true,
+      "actual_policy": "graph",
       "failure": null
     },
     {
       "case_id": "official_12",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7233440279960632,
-        "p90_ms": 4.484502553939819
+        "median_ms": 1.7807520031929016,
+        "p90_ms": 4.455321645736694
       },
       "solution": {
         "median_ms": 0.24780799448490143,
         "p90_ms": 0.24883200228214264
       },
-      "speedup": 6.954352023945959,
+      "speedup": 7.186015152152002,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -307,6 +329,8 @@
         "max_abs_error": 0.0010500550270080566,
         "max_relative_error": 349.0494384765625
       },
+      "selected_policy": "graph",
+      "policy_applied": true,
       "actual_policy": "graph",
       "failure": null
     },
@@ -314,14 +338,14 @@
       "case_id": "official_13",
       "outcome": "success",
       "baseline": {
-        "median_ms": 108.5486068725586,
-        "p90_ms": 114.529793548584
+        "median_ms": 119.69075393676758,
+        "p90_ms": 121.58320617675781
       },
       "solution": {
-        "median_ms": 13.429248332977295,
-        "p90_ms": 13.971046447753906
+        "median_ms": 13.941760063171387,
+        "p90_ms": 14.59845085144043
       },
-      "speedup": 8.082999448748232,
+      "speedup": 8.585053350110593,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -329,7 +353,9 @@
         "max_abs_error": 0.0009801238775253296,
         "max_relative_error": 2109.733642578125
       },
-      "actual_policy": "inplace-block",
+      "selected_policy": "auto",
+      "policy_applied": true,
+      "actual_policy": "auto",
       "failure": null
     }
   ],
@@ -337,5 +363,5 @@
   "excluded_case_ids": [
     "official_14"
   ],
-  "geomean_speedup": 4.1827283093031555
+  "geomean_speedup": 4.058909681737585
 }

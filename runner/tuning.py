@@ -26,9 +26,14 @@ from runner.contracts import (
     utc_now,
 )
 from runner.locking import device_measurement_lease
-from runner.route_promotion import TUNING_SCHEMA_VERSION, select_deployable_winner
 from runner.routing_contracts import workload_route_identity
 from runner.supervisor import CancellationToken, run_managed_benchmark
+from runner.tuning_contracts import (
+    TUNING_SCHEMA_VERSION,
+    observation_latency_key,
+    select_deployable_winner,
+    target_latency_gain,
+)
 
 _DEVICE_PROFILE_FIELDS = (
     "device_type",
@@ -38,8 +43,9 @@ _DEVICE_PROFILE_FIELDS = (
     "platform_system",
     "torch",
     "cuda_runtime",
-    "triton",
     "driver",
+    "matmul_precision",
+    "allow_tf32",
 )
 _ROUTING_PLAN_FIELDS = (
     "source",
@@ -73,17 +79,6 @@ def _compact_routing_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
     """Drop workload estimates recoverable from the stored shape and variant."""
 
     return {field: plan[field] for field in _ROUTING_PLAN_FIELDS if field in plan}
-
-
-def _installed_triton_version() -> str:
-    """Return the local optional Triton version for explicit tuning runs."""
-
-    try:
-        import triton
-    except Exception:  # noqa: BLE001 - Triton is an optional candidate backend.
-        return "unavailable"
-    version = getattr(triton, "__version__", None)
-    return str(version) if version is not None else "unknown"
 
 
 def candidates_for_shape(
@@ -406,11 +401,12 @@ def build_formal_candidate_plans(
             p90_values: list[float] = []
             for index in group_indices:
                 observations = eligible_by_case[index]
-                control_speedup = max(
-                    float(observations[control]["speedup"]) for control in controls
+                control = min(
+                    (observations[control_policy] for control_policy in controls),
+                    key=observation_latency_key,
                 )
                 challenger = observations[policy]
-                relative_gains.append(float(challenger["speedup"]) / control_speedup)
+                relative_gains.append(target_latency_gain(control, challenger))
                 p90_values.append(float(challenger["target_p90_ms"]))
             return (
                 -min(relative_gains),
@@ -662,8 +658,9 @@ def _run_tuning_case(
                 "platform_system": platform.system(),
                 "torch": environment.get("torch"),
                 "cuda_runtime": environment.get("cuda_runtime"),
-                "triton": _installed_triton_version(),
                 "driver": environment.get("driver"),
+                "matmul_precision": protocol.matmul_precision,
+                "allow_tf32": protocol.allow_tf32,
             }
         if result.get("outcome") == "cancelled":
             break
@@ -674,12 +671,12 @@ def _run_tuning_case(
         if item["outcome"] == "success"
         and item["correctness_passed"] is True
         and item["policy_applied"] is True
-        and isinstance(item["speedup"], (int, float))
-        and isfinite(float(item["speedup"]))
-        and float(item["speedup"]) > 0
         and isinstance(item["target_median_ms"], (int, float))
         and isfinite(float(item["target_median_ms"]))
         and float(item["target_median_ms"]) > 0
+        and isinstance(item["target_p90_ms"], (int, float))
+        and isfinite(float(item["target_p90_ms"]))
+        and float(item["target_p90_ms"]) > 0
     ]
     solution_hashes = {
         item["solution_sha256"]
@@ -707,17 +704,16 @@ def _run_tuning_case(
     if not source_consistent or not official_consistent:
         eligible = []
 
-    def ranking_speedup(item: dict[str, Any]) -> float:
-        return float(item["speedup"])
-
-    winner = max(eligible, key=ranking_speedup) if eligible else None
+    winner = min(eligible, key=observation_latency_key) if eligible else None
     deployable_candidate_ids = {
         candidate.candidate_id for candidate in candidates if candidate.deployable
     }
     deployable = [
         item for item in eligible if item["candidate_id"] in deployable_candidate_ids
     ]
-    deployable_winner = max(deployable, key=ranking_speedup) if deployable else None
+    deployable_winner = (
+        min(deployable, key=observation_latency_key) if deployable else None
+    )
     summary = {
         "schema_version": TUNING_SCHEMA_VERSION,
         "tuning_id": tuning_id,
@@ -754,7 +750,7 @@ def _run_tuning_case(
         ),
         "implementation_consistent": implementation_consistent,
         "case_id": shape.case_id,
-        "winner_basis": "full_transformer_correctness_and_median_timing",
+        "winner_basis": "target_median_ms_then_p90_then_candidate_id",
         "observations": observations,
         "winner": winner,
         "deployable_winner": deployable_winner,

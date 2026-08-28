@@ -14,6 +14,7 @@ from typing import Any
 
 import psutil
 
+from runner.candidates import candidate_spec_for_policy
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
@@ -27,11 +28,13 @@ from runner.contracts import (
 )
 from runner.locking import device_measurement_lease
 from runner.result_contracts import (
+    RUN_RESULT_SCHEMA_VERSION,
     compact_correctness,
     compact_performance,
     parse_worker_response,
     validate_benchmark_performance,
     validate_correctness,
+    validate_execution_path,
 )
 
 
@@ -356,10 +359,21 @@ def _success_contract_error(result: dict[str, Any]) -> str | None:
             source.get("solution_sha256"), str
         ):
             return "missing Solution source identity"
-        if not isinstance(result.get("execution_path"), dict):
-            return "missing compact execution path"
-        if not isinstance(result.get("actual_policy"), str):
-            return "missing actual policy"
+        path_error = validate_execution_path(result.get("execution_path"))
+        if path_error is not None:
+            return f"invalid compact execution path: {path_error}"
+        selected_policy = result.get("selected_policy")
+        if not isinstance(selected_policy, str) or not selected_policy:
+            return "missing selected policy"
+        policy_applied = result.get("policy_applied")
+        if not isinstance(policy_applied, bool):
+            return "missing policy application status"
+        actual_policy = result.get("actual_policy")
+        if policy_applied:
+            if actual_policy != selected_policy:
+                return "applied policy identity mismatch"
+        elif actual_policy is not None:
+            return "unproven policy reported as actual"
 
     if run_kind == "benchmark":
         performance = result.get("performance")
@@ -438,18 +452,34 @@ def _workload_record(
     }
 
 
-def _actual_policy(
+def _policy_execution_status(
     execution_path: dict[str, Any],
     *,
     target: str,
-) -> str:
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> tuple[str | None, bool, str | None]:
+    """Return selected, proven-applied, and actual policy identities."""
+
     if target == "baseline":
-        return "official-baseline"
-    for field_name in ("actual_policy", "selected_policy", "dispatch_policy"):
-        value = execution_path.get(field_name)
-        if isinstance(value, str) and value:
-            return value
-    return "unreported"
+        return "official-baseline", True, "official-baseline"
+
+    selected = execution_path.get("selected_policy")
+    selected_policy = selected if isinstance(selected, str) and selected else None
+    requested = execution_path.get("requested_policy")
+    policy = (
+        execution_path.get("dispatch_policy") if requested == "dispatch" else requested
+    )
+    if not isinstance(policy, str) or not policy:
+        return selected_policy, False, None
+    candidate = candidate_spec_for_policy(shape, variant, policy)
+    if candidate is None:
+        return selected_policy, False, None
+    if requested == "dispatch":
+        applied = candidate.dispatch_evidence_matches(execution_path)
+    else:
+        applied = candidate.evidence_matches(execution_path)
+    return selected_policy, applied, selected_policy if applied else None
 
 
 def run_managed_benchmark(
@@ -534,7 +564,7 @@ def _run_managed_benchmark(
     if response.get("solution_source_sha256") is not None:
         source["solution_sha256"] = response["solution_source_sha256"]
     result: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": RUN_RESULT_SCHEMA_VERSION,
         "run_id": run_id,
     }
     if sweep_id is not None:
@@ -572,10 +602,15 @@ def _run_managed_benchmark(
     execution_path = response.get("execution_path")
     if isinstance(execution_path, dict):
         result["execution_path"] = execution_path
-        result["actual_policy"] = _actual_policy(
+        selected_policy, policy_applied, actual_policy = _policy_execution_status(
             execution_path,
             target=target,
+            shape=shape,
+            variant=variant,
         )
+        result["selected_policy"] = selected_policy
+        result["policy_applied"] = policy_applied
+        result["actual_policy"] = actual_policy
     environment = response.get("environment")
     if isinstance(environment, dict):
         result["environment"] = environment
@@ -657,7 +692,7 @@ def _run_managed_profile(
     if response.get("solution_source_sha256") is not None:
         source["solution_sha256"] = response["solution_source_sha256"]
     result: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": RUN_RESULT_SCHEMA_VERSION,
         "run_id": run_id,
         "created_at": created_at,
         "run_kind": "profile",
@@ -682,10 +717,15 @@ def _run_managed_profile(
     execution_path = response.get("execution_path")
     if isinstance(execution_path, dict):
         result["execution_path"] = execution_path
-        result["actual_policy"] = _actual_policy(
+        selected_policy, policy_applied, actual_policy = _policy_execution_status(
             execution_path,
             target=target,
+            shape=shape,
+            variant=variant,
         )
+        result["selected_policy"] = selected_policy
+        result["policy_applied"] = policy_applied
+        result["actual_policy"] = actual_policy
     environment = response.get("environment")
     if isinstance(environment, dict):
         result["environment"] = environment
@@ -761,7 +801,7 @@ def _run_managed_probe(
         cancellation_token=cancellation_token,
     )
     result: dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": RUN_RESULT_SCHEMA_VERSION,
         "run_id": run_id,
         "created_at": created_at,
         "run_kind": "probe",

@@ -87,8 +87,45 @@ def test_prepare_execution_returns_one_frozen_shared_context() -> None:
     assert isinstance(prepared, PreparedExecution)
     assert prepared.target_model is prepared.baseline
     assert prepared.device.type == "cpu"
+    assert prepared.execution_path == {
+        "requested_policy": "official-baseline",
+        "selected_policy": "official-baseline",
+        "qkv_projection": "separate",
+        "attention_backend": "official_explicit",
+        "runtime_wrapper": "eager",
+        "block_backend": "torch",
+        "causal_mask": "per_forward",
+        "valid_token_mask": "direct_key_mask",
+        "fallback_reasons": [],
+        "execution_mode": "eager",
+    }
     with pytest.raises(FrozenInstanceError):
         prepared.device = torch.device("cuda")  # type: ignore[misc]
+
+
+def test_eager_solution_observation_preserves_execution_mode() -> None:
+    response = execute_benchmark(
+        WorkerRequest(
+            run_kind="benchmark",
+            project_root=PROJECT_ROOT,
+            shape=_tiny_shape(),
+            variant=RunVariant(),
+            protocol=MeasurementProtocol(
+                preset="smoke",
+                accuracy_trials=1,
+                warmup=0,
+                repeats=1,
+                rounds=1,
+            ),
+            device="cpu",
+            target="solution",
+            solution_policy="safe",
+        )
+    )
+
+    assert response["outcome"] == "success"
+    assert response["execution_path"]["execution_mode"] == "eager"
+    assert response["execution_path"]["observed_execution"]["complete"] is True
 
 
 @pytest.mark.parametrize(
@@ -224,12 +261,65 @@ def test_performance_alternates_order_and_uses_all_raw_samples(
     ]
     assert performance["baseline"]["median_ms"] == 3.5
     assert performance["baseline"]["p90_ms"] == pytest.approx(52.5)
-    assert performance["baseline"]["round_medians_ms"] == [50.5, 2.5, 4.5]
     assert performance["baseline"]["sample_count"] == 6
     assert performance["target"]["median_ms"] == 5.0
     assert performance["target"]["p90_ms"] == pytest.approx(8.5)
-    assert performance["target"]["round_medians_ms"] == [5.0, 5.0, 5.0]
     assert performance["target"]["sample_count"] == 6
     assert performance["speedup"] == pytest.approx(0.7)
     assert "samples_ms" not in str(performance)
     assert "solution" not in performance
+
+
+def test_compile_mode_is_reported_separately_from_runtime_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        official,
+        "maybe_compile",
+        lambda model, _enabled, _mode: model,
+    )
+
+    prepared = prepare_execution(
+        _request(
+            "benchmark",
+            MeasurementProtocol(
+                preset="smoke",
+                accuracy_trials=1,
+                warmup=0,
+                repeats=1,
+                rounds=1,
+                compile_baseline=True,
+            ),
+        )
+    )
+
+    assert prepared.execution_path["runtime_wrapper"] == "eager"
+    assert prepared.execution_path["execution_mode"] == "torch_compile"
+
+
+def test_execution_plan_failure_reports_its_own_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_plan(_path: dict[str, Any]) -> None:
+        raise ContractError("fixture plan failure")
+
+    monkeypatch.setattr(
+        "runner.execution._validate_profile_execution_path",
+        reject_plan,
+    )
+
+    response = execute_profile(
+        _request(
+            "profile",
+            MeasurementProtocol(
+                preset="smoke",
+                accuracy_trials=1,
+                warmup=0,
+                repeats=1,
+                rounds=1,
+            ),
+        )
+    )
+
+    assert response["outcome"] == "runtime_error"
+    assert response["failure"]["stage"] == "execution_plan"

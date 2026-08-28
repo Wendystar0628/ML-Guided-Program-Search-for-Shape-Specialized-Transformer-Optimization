@@ -1,8 +1,4 @@
-"""Shared adapters for runtime route identities and workload route keys.
-
-The Solution owns the flat dispatch schema.  Runner modules use this file to
-translate probe, tuning, and persisted bundle documents into that schema.
-"""
+"""Runner adapters for the neutral exact-route contracts."""
 
 from __future__ import annotations
 
@@ -10,13 +6,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from runner.contracts import RunVariant, TransformerShape
-from solution.dispatch import (
+from route_contracts import (
     ROUTE_FIELDS,
     WORKLOAD_ROUTE_FIELDS,
     make_route_key,
     make_workload_route_key,
 )
+from runner.contracts import RunVariant, TransformerShape
 
 
 @dataclass(frozen=True)
@@ -29,10 +25,11 @@ class HardwareIdentity:
     platform_system: str
     torch: str
     cuda_runtime: str
-    triton: str
     driver: str
+    matmul_precision: str
+    allow_tf32: bool
 
-    def as_route_fields(self) -> dict[str, str]:
+    def as_route_fields(self) -> dict[str, object]:
         return {
             "device_type": self.device_type,
             "device_name": self.device_name,
@@ -40,11 +37,12 @@ class HardwareIdentity:
             "platform_system": self.platform_system,
             "torch": self.torch,
             "cuda_runtime": self.cuda_runtime,
-            "triton": self.triton,
             "driver": self.driver,
+            "matmul_precision": self.matmul_precision,
+            "allow_tf32": self.allow_tf32,
         }
 
-    def as_make_route_key_kwargs(self) -> dict[str, str]:
+    def as_make_route_key_kwargs(self) -> dict[str, object]:
         return {
             "device_type": self.device_type,
             "device_name": self.device_name,
@@ -52,8 +50,9 @@ class HardwareIdentity:
             "platform_system": self.platform_system,
             "torch_version": self.torch,
             "cuda_runtime": self.cuda_runtime,
-            "triton_version": self.triton,
             "driver": self.driver,
+            "matmul_precision": self.matmul_precision,
+            "allow_tf32": self.allow_tf32,
         }
 
 
@@ -63,11 +62,24 @@ def _required_string(value: object, name: str) -> str:
     return value.strip()
 
 
+def _runtime_policy(value: object, name: str) -> tuple[str, bool]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"route identity is missing {name}")
+    precision = _required_string(value.get("matmul_precision"), "matmul_precision")
+    if precision not in {"highest", "high", "medium"}:
+        raise ValueError("route identity has unsupported matmul_precision")
+    allow_tf32 = value.get("allow_tf32")
+    if not isinstance(allow_tf32, bool):
+        raise TypeError("route identity allow_tf32 must be boolean")
+    return precision, allow_tf32
+
+
 def hardware_identity_from_flat_profile(
     profile: Mapping[str, Any],
 ) -> HardwareIdentity:
     """Read the compact identity embedded in one tuning summary."""
 
+    precision, allow_tf32 = _runtime_policy(profile, "runtime policy")
     return HardwareIdentity(
         device_type=_required_string(profile.get("device_type"), "device_type"),
         device_name=_required_string(profile.get("device_name"), "device_name"),
@@ -79,13 +91,16 @@ def hardware_identity_from_flat_profile(
         ),
         torch=_required_string(profile.get("torch"), "torch"),
         cuda_runtime=_required_string(profile.get("cuda_runtime"), "cuda_runtime"),
-        triton=_required_string(profile.get("triton"), "triton"),
         driver=_required_string(profile.get("driver") or "unavailable", "driver"),
+        matmul_precision=precision,
+        allow_tf32=allow_tf32,
     )
 
 
 def hardware_identity_from_hardware_profile(
     hardware_profile: Mapping[str, Any],
+    *,
+    runtime_policy: Mapping[str, Any],
 ) -> HardwareIdentity:
     """Read the nested identity emitted by the hardware probe."""
 
@@ -98,6 +113,7 @@ def hardware_identity_from_hardware_profile(
         raise TypeError("route identity is missing platform")
     if not isinstance(software, Mapping):
         raise TypeError("route identity is missing software")
+    precision, allow_tf32 = _runtime_policy(runtime_policy, "runtime policy")
     return HardwareIdentity(
         device_type=_required_string(
             hardware_profile.get("device_type"), "device_type"
@@ -111,8 +127,9 @@ def hardware_identity_from_hardware_profile(
         ),
         torch=_required_string(software.get("torch"), "torch"),
         cuda_runtime=_required_string(software.get("cuda_runtime"), "cuda_runtime"),
-        triton=_required_string(software.get("triton"), "triton"),
         driver=_required_string(software.get("driver") or "unavailable", "driver"),
+        matmul_precision=precision,
+        allow_tf32=allow_tf32,
     )
 
 
@@ -128,7 +145,13 @@ def hardware_identity_from_verified_profile(
     hardware_profile = profile.get("hardware_profile")
     if not isinstance(hardware_profile, Mapping):
         raise TypeError("verified profile is missing hardware_profile")
-    return hardware_identity_from_hardware_profile(hardware_profile)
+    runtime_policy = profile.get("runtime_policy")
+    if not isinstance(runtime_policy, Mapping):
+        raise TypeError("verified profile is missing runtime_policy")
+    return hardware_identity_from_hardware_profile(
+        hardware_profile,
+        runtime_policy=runtime_policy,
+    )
 
 
 def hardware_identity_from_runtime(
@@ -141,12 +164,14 @@ def hardware_identity_from_runtime(
     gpu = runtime.get("gpu")
     platform_profile = runtime.get("platform")
     software = runtime.get("software")
+    runtime_policy = runtime.get("runtime_policy")
     if not isinstance(gpu, Mapping):
         raise TypeError("route identity is missing gpu")
     if not isinstance(platform_profile, Mapping):
         raise TypeError("route identity is missing platform")
     if not isinstance(software, Mapping):
         raise TypeError("route identity is missing software")
+    precision, allow_tf32 = _runtime_policy(runtime_policy, "runtime policy")
     return HardwareIdentity(
         device_type=_required_string(device_type, "device_type"),
         device_name=_required_string(gpu.get("name"), "device_name"),
@@ -158,8 +183,9 @@ def hardware_identity_from_runtime(
         ),
         torch=_required_string(software.get("torch"), "torch"),
         cuda_runtime=_required_string(software.get("cuda_runtime"), "cuda_runtime"),
-        triton=_required_string(software.get("triton"), "triton"),
         driver=_required_string(software.get("driver") or "unavailable", "driver"),
+        matmul_precision=precision,
+        allow_tf32=allow_tf32,
     )
 
 

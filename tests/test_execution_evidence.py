@@ -39,7 +39,31 @@ def test_linear_exact_gelu_reports_guard_fallback(
     torch.testing.assert_close(actual, expected)
 
 
-def test_inplace_policy_evidence_rejects_an_actual_torch_fallback(
+def test_inplace_plan_and_helper_share_one_runtime_support_guard(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ffn, "_ATEN_GELU_INPLACE", None)
+    model = transformer_module.UserOptimizedTransformer(_config()).eval()
+    model.configure_runtime_policy(policy="inplace-block")
+    model.set_execution_observation(True)
+
+    with torch.inference_mode():
+        model(torch.randn(1, 4, 8), torch.ones(1, 4, dtype=torch.bool))
+
+    path = model.describe_execution_path()
+    observed = path["observed_execution"]
+    assert path["selected_policy"] == "safe"
+    assert path["block_backend"] == "torch"
+    assert path["missing_components"] == ["inplace_exact_gelu"]
+    assert observed["complete"] is True
+    assert observed["block_backends"] == ["torch", "torch"]
+    assert not CANDIDATE_SPECS["inplace-block"].evidence.matches(
+        solution_policy="inplace-block",
+        execution_path=path,
+    )
+
+
+def test_inplace_policy_evidence_rejects_an_unexpected_torch_fallback(
     monkeypatch,
 ) -> None:
     def fallback_linear_exact_gelu(
@@ -65,6 +89,7 @@ def test_inplace_policy_evidence_rejects_an_actual_torch_fallback(
     path = model.describe_execution_path()
     observed = path["observed_execution"]
     assert path["block_backend"] == "inplace_exact_gelu"
+    assert observed["complete"] is True
     assert observed["block_backends"] == ["torch", "torch"]
     assert not CANDIDATE_SPECS["inplace-block"].evidence.matches(
         solution_policy="inplace-block",

@@ -4,14 +4,14 @@ import copy
 
 import pytest
 
-from solution.dispatch import resolve_route, validate_route_table
+from route_contracts import resolve_route, validate_route_table
 from tests.support.routing_fixtures import exact_match, exact_route_document
 
 
 def test_exact_official_shape_route_resolves() -> None:
-    table = validate_route_table(exact_route_document("causal-sdpa"))
+    table = validate_route_table(exact_route_document("graph"))
 
-    assert resolve_route(table, exact_match()) == "causal-sdpa"
+    assert resolve_route(table, exact_match()) == "graph"
     assert resolve_route(table, exact_match(case_id="official_03")) == "auto"
 
 
@@ -36,4 +36,12 @@ def test_route_table_rejects_duplicate_exact_matches() -> None:
     document["routes"].append(copy.deepcopy(document["routes"][0]))
 
     with pytest.raises(ValueError, match="duplicates"):
+        validate_route_table(document)
+
+
+def test_route_table_rejects_removed_triton_identity() -> None:
+    document = exact_route_document()
+    document["routes"][0]["match"]["triton"] = "legacy"
+
+    with pytest.raises(ValueError, match="unknown fields: triton"):
         validate_route_table(document)

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from project_identity import solution_implementation_hash
+from route_contracts import load_route_table, resolve_route_result
 from runner.contracts import (
     ContractError,
     MeasurementProtocol,
@@ -39,7 +39,11 @@ from runner.route_promotion import (
     find_matching_verified_route,
     verified_profile_from_probe_result,
 )
-from runner.routing_contracts import validate_selected_route_groups
+from runner.routing_contracts import (
+    exact_route_key,
+    hardware_identity_from_flat_profile,
+    validate_selected_route_groups,
+)
 from runner.supervisor import CancellationToken, run_managed_probe
 from runner.tuning import (
     align_shared_smoke_plans,
@@ -50,7 +54,6 @@ from runner.tuning import (
     run_tuning_case,
     select_candidates,
 )
-from solution.dispatch import load_route_table, make_route_key, resolve_route_result
 
 ProgressCallback = Callable[["CalibrationEvent"], None]
 
@@ -276,78 +279,61 @@ class _CalibrationCheckpoint:
 def hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
     """Build the compact flat profile consumed by the routing prior."""
 
-    environment = result.get("environment")
     probe = result.get("probe")
-    if not isinstance(environment, Mapping) or not isinstance(probe, Mapping):
-        raise ContractError("successful routing probe is missing device details")
+    if not isinstance(probe, Mapping):
+        raise ContractError("successful routing probe is missing its probe payload")
+    hardware_profile = probe.get("hardware_profile")
+    if not isinstance(hardware_profile, Mapping):
+        raise ContractError("routing probe is missing hardware_profile")
+    runtime_policy = probe.get("runtime_policy")
+    if not isinstance(runtime_policy, Mapping):
+        raise ContractError("routing probe is missing runtime_policy")
 
     profile: dict[str, Any] = {}
-    for candidate in (
-        result.get("hardware_profile"),
-        probe.get("hardware_profile"),
-    ):
-        if not isinstance(candidate, Mapping):
-            continue
-        device_type = candidate.get("device_type")
-        if isinstance(device_type, str):
-            profile["device_type"] = device_type
-        gpu = candidate.get("gpu")
-        if isinstance(gpu, Mapping):
-            gpu_fields = {
-                "name": "device_name",
-                "compute_capability": "compute_capability",
-                "architecture_family": "architecture_family",
-                "bf16_supported": "bf16_supported",
-                "cuda_graph_available": "cuda_graph_available",
-                "total_memory_bytes": "total_memory_bytes",
-                "sm_count": "sm_count",
-                "l2_cache_bytes": "l2_cache_bytes",
-                "shared_memory_per_sm_bytes": "shared_memory_per_sm_bytes",
-                "registers_per_sm": "registers_per_sm",
-                "memory_bus_width_bits": "memory_bus_width_bits",
-                "memory_clock_rate_khz": "memory_clock_khz",
-                "theoretical_memory_bandwidth_gbps": (
-                    "theoretical_memory_bandwidth_gbps"
-                ),
-            }
-            for source_name, profile_name in gpu_fields.items():
-                value = gpu.get(source_name)
-                if value is not None:
-                    profile[profile_name] = value
-        software = candidate.get("software")
-        if isinstance(software, Mapping):
-            for name in (
-                "driver",
-                "torch",
-                "cuda_runtime",
-                "triton",
-                "triton_available",
-            ):
-                value = software.get(name)
-                if value is not None:
-                    profile[name] = value
-        platform_profile = candidate.get("platform")
-        if isinstance(platform_profile, Mapping):
-            system = platform_profile.get("system")
-            if system is not None:
-                profile["platform_system"] = system
+    device_type = hardware_profile.get("device_type")
+    if isinstance(device_type, str):
+        profile["device_type"] = device_type
+    gpu = hardware_profile.get("gpu")
+    if isinstance(gpu, Mapping):
+        gpu_fields = {
+            "name": "device_name",
+            "compute_capability": "compute_capability",
+            "architecture_family": "architecture_family",
+            "bf16_supported": "bf16_supported",
+            "cuda_graph_available": "cuda_graph_available",
+            "total_memory_bytes": "total_memory_bytes",
+            "sm_count": "sm_count",
+            "l2_cache_bytes": "l2_cache_bytes",
+            "shared_memory_per_sm_bytes": "shared_memory_per_sm_bytes",
+            "registers_per_sm": "registers_per_sm",
+            "memory_bus_width_bits": "memory_bus_width_bits",
+            "memory_clock_rate_khz": "memory_clock_khz",
+            "theoretical_memory_bandwidth_gbps": ("theoretical_memory_bandwidth_gbps"),
+        }
+        for source_name, profile_name in gpu_fields.items():
+            value = gpu.get(source_name)
+            if value is not None:
+                profile[profile_name] = value
+    software = hardware_profile.get("software")
+    if isinstance(software, Mapping):
+        for name in ("driver", "torch", "cuda_runtime"):
+            value = software.get(name)
+            if value is not None:
+                profile[name] = value
+    platform_profile = hardware_profile.get("platform")
+    if isinstance(platform_profile, Mapping):
+        system = platform_profile.get("system")
+        if system is not None:
+            profile["platform_system"] = system
 
-    resolved_device = environment.get("device")
-    if isinstance(resolved_device, str) and resolved_device:
-        profile.setdefault("device_type", resolved_device.split(":", maxsplit=1)[0])
-    environment_fields = {
-        "gpu": "device_name",
-        "compute_capability": "compute_capability",
-        "total_memory_bytes": "total_memory_bytes",
-        "driver": "driver",
-        "torch": "torch",
-        "cuda_runtime": "cuda_runtime",
-    }
-    for source_name, profile_name in environment_fields.items():
-        value = environment.get(source_name)
-        if value is not None:
-            profile.setdefault(profile_name, value)
-    profile.setdefault("platform_system", platform.system())
+    matmul_precision = runtime_policy.get("matmul_precision")
+    allow_tf32 = runtime_policy.get("allow_tf32")
+    if matmul_precision not in {"highest", "high", "medium"}:
+        raise ContractError("routing runtime_policy has invalid matmul_precision")
+    if not isinstance(allow_tf32, bool):
+        raise ContractError("routing runtime_policy has invalid allow_tf32")
+    profile["matmul_precision"] = matmul_precision
+    profile["allow_tf32"] = allow_tf32
 
     raw_anchors = probe.get("performance_anchors")
     if isinstance(raw_anchors, Mapping):
@@ -575,15 +561,21 @@ class CalibrationService:
             )
             for shape, incumbent in zip(shapes, incumbents, strict=True)
         ]
-        smoke_plans = list(
-            align_shared_smoke_plans(
-                shapes,
-                request.variant,
-                smoke_plans,
-                incumbents,
-                candidate_limit=request.candidate_limit,
+        unsupported_plans = [
+            (shape, plan)
+            for shape, plan in zip(shapes, smoke_plans, strict=True)
+            if not plan["candidate_order"]
+        ]
+        if not unsupported_plans:
+            smoke_plans = list(
+                align_shared_smoke_plans(
+                    shapes,
+                    request.variant,
+                    smoke_plans,
+                    incumbents,
+                    candidate_limit=request.candidate_limit,
+                )
             )
-        )
         for shape, plan in zip(shapes, smoke_plans, strict=True):
             self._emit(
                 on_event,
@@ -614,6 +606,34 @@ class CalibrationService:
                 outcome="planned",
                 exit_code=0,
                 stage="planning",
+                **result_base,
+            )
+        if unsupported_plans:
+            unsupported_details = []
+            for shape, plan in unsupported_plans:
+                feasibility = plan.get("feasibility")
+                reason = (
+                    feasibility.get("rejection_reason")
+                    if isinstance(feasibility, Mapping)
+                    else None
+                )
+                unsupported_details.append(
+                    f"{shape.case_id}: {reason or 'no executable candidates'}"
+                )
+            message = "unsupported workload feasibility: " + "; ".join(
+                unsupported_details
+            )
+            self._emit(
+                on_event,
+                "planning_unsupported",
+                message=message,
+                case_ids=[shape.case_id for shape, _plan in unsupported_plans],
+            )
+            return CalibrationResult(
+                outcome="unsupported",
+                exit_code=1,
+                stage="planning",
+                message=message,
                 **result_base,
             )
 
@@ -812,6 +832,8 @@ class CalibrationService:
         )
         if created:
             route_action = "created verified package"
+        elif previous_route_bytes is None:
+            route_action = "replaced stale verified package"
         elif route_changed:
             route_action = "updated verified package"
         else:
@@ -921,18 +943,16 @@ class CalibrationService:
         if route_path is None or not route_path.is_file():
             return None
         table = load_route_table(route_path)
-        key = make_route_key(
-            shape,
-            shape=(shape.batch_size, shape.seq_len, shape.d_model),
-            dtype=variant.dtype,
-            device_type=str(hardware_profile["device_type"]),
-            device_name=str(hardware_profile["device_name"]),
-            compute_capability=str(hardware_profile["compute_capability"]),
-            platform_system=str(hardware_profile["platform_system"]),
-            torch_version=str(hardware_profile["torch"]),
-            cuda_runtime=str(hardware_profile["cuda_runtime"]),
-            triton_version=str(hardware_profile["triton"]),
-        )
+        try:
+            key = exact_route_key(
+                shape,
+                variant,
+                hardware_identity_from_flat_profile(hardware_profile),
+            )
+        except (TypeError, ValueError) as exc:
+            raise ContractError(
+                f"cannot resolve current route for {shape.case_id}: {exc}"
+            ) from exc
         resolution = resolve_route_result(table, key)
         if resolution.origin != "calibrated":
             return None
@@ -984,13 +1004,35 @@ class CalibrationService:
         if (
             not isinstance(raw_order, Sequence)
             or isinstance(raw_order, (str, bytes))
-            or not raw_order
             or any(not isinstance(value, str) for value in raw_order)
         ):
             raise ContractError(
                 f"routing plan for {shape.case_id} has no valid candidate order"
             )
         candidate_order = list(raw_order)
+        feasibility = raw_plan.get("feasibility")
+        if not candidate_order:
+            if (
+                not isinstance(feasibility, Mapping)
+                or feasibility.get("baseline_executable") is not False
+            ):
+                raise ContractError(
+                    f"routing plan for {shape.case_id} has no candidates without "
+                    "an unsupported feasibility decision"
+                )
+            plan = dict(raw_plan)
+            plan["candidate_order"] = []
+            plan["decision_scope"] = "unsupported"
+            plan["requires_full_workload_measurement"] = False
+            return plan
+        if (
+            isinstance(feasibility, Mapping)
+            and feasibility.get("baseline_executable") is False
+        ):
+            raise ContractError(
+                f"routing plan for {shape.case_id} ranks candidates for an "
+                "unsupported workload"
+            )
         if len(candidate_order) > candidate_limit:
             raise ContractError(
                 f"routing plan for {shape.case_id} exceeds candidate-limit"

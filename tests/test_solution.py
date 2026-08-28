@@ -15,6 +15,7 @@ import torch
 
 from official import torch_transformer_benchmark as official
 from runner.execution import load_solution_module
+from solution.cuda_graph import CudaGraphReplay
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -197,28 +198,18 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
 
 
 @pytest.mark.parametrize(
-    ("policy", "selected", "attention", "wrapper", "batch", "block"),
+    ("policy", "selected", "attention", "wrapper", "block"),
     [
-        ("auto", "auto", "causal_sdpa", "eager", "full", "torch"),
-        ("safe", "safe", "safe_streaming", "eager", "full", "torch"),
-        (
-            "causal-sdpa",
-            "causal-sdpa",
-            "causal_sdpa",
-            "eager",
-            "full",
-            "torch",
-        ),
+        ("auto", "auto", "causal_sdpa", "eager", "torch"),
+        ("safe", "safe", "safe_streaming", "eager", "torch"),
         (
             "inplace-block",
             "inplace-block",
             "causal_sdpa",
             "eager",
-            "full",
             "inplace_exact_gelu",
         ),
-        ("graph", "safe", "safe_streaming", "eager", "full", "torch"),
-        ("batch-tiled", "safe", "safe_streaming", "eager", "full", "torch"),
+        ("graph", "safe", "safe_streaming", "eager", "torch"),
     ],
 )
 def test_explicit_policy_reports_one_honest_execution_plan(
@@ -226,7 +217,6 @@ def test_explicit_policy_reports_one_honest_execution_plan(
     selected: str,
     attention: str,
     wrapper: str,
-    batch: str,
     block: str,
 ) -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
@@ -239,11 +229,13 @@ def test_explicit_policy_reports_one_honest_execution_plan(
     assert path["selected_policy"] == selected
     assert path["attention_backend"] == attention
     assert path["runtime_wrapper"] == wrapper
-    assert path["batch_strategy"] == batch
     assert path["block_backend"] == block
+    assert "batch_strategy" not in path
+    assert "batch_tile_size" not in path
+    assert "layer_backends" not in path
 
 
-def test_old_shape_specific_policy_names_are_rejected() -> None:
+def test_unknown_policy_name_is_rejected() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
 
@@ -270,7 +262,7 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
 ) -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
-    plan = SimpleNamespace(use_batch_tiling=False, use_cuda_graph=True)
+    plan = SimpleNamespace(use_cuda_graph=True)
     replay_calls: list[str] = []
 
     class FakeGraphReplay:
@@ -282,6 +274,8 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
         solution._last_execution_observation = {
             "attention_backends": ["causal_sdpa"],
             "block_backends": ["torch"],
+            "expected_layers": 1,
+            "complete": True,
         }
         return value + 1
 
@@ -302,6 +296,76 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
     assert replay_calls == ["replay"]
     assert torch.equal(output, inputs + 1)
     assert solution._last_execution_observation["runtime_wrappers"] == ["cuda_graph"]
+
+
+def test_all_valid_mask_cache_does_not_go_stale_for_inference_tensors() -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    inputs = torch.zeros(2, 4, 8)
+
+    with torch.inference_mode():
+        mask = torch.ones(2, 4, dtype=torch.bool)
+        assert solution._effective_valid_token_mask(inputs, mask) is None
+        mask[0, 0] = False
+        assert solution._effective_valid_token_mask(inputs, mask) is mask
+
+
+@pytest.mark.parametrize(
+    "mask",
+    [
+        torch.ones(2, 4),
+        torch.ones(2, 4, 1, dtype=torch.bool),
+        torch.ones(1, 4, dtype=torch.bool),
+    ],
+)
+def test_only_legal_boolean_batch_sequence_masks_can_be_elided(
+    mask: torch.Tensor,
+) -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    inputs = torch.zeros(2, 4, 8)
+
+    assert solution._effective_valid_token_mask(inputs, mask) is mask
+
+
+def test_execution_observation_reports_complete_layer_coverage() -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    solution.configure_runtime_policy(policy="safe")
+    solution.set_execution_observation(True)
+
+    with torch.inference_mode():
+        solution(torch.randn(2, 4, 8), torch.ones(2, 4, dtype=torch.bool))
+
+    observation = solution.describe_execution_path()["observed_execution"]
+    assert observation == {
+        "attention_backends": ["safe_streaming", "safe_streaming"],
+        "block_backends": ["torch", "torch"],
+        "expected_layers": 2,
+        "complete": True,
+    }
+
+
+def test_graph_policy_fails_clearly_under_torch_compile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    solution.configure_runtime_policy(policy="graph")
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+
+    with pytest.raises(RuntimeError, match="cannot run under torch.compile"):
+        solution(torch.zeros(2, 4, 8))
+
+
+def test_cuda_graph_replay_rejects_a_second_signature_without_recapture() -> None:
+    replay = CudaGraphReplay()
+    first = torch.zeros(1, 4, 8)
+    replay._signature = replay._input_signature(first, None)
+    replay._graph = SimpleNamespace()  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError, match="one static input signature"):
+        replay.run(lambda value, _mask: value, torch.zeros(2, 4, 8), None)
 
 
 def test_dispatch_is_the_default_and_falls_back_to_auto() -> None:

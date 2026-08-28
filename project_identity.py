@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 _SOLUTION_SUFFIXES = frozenset({".py", ".cpp", ".cc", ".c", ".h", ".cu", ".cuh"})
+_SOLUTION_ROOT_SOURCES = ("policy_registry.py", "route_contracts.py")
 
 
 def sha256_file(path: Path) -> str:
@@ -20,21 +21,25 @@ def sha256_file(path: Path) -> str:
 
 
 def solution_implementation_hash(solution_root: Path) -> str:
-    """Hash the executable Solution source tree in a path-stable order."""
+    """Hash every repository source that controls Solution execution."""
 
     resolved_root = solution_root.resolve()
-    files = sorted(
-        path
+    sources = {
+        path.relative_to(resolved_root).as_posix(): path
         for path in resolved_root.rglob("*")
         if path.is_file()
         and path.suffix.lower() in _SOLUTION_SUFFIXES
         and "__pycache__" not in path.parts
-    )
-    if not files:
+    }
+    for name in _SOLUTION_ROOT_SOURCES:
+        path = resolved_root.parent / name
+        if path.is_file():
+            sources[f"../{name}"] = path
+    if not sources:
         raise ValueError(f"no Solution source files found under {resolved_root}")
     digest = hashlib.sha256()
-    for path in files:
-        relative = path.relative_to(resolved_root).as_posix().encode("utf-8")
+    for label, path in sorted(sources.items()):
+        relative = label.encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         content = path.read_bytes()
@@ -123,7 +128,10 @@ def official_snapshot_hash(project_root: Path) -> str:
         ).encode("utf-8")
     ).hexdigest()
     expected_combined = metadata.get("combined_sha256")
-    if not isinstance(expected_combined, str) or expected_combined.lower() != combined_hash:
+    if (
+        not isinstance(expected_combined, str)
+        or expected_combined.lower() != combined_hash
+    ):
         raise ValueError("official combined checksum does not match metadata")
     return combined_hash
 

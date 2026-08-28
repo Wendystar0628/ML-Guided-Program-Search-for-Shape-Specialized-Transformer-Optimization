@@ -10,6 +10,7 @@ from typing import Any
 from runner.contracts import RunVariant, load_workload_set
 from runner.supervisor import CancellationToken
 from runner.sweep import (
+    SWEEP_SUMMARY_SCHEMA_VERSION,
     BenchmarkSweepRequest,
     BenchmarkSweepService,
     summarize_sweep,
@@ -28,12 +29,15 @@ def test_complete_sweep_summarizes_official_01_through_13_without_weights() -> N
 
     summary = summarize_sweep(workload, runs, target="solution")
 
+    assert summary["schema_version"] == SWEEP_SUMMARY_SCHEMA_VERSION
     assert summary["sweep_outcome"] == "complete"
     assert [item["case_id"] for item in summary["case_results"]] == [
         f"official_{index:02d}" for index in range(1, 14)
     ]
     assert summary["excluded_case_ids"] == ["official_14"]
     assert summary["geomean_speedup"] == 2.0
+    assert all(item["selected_policy"] == "auto" for item in summary["case_results"])
+    assert all(item["policy_applied"] is True for item in summary["case_results"])
     assert "groups" not in summary
     assert "weights" not in summary
 
@@ -46,9 +50,7 @@ def test_incomplete_sweep_never_reports_an_aggregate() -> None:
 
     assert summary["sweep_outcome"] == "incomplete"
     assert summary["geomean_speedup"] is None
-    assert summary["failed_cases"] == [
-        {"case_id": "official_13", "outcome": "missing"}
-    ]
+    assert summary["failed_cases"] == [{"case_id": "official_13", "outcome": "missing"}]
 
 
 def test_invalid_compact_timing_is_rejected_before_aggregation() -> None:
@@ -62,6 +64,24 @@ def test_invalid_compact_timing_is_rejected_before_aggregation() -> None:
     assert summary["geomean_speedup"] is None
     assert summary["failed_cases"][0]["case_id"] == "official_01"
     assert summary["failed_cases"][0]["outcome"] == "invalid_target_p90"
+
+
+def test_unproven_policy_is_not_aggregated_or_reported_as_actual() -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [successful_run(f"official_{index:02d}", 1.1) for index in range(1, 14)]
+    runs[0]["policy_applied"] = False
+    runs[0]["actual_policy"] = None
+
+    summary = summarize_sweep(workload, runs, target="solution")
+
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["geomean_speedup"] is None
+    assert summary["failed_cases"][0] == {
+        "case_id": "official_01",
+        "outcome": "policy_not_applied",
+    }
+    assert summary["case_results"][0]["selected_policy"] == "auto"
+    assert summary["case_results"][0]["actual_policy"] is None
 
 
 def test_sweep_service_runs_only_local_shapes_and_owns_one_directory(

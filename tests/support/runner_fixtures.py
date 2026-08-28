@@ -66,7 +66,7 @@ def successful_run(
     speedup: float,
     *,
     sweep_id: str = "fixture-sweep",
-    policy: str = "causal-sdpa",
+    policy: str = "auto",
 ) -> dict[str, Any]:
     workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
     shape = select_transformer_shape(workload, case_id)
@@ -74,13 +74,16 @@ def successful_run(
     variant = official_variant()
     target_median = 2.0 / speedup
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "run_id": f"fixture-{case_id}",
         "run_kind": "benchmark",
         "target": "solution",
         "sweep_id": sweep_id,
         "created_at": "2026-08-28T00:00:00+00:00",
         "outcome": "success",
+        "selected_policy": policy,
+        "policy_applied": True,
+        "actual_policy": policy,
         "source": {
             "official_sha256": official_snapshot_hash(PROJECT_ROOT),
             "solution_sha256": "fixture-solution-hash",
@@ -112,75 +115,13 @@ def successful_run(
             "selected_policy": policy,
             "attention_backend": "causal_sdpa",
             "runtime_wrapper": "eager",
-            "batch_strategy": "full",
             "block_backend": "torch",
-        },
-    }
-
-
-def routing_probe_result() -> dict[str, Any]:
-    return {
-        "schema_version": 3,
-        "run_id": "fixture-routing-probe",
-        "created_at": "2026-08-28T00:00:00+00:00",
-        "requested_device": "cuda:0",
-        "outcome": "success",
-        "environment": {
-            "device": "cuda:0",
-            "gpu": "fixture-gpu",
-            "compute_capability": "8.9",
-            "total_memory_bytes": 16_000_000_000,
-            "driver": "fixture-driver",
-            "platform": "Windows-fixture",
-            "torch": "fixture-torch",
-            "cuda_runtime": "13.2",
-        },
-        "probe": {
-            "mode": "routing",
-            "device_operation_passed": True,
-            "runtime_policy": {"matmul_precision": "high", "allow_tf32": True},
-            "hardware_profile": {
-                "available": True,
-                "device_type": "cuda",
-                "platform": {"system": "Windows", "machine": "AMD64"},
-                "software": {
-                    "driver": "fixture-driver",
-                    "torch": "fixture-torch",
-                    "cuda_runtime": "13.2",
-                    "triton": "fixture-triton",
-                    "triton_available": True,
-                },
-                "gpu": {
-                    "available": True,
-                    "name": "fixture-gpu",
-                    "compute_capability": "8.9",
-                    "architecture_family": "ada",
-                    "bf16_supported": True,
-                    "cuda_graph_available": True,
-                    "total_memory_bytes": 16_000_000_000,
-                    "sm_count": 76,
-                    "l2_cache_bytes": 64_000_000,
-                    "shared_memory_per_sm_bytes": 102_400,
-                    "registers_per_sm": 65_536,
-                    "memory_bus_width_bits": 256,
-                    "memory_clock_rate_khz": 1_000,
-                    "theoretical_memory_bandwidth_gbps": 716.8,
-                },
+            "execution_mode": "eager",
+            "fallback_reasons": None,
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["causal_sdpa"],
+                "block_backends": ["torch"],
             },
-            "performance_anchors": {
-                "eager_launch": {"effective_latency_us": 4.0},
-                "cuda_graph_replay": {
-                    "replay_latency_us": 8.0,
-                    "effective_latency_per_node_us": 2.0,
-                },
-                "device_copy": {"effective_bandwidth_gbps": 600.0},
-                "gemm_float16": {"tflops": 80.0},
-                "gemm_bfloat16": {"tflops": 75.0},
-                "gemm_float32": {"tflops": 40.0},
-                "softmax_fp32": {
-                    "throughput_gigaelements_per_second": 250.0
-                },
-            },
-            "sdpa": {"available": True, "scenarios": []},
         },
     }

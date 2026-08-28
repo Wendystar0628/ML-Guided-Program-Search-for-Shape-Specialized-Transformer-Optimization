@@ -161,45 +161,8 @@ def reference_causal_attention(
     return torch.cat(chunks, dim=-2)
 
 
-def causal_attention(
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    valid_token_mask: torch.Tensor | None = None,
-    *,
-    scale: float | None = None,
-    causal: bool = True,
-) -> torch.Tensor:
-    """Use native SDPA when safe and preserve exact reference fallback."""
-
-    if can_use_causal_sdpa(
-        query,
-        key,
-        value,
-        valid_token_mask,
-        causal=causal,
-    ):
-        return causal_sdpa(
-            query,
-            key,
-            value,
-            valid_token_mask,
-            scale=scale,
-            causal=causal,
-        )
-    return reference_causal_attention(
-        query,
-        key,
-        value,
-        valid_token_mask,
-        scale=scale,
-        causal=causal,
-    )
-
-
 __all__ = [
     "can_use_causal_sdpa",
-    "causal_attention",
     "causal_sdpa",
     "reference_causal_attention",
 ]

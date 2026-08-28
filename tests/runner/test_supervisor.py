@@ -12,6 +12,7 @@ import torch
 
 from runner import supervisor
 from runner.contracts import ContractError, RunVariant
+from runner.result_contracts import RUN_RESULT_SCHEMA_VERSION
 from tests.support.runner_fixtures import PROJECT_ROOT, tiny_protocol, tiny_shape
 
 
@@ -56,6 +57,7 @@ def test_managed_failure_persists_only_known_context(
         "failure",
     }
     assert result["outcome"] == "timeout"
+    assert result["schema_version"] == RUN_RESULT_SCHEMA_VERSION
     assert result["failure"] == {
         "stage": "worker",
         "type": "TimeoutExpired",
@@ -267,3 +269,55 @@ def test_active_worker_observes_cooperative_cancellation(
     assert result["outcome"] == "cancelled"
     assert result["failure"]["type"] == "CancellationRequested"
     assert stopped == [process]
+
+
+def test_policy_status_never_labels_partial_fallback_as_actual() -> None:
+    path = {
+        "requested_policy": "inplace-block",
+        "selected_policy": "inplace-block",
+        "attention_backend": "causal_sdpa",
+        "runtime_wrapper": "eager",
+        "block_backend": "inplace_exact_gelu",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["causal_sdpa"],
+            "block_backends": ["torch"],
+        },
+    }
+
+    selected, applied, actual = supervisor._policy_execution_status(
+        path,
+        target="solution",
+        shape=tiny_shape(),
+        variant=RunVariant(),
+    )
+
+    assert selected == "inplace-block"
+    assert applied is False
+    assert actual is None
+
+
+def test_policy_status_requires_complete_execution_evidence() -> None:
+    path = {
+        "requested_policy": "inplace-block",
+        "selected_policy": "inplace-block",
+        "attention_backend": "causal_sdpa",
+        "runtime_wrapper": "eager",
+        "block_backend": "inplace_exact_gelu",
+        "observed_execution": {
+            "complete": False,
+            "attention_backends": ["causal_sdpa"],
+            "block_backends": ["inplace_exact_gelu"],
+        },
+    }
+
+    selected, applied, actual = supervisor._policy_execution_status(
+        path,
+        target="solution",
+        shape=tiny_shape(),
+        variant=RunVariant(),
+    )
+
+    assert selected == "inplace-block"
+    assert applied is False
+    assert actual is None

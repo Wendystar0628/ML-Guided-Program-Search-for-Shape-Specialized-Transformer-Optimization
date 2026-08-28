@@ -22,12 +22,14 @@ from runner.contracts import (
 from runner.locking import device_measurement_lease
 from runner.resource_guard import local_benchmark_shapes
 from runner.result_contracts import (
+    RUN_RESULT_SCHEMA_VERSION,
     validate_benchmark_performance,
     validate_correctness,
 )
 from runner.supervisor import CancellationToken, run_managed_benchmark
 
 ManagedBenchmark = Callable[..., tuple[dict[str, Any], Path]]
+SWEEP_SUMMARY_SCHEMA_VERSION = 3
 SweepValidator = Callable[
     [WorkloadSet, Sequence[Mapping[str, Any]], Sequence[Path], dict[str, Any]],
     None,
@@ -110,7 +112,7 @@ def _run_context(
     *,
     target: str,
 ) -> tuple[dict[str, Any] | None, str | None]:
-    if run.get("schema_version") != 3:
+    if run.get("schema_version") != RUN_RESULT_SCHEMA_VERSION:
         return None, "unsupported_schema"
     if run.get("run_kind") != "benchmark":
         return None, "run_kind_mismatch"
@@ -133,6 +135,13 @@ def _run_context(
         not isinstance(solution_hash, str) or not solution_hash
     ):
         return None, "missing_solution_source_hash"
+    selected_policy = run.get("selected_policy")
+    if not isinstance(selected_policy, str) or not selected_policy:
+        return None, "missing_selected_policy"
+    if run.get("policy_applied") is not True:
+        return None, "policy_not_applied"
+    if run.get("actual_policy") != selected_policy:
+        return None, "actual_policy_mismatch"
     protocol = run.get("protocol")
     environment = run.get("environment")
     if not isinstance(protocol, Mapping):
@@ -151,7 +160,9 @@ def _run_context(
     }, None
 
 
-def _context_mismatch(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> str | None:
+def _context_mismatch(
+    expected: Mapping[str, Any], actual: Mapping[str, Any]
+) -> str | None:
     labels = {
         "sweep_id": "sweep_id_mismatch",
         "official_snapshot_sha256": "official_snapshot_mismatch",
@@ -209,21 +220,7 @@ def _actual_policy(run: Mapping[str, Any], *, target: str) -> str | None:
     if target == "baseline":
         return "official-baseline"
     persisted = run.get("actual_policy")
-    if isinstance(persisted, str) and persisted:
-        return persisted
-    execution_path = run.get("execution_path")
-    if not isinstance(execution_path, Mapping):
-        return None
-    for field_name in (
-        "actual_policy",
-        "selected_policy",
-        "dispatch_policy",
-        "requested_policy",
-    ):
-        value = execution_path.get(field_name)
-        if isinstance(value, str) and value:
-            return value
-    return None
+    return persisted if isinstance(persisted, str) and persisted else None
 
 
 def _failure_summary(run: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -267,6 +264,8 @@ def _compact_shape_result(
         "solution": solution,
         "speedup": speedup,
         "accuracy": _accuracy_summary(run) if run is not None else None,
+        "selected_policy": run.get("selected_policy") if run is not None else None,
+        "policy_applied": run.get("policy_applied") if run is not None else None,
         "actual_policy": _actual_policy(run, target=target)
         if run is not None
         else None,
@@ -380,7 +379,7 @@ def summarize_sweep(
         if isinstance(value, str) and value
     ]
     return {
-        "schema_version": 2,
+        "schema_version": SWEEP_SUMMARY_SCHEMA_VERSION,
         "sweep_id": context_anchor.get("sweep_id") if context_anchor else None,
         "created_at": min(created_values) if created_values else None,
         "workload_set_id": workload_set.workload_set_id,

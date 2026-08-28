@@ -1,4 +1,4 @@
-"""Resolve one immutable execution plan for reporting and forward execution."""
+"""Resolve one immutable execution plan for reporting and model execution."""
 
 from __future__ import annotations
 
@@ -7,24 +7,17 @@ from typing import Any
 
 import torch
 
-from .policies import ExecutionComponent, PolicySpec
+from policy_registry import ExecutionComponent, PolicySpec
 
-# Batch tiling is a capacity strategy, not an official-shape constant.  The
-# budget caps the input elements processed by one tile and naturally adapts to
-# batch, sequence, and model width.
-_BATCH_TILE_ELEMENT_BUDGET = 32 * 1024 * 1024
+from .kernels import supports_inplace_exact_gelu
 
 
 @dataclass(frozen=True, slots=True)
 class ExecutionContext:
     """Runtime facts that can change execution eligibility."""
 
-    batch_size: int
-    sequence_length: int
     d_model: int
     num_heads: int
-    ffn_dim: int
-    num_layers: int
     causal: bool
     device: torch.device
     dtype: torch.dtype
@@ -34,47 +27,25 @@ class ExecutionContext:
     has_valid_token_mask: bool
     mask_compatible: bool
 
-    @property
-    def head_dim(self) -> int:
-        return self.d_model // self.num_heads
-
-
-@dataclass(frozen=True, slots=True)
-class LayerExecutionPlan:
-    """Concrete backends consumed by one Transformer layer."""
-
-    attention_backend: str
-    block_backend: str
-
 
 @dataclass(frozen=True, slots=True)
 class ExecutionPlan:
-    """Single source of truth for the selected model execution path."""
+    """Single source of truth for every branch consumed by forward."""
 
     requested_policy: str
     selected_policy: str
     attention_backend: str
     runtime_wrapper: str
-    batch_strategy: str
-    batch_tile_size: int | None
     block_backend: str
+    has_valid_token_mask: bool
     required_components: tuple[str, ...]
     resolved_components: tuple[str, ...]
     missing_components: tuple[str, ...]
-    layers: tuple[LayerExecutionPlan, ...]
     fallback_reasons: tuple[str, ...]
 
     @property
     def use_cuda_graph(self) -> bool:
         return self.runtime_wrapper == "cuda_graph"
-
-    @property
-    def use_batch_tiling(self) -> bool:
-        return self.batch_strategy == "tiled"
-
-    @property
-    def use_inplace_exact_gelu(self) -> bool:
-        return self.block_backend == "inplace_exact_gelu"
 
     def describe(
         self,
@@ -85,8 +56,14 @@ class ExecutionPlan:
         route_origin: str | None,
         causal: bool,
     ) -> dict[str, Any]:
-        """Serialize the same plan that forward consumes."""
+        """Serialize the same immutable plan consumed by forward."""
 
+        if not causal:
+            causal_mask = "none"
+        elif self.attention_backend == "causal_sdpa":
+            causal_mask = "implicit_sdpa"
+        else:
+            causal_mask = "query_block"
         return {
             "requested_policy": self.requested_policy,
             "selected_policy": self.selected_policy,
@@ -100,19 +77,12 @@ class ExecutionPlan:
             "qkv_projection": "packed",
             "attention_backend": self.attention_backend,
             "runtime_wrapper": self.runtime_wrapper,
-            "batch_strategy": self.batch_strategy,
-            "batch_tile_size": self.batch_tile_size,
             "block_backend": self.block_backend,
-            "layer_backends": [
-                {
-                    "attention": layer.attention_backend,
-                    "block": layer.block_backend,
-                }
-                for layer in self.layers
-            ],
-            "causal_mask": "implicit" if causal else "none",
-            "valid_token_mask": "direct_key_mask",
-            "fallback_reason": list(self.fallback_reasons) or None,
+            "causal_mask": causal_mask,
+            "valid_token_mask": (
+                "direct_key_mask" if self.has_valid_token_mask else "none"
+            ),
+            "fallback_reasons": list(self.fallback_reasons),
         }
 
 
@@ -120,17 +90,7 @@ class ExecutionPlan:
 class _Capabilities:
     causal_sdpa: bool
     cuda_graph: bool
-    batch_tile_size: int | None
     inplace_exact_gelu: bool
-
-
-def _batch_tile_size(context: ExecutionContext) -> int | None:
-    elements_per_sample = context.sequence_length * context.d_model
-    if elements_per_sample <= 0:
-        return None
-    tile_size = max(1, _BATCH_TILE_ELEMENT_BUDGET // elements_per_sample)
-    tile_size = min(context.batch_size, tile_size)
-    return tile_size if tile_size < context.batch_size else None
 
 
 def _capabilities(context: ExecutionContext) -> _Capabilities:
@@ -152,12 +112,9 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             and context.device.type == "cuda"
             and context.input_contiguous
         ),
-        batch_tile_size=(
-            _batch_tile_size(context)
-            if causal_sdpa and inference and context.input_contiguous
-            else None
+        inplace_exact_gelu=(
+            causal_sdpa and inference and supports_inplace_exact_gelu()
         ),
-        inplace_exact_gelu=(causal_sdpa and inference),
     )
 
 
@@ -170,8 +127,6 @@ def _resolved_components(
         resolved.add(ExecutionComponent.CAUSAL_SDPA)
     if spec.use_cuda_graph and capabilities.cuda_graph:
         resolved.add(ExecutionComponent.CUDA_GRAPH)
-    if spec.use_batch_tiling and capabilities.batch_tile_size is not None:
-        resolved.add(ExecutionComponent.BATCH_TILING)
     if spec.use_inplace_exact_gelu and capabilities.inplace_exact_gelu:
         resolved.add(ExecutionComponent.INPLACE_EXACT_GELU)
     return frozenset(resolved)
@@ -182,9 +137,8 @@ def resolve_execution_plan(
     context: ExecutionContext,
     *,
     requested_policy: str,
-    dispatch_policy: str | None,
 ) -> ExecutionPlan:
-    """Resolve policy intent atomically; unsupported policies fall back to safe."""
+    """Resolve a policy atomically; unsupported policies become ``safe``."""
 
     capabilities = _capabilities(context)
     resolved = _resolved_components(spec, capabilities)
@@ -193,20 +147,10 @@ def resolve_execution_plan(
         f"{component.value}_not_eligible"
         for component in sorted(missing, key=lambda item: item.value)
     )
-
-    # Explicit policies are atomic.  This keeps observed policy identity honest
-    # and prevents a partially-applied candidate from being promoted.
     fully_applied = not missing
-    if spec.policy_id == "auto":
+    if fully_applied:
         attention_backend = (
-            "causal_sdpa" if capabilities.causal_sdpa else "safe_streaming"
-        )
-        selected_policy = "auto"
-    elif fully_applied:
-        attention_backend = (
-            "causal_sdpa"
-            if spec.attention == "causal_sdpa"
-            else "safe_streaming"
+            "causal_sdpa" if spec.attention == "causal_sdpa" else "safe_streaming"
         )
         selected_policy = spec.policy_id
     else:
@@ -215,46 +159,21 @@ def resolve_execution_plan(
         resolved = frozenset()
 
     use_cuda_graph = fully_applied and spec.use_cuda_graph
-    use_batch_tiling = fully_applied and spec.use_batch_tiling
     use_inplace_exact_gelu = fully_applied and spec.use_inplace_exact_gelu
-    batch_tile_size = (
-        capabilities.batch_tile_size if use_batch_tiling else None
-    )
-    runtime_wrapper = "cuda_graph" if use_cuda_graph else "eager"
-    batch_strategy = "tiled" if use_batch_tiling else "full"
-    block_backend = (
-        "inplace_exact_gelu" if use_inplace_exact_gelu else "torch"
-    )
-    layers = tuple(
-        LayerExecutionPlan(attention_backend, block_backend)
-        for _ in range(context.num_layers)
-    )
-
     return ExecutionPlan(
         requested_policy=requested_policy,
         selected_policy=selected_policy,
         attention_backend=attention_backend,
-        runtime_wrapper=runtime_wrapper,
-        batch_strategy=batch_strategy,
-        batch_tile_size=batch_tile_size,
-        block_backend=block_backend,
+        runtime_wrapper="cuda_graph" if use_cuda_graph else "eager",
+        block_backend=("inplace_exact_gelu" if use_inplace_exact_gelu else "torch"),
+        has_valid_token_mask=context.has_valid_token_mask,
         required_components=tuple(
             sorted(component.value for component in spec.required_components)
         ),
-        resolved_components=tuple(
-            sorted(component.value for component in resolved)
-        ),
-        missing_components=tuple(
-            sorted(component.value for component in missing)
-        ),
-        layers=layers,
+        resolved_components=tuple(sorted(component.value for component in resolved)),
+        missing_components=tuple(sorted(component.value for component in missing)),
         fallback_reasons=fallback_reasons,
     )
 
 
-__all__ = [
-    "ExecutionContext",
-    "ExecutionPlan",
-    "LayerExecutionPlan",
-    "resolve_execution_plan",
-]
+__all__ = ["ExecutionContext", "ExecutionPlan", "resolve_execution_plan"]

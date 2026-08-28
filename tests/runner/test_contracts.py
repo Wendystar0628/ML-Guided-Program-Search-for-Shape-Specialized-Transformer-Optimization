@@ -100,23 +100,38 @@ def test_measurement_protocol_uses_new_official_tolerances() -> None:
     assert protocol.atol == 0.002
 
 
-def test_solution_hash_excludes_external_route_tables(tmp_path: Path) -> None:
+def test_solution_hash_ignores_non_executable_metadata(tmp_path: Path) -> None:
     solution_root = tmp_path / "solution"
     solution_root.mkdir()
     (solution_root / "transformer.py").write_text("VALUE = 1\n", encoding="utf-8")
-    route_path = solution_root / "dispatch_routes.json"
-    route_path.write_text(
-        '{"schema_version":1,"default_policy":"auto","routes":[]}\n',
-        encoding="utf-8",
-    )
+    metadata_path = solution_root / "metadata.json"
+    metadata_path.write_text('{"note":"first"}\n', encoding="utf-8")
     original_implementation = solution_implementation_hash(solution_root)
 
-    route_path.write_text(
-        '{"schema_version":1,"default_policy":"reference","routes":[]}\n',
-        encoding="utf-8",
-    )
+    metadata_path.write_text('{"note":"second"}\n', encoding="utf-8")
 
     assert solution_implementation_hash(solution_root) == original_implementation
+
+    (solution_root / "transformer.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert solution_implementation_hash(solution_root) != original_implementation
+
+
+def test_solution_hash_includes_shared_runtime_contracts(tmp_path: Path) -> None:
+    solution_root = tmp_path / "solution"
+    solution_root.mkdir()
+    (solution_root / "transformer.py").write_text("VALUE = 1\n", encoding="utf-8")
+    policy_path = tmp_path / "policy_registry.py"
+    route_path = tmp_path / "route_contracts.py"
+    policy_path.write_text("POLICIES = {'auto'}\n", encoding="utf-8")
+    route_path.write_text("ROUTE_SCHEMA = 1\n", encoding="utf-8")
+    original_implementation = solution_implementation_hash(solution_root)
+
+    policy_path.write_text("POLICIES = {'auto', 'graph'}\n", encoding="utf-8")
+    assert solution_implementation_hash(solution_root) != original_implementation
+
+    policy_path.write_text("POLICIES = {'auto'}\n", encoding="utf-8")
+    route_path.write_text("ROUTE_SCHEMA = 2\n", encoding="utf-8")
+    assert solution_implementation_hash(solution_root) != original_implementation
 
 
 def test_manual_compile_controls_remain_part_of_the_measurement_protocol() -> None:

@@ -38,17 +38,19 @@ not to duplicated shape definitions.
 
 ## Optimization policies
 
-[`solution/policies.py`](solution/policies.py) is the single registry of
-runtime policies:
+[`policy_registry.py`](policy_registry.py) is the single registry of runtime
+policies:
 
 | Policy | Purpose |
 | --- | --- |
 | `safe` | Conservative official-equivalent path used for diagnosis and fallback comparison |
-| `auto` | Hardware-neutral optimized plan and fallback for an unmatched device/shape |
-| `causal-sdpa` | Native causal SDPA without materializing a full causal mask |
+| `auto` | Hardware-neutral default: causal SDPA when eligible, otherwise safe streaming |
 | `graph` | Full-forward CUDA Graph capture and replay for fixed, launch-bound shapes |
-| `batch-tiled` | Batch chunking for shapes whose full intermediates create excessive peak memory |
-| `inplace-block` | Reuse selected block intermediates to reduce allocation and memory traffic |
+| `inplace-block` | Apply exact GELU in-place at the FFN boundary to remove one allocation |
+
+`auto` is the eager optimized control. `graph` and `inplace-block` are the only
+specialized deployable challengers; `safe` remains available for diagnosis but
+is not written as a calibrated route.
 
 These names describe implemented execution behavior. `inplace-block` is not
 presented as a fully fused Transformer block. A custom online/streaming
@@ -65,7 +67,8 @@ that falls back cannot be counted as a successful candidate.
 
 ```text
 official/                    Supplied benchmark, published shapes, snapshot identity
-solution/                    Optimized Transformer, policies, execution plan, kernels
+policy_registry.py           Runtime policy definitions shared by control and data planes
+solution/                    Optimized Transformer, execution planning, kernels
 runner/                      GPU measurement, profiling, tuning, calibration, routing
 verified_hardware/           Exact routes and compact results for measured GPUs
 tests/                       Control-plane, architecture, correctness, and real-GPU smoke
@@ -88,7 +91,7 @@ Create an isolated environment and install the repository dependencies:
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-windows-rtx4080.txt
 . .\activate_windows_rtx4080.ps1
-python environment_check.py --check-extension
+.\.venv\Scripts\python.exe environment_check.py --check-extension
 ```
 
 The RTX 4080 activation script selects the checked local MSVC and CUDA
@@ -108,32 +111,32 @@ runs are useful only for control-plane diagnostics.
 Run the official-compatible single-shape entry:
 
 ```powershell
-python torch_transformer_benchmark.py --device cuda:0 --dtype float32
+.\.venv\Scripts\python.exe torch_transformer_benchmark.py --device cuda:0 --dtype float32
 ```
 
 Run the default official 1–13 smoke or formal sweep:
 
 ```powershell
-python -m runner benchmark --preset smoke --device cuda:0
-python -m runner benchmark --preset formal --device cuda:0
+.\.venv\Scripts\python.exe -m runner benchmark --preset smoke --device cuda:0
+.\.venv\Scripts\python.exe -m runner benchmark --preset formal --device cuda:0
 ```
 
 Run one published case:
 
 ```powershell
-python -m runner benchmark --case-id official_02 --preset smoke --device cuda:0
+.\.venv\Scripts\python.exe -m runner benchmark --case-id official_02 --preset smoke --device cuda:0
 ```
 
 Profile one complete Transformer forward:
 
 ```powershell
-python -m runner profile --case-id official_13 --device cuda:0
+.\.venv\Scripts\python.exe -m runner profile --case-id official_13 --device cuda:0
 ```
 
 Measure an explicit, non-deploying candidate set:
 
 ```powershell
-python -m runner tune --case-id official_02 `
+.\.venv\Scripts\python.exe -m runner tune --case-id official_02 `
   --candidate eager-auto --candidate graph `
   --preset smoke --device cuda:0
 ```
@@ -146,26 +149,26 @@ for focused experiments when the candidate list is already known.
 Inspect the target GPU and runtime:
 
 ```powershell
-python -m runner probe --device cuda:0
+.\.venv\Scripts\python.exe -m runner probe --device cuda:0
 ```
 
 Generate a white-box routing plan without running full Transformer candidates:
 
 ```powershell
-python -m runner calibrate --plan-only --device cuda:0
+.\.venv\Scripts\python.exe -m runner calibrate --plan-only --device cuda:0
 ```
 
 Run a bounded smoke screen. The automatic planner measures at most three
 eligible candidates per case and does not publish routes:
 
 ```powershell
-python -m runner calibrate --preset smoke --device cuda:0
+.\.venv\Scripts\python.exe -m runner calibrate --preset smoke --device cuda:0
 ```
 
 Run the complete calibration and publish validated exact routes:
 
 ```powershell
-python -m runner calibrate --preset formal --device cuda:0
+.\.venv\Scripts\python.exe -m runner calibrate --preset formal --device cuda:0
 ```
 
 The formal command performs one probe, a bounded smoke screen, dynamic finalist
@@ -195,8 +198,8 @@ The result keeps only information useful for optimization and review:
 - compact GPU/runtime identity;
 - correctness summary;
 - baseline and solution median/P90 latency;
-- round medians, sample count, and speedup;
-- requested, resolved, and observed policy;
+- sample count and speedup;
+- selected policy, whether it was applied, and the evidence-backed actual policy;
 - route source and implementation identities.
 
 Raw timing samples, duplicated summaries, full profiler traces, and historical
@@ -219,24 +222,30 @@ results/runs/<run_id>.json
 Each measured GPU has one small package below
 [`verified_hardware/`](verified_hardware/README.md). The package contains its
 hardware profile, exact route table, manifest, compact formal summary, and a
-thin reproduction script. The manifest binds routes to the official benchmark,
-published shapes, current solution, measurement protocol, and runtime stack.
+thin reproduction script. The manifest binds the route-table hash, official
+snapshot, published shape set, current Solution implementation, Formal
+protocol, run variant, and covered/excluded shape partition. The profile records
+the measured hardware/runtime stack, and each route matches that identity
+exactly.
 
 The local reference platform is documented at
 [`verified_hardware/nvidia_geforce_rtx_4080/`](verified_hardware/nvidia_geforce_rtx_4080/README.md).
 Use its checked entry after a formal package has been generated:
 
 ```powershell
-python verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --preset smoke
+.\.venv\Scripts\python.exe verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --preset smoke
 ```
 
 The formal FP32 sweep completed all 13 default shapes on the RTX 4080:
 
 - `13/13` successful cases;
-- `4.1827x` geometric-mean speedup;
+- `4.0589x` internal unweighted geometric-mean speedup across the 13 shapes;
 - zero failed output elements across five accuracy trials per case;
 - maximum observed absolute error `0.00134444`, below `atol=0.002`;
-- per-case speedups from `1.1219x` to `11.0236x`.
+- per-case speedups from `1.1192x` to `10.7866x`.
+
+The geometric mean is a project-side, equally weighted summary for comparing
+iterations; it is not a claim about any separate official score weighting.
 
 The full rounded table is in the
 [`RTX 4080 package README`](verified_hardware/nvidia_geforce_rtx_4080/README.md),
@@ -248,10 +257,11 @@ every CUDA device.
 ## Tests
 
 ```powershell
-python -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q -m "not gpu"
 .\.venv\Scripts\python.exe -m pytest -q -m architecture tests\architecture
 .\.venv\Scripts\python.exe -m pytest -q -m gpu tests\gpu
-python -m ruff check runner solution tests verified_hardware `
+.\.venv\Scripts\python.exe -m ruff check runner solution tests verified_hardware `
+  route_contracts.py policy_registry.py project_identity.py `
   torch_transformer_benchmark.py environment_check.py
 ```
 
@@ -274,8 +284,8 @@ same runner rather than entering the model hot path.
 - The current default performance scope is `official_01` through
   `official_13`; `official_14` remains part of the published shape contract but
   is not run by the default sweep.
-- Routes are deliberately exact. A changed GPU, driver, CUDA/PyTorch/Triton
-  stack, official snapshot, or solution source requires new calibration.
+- Routes are deliberately exact. A changed GPU, driver, CUDA/PyTorch runtime
+  policy, official snapshot, or solution source requires new calibration.
 - Hardware probing provides an explainable candidate ordering, not a learned
   latency predictor; full-workload measurement remains authoritative.
 - A custom online/streaming causal attention kernel is the main future option

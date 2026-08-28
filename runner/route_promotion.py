@@ -16,7 +16,17 @@ from pathlib import Path
 from typing import Any
 
 from project_identity import official_snapshot_hash, solution_implementation_hash
-from runner.candidates import candidate_spec, deployable_policy_ids
+from route_contracts import (
+    MANIFEST_SCHEMA_VERSION,
+    ROUTE_FIELDS,
+    SCHEMA_VERSION,
+    WORKLOAD_ROUTE_FIELDS,
+    load_verified_bundle,
+    resolve_route,
+    validate_bundle_manifest,
+    validate_route_table,
+    validate_verified_route_table,
+)
 from runner.contracts import (
     ContractError,
     RunVariant,
@@ -34,19 +44,14 @@ from runner.routing_contracts import (
     hardware_identity_from_verified_profile,
     route_match_from_summary,
     validate_selected_route_groups,
+    workload_route_identity,
 )
-from solution.dispatch import (
-    MANIFEST_SCHEMA_VERSION,
-    ROUTE_FIELDS,
-    SCHEMA_VERSION,
-    load_verified_bundle,
-    resolve_route,
-    validate_bundle_manifest,
-    validate_route_table,
-    validate_verified_route_table,
+from runner.tuning_contracts import (
+    TUNING_SCHEMA_VERSION,
+    select_deployable_winner,
+    target_latency_gain,
 )
 
-TUNING_SCHEMA_VERSION = 3
 DEFAULT_ROUTE_POLICY = "auto"
 MINIMUM_ROUTE_GAIN = 1.02
 _FORMAL_MINIMUM_COUNTS = {
@@ -56,72 +61,9 @@ _FORMAL_MINIMUM_COUNTS = {
     "rounds": 3,
 }
 _FORMAL_MAXIMUM_TOLERANCES = {"rtol": 0.02, "atol": 0.002}
-DEPLOYABLE_POLICIES = deployable_policy_ids()
 _BUNDLE_HARDWARE_FIELDS = frozenset(
     {"device_type", "device_name", "compute_capability"}
 )
-
-
-def _positive_number(value: Any) -> float | None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-        or float(value) <= 0
-    ):
-        return None
-    return float(value)
-
-
-def select_deployable_winner(
-    summary: Mapping[str, Any],
-    *,
-    allowed_policies: frozenset[str] = DEPLOYABLE_POLICIES,
-) -> dict[str, Any]:
-    """Select the best paired-baseline speedup among correct runtime routes."""
-
-    observations = summary.get("observations")
-    if not isinstance(observations, Sequence) or isinstance(observations, (str, bytes)):
-        raise ContractError("tuning summary observations must be a sequence")
-
-    eligible: list[tuple[float, float, str, Mapping[str, Any]]] = []
-    for observation in observations:
-        if not isinstance(observation, Mapping):
-            continue
-        policy = observation.get("solution_policy")
-        candidate_id = observation.get("candidate_id")
-        speedup = _positive_number(observation.get("speedup"))
-        median = _positive_number(observation.get("target_median_ms"))
-        p90 = _positive_number(observation.get("target_p90_ms"))
-        execution_path = observation.get("execution_path")
-        spec = candidate_spec(candidate_id) if isinstance(candidate_id, str) else None
-        if (
-            policy not in allowed_policies
-            or spec is None
-            or not spec.deployable
-            or spec.solution_policy != policy
-            or observation.get("outcome") != "success"
-            or observation.get("correctness_passed") is not True
-            or observation.get("failed_elements") != 0
-            or speedup is None
-            or median is None
-            or p90 is None
-            or not isinstance(execution_path, Mapping)
-            or not spec.evidence_matches(execution_path)
-        ):
-            continue
-        eligible.append(
-            (
-                -speedup,
-                math.inf if p90 is None else p90,
-                candidate_id,
-                observation,
-            )
-        )
-
-    if not eligible:
-        raise ContractError("tuning summary has no correct, applied dispatch candidate")
-    return copy.deepcopy(dict(min(eligible, key=lambda item: item[:3])[3]))
 
 
 def _route_match(summary: Mapping[str, Any]) -> dict[str, Any]:
@@ -777,20 +719,20 @@ def build_promoted_route_document(
     measured_policy = str(measured_winner["solution_policy"])
     deployment = measured_winner
     if measured_policy != incumbent_policy:
-        measured_speedup = float(measured_winner["speedup"])
-        auto_speedup = float(auto_observation["speedup"])
-        incumbent_speedup = float(incumbent_observation["speedup"])
         clears_auto_margin = (
             measured_policy == DEFAULT_ROUTE_POLICY
-            or measured_speedup >= auto_speedup * MINIMUM_ROUTE_GAIN
+            or target_latency_gain(auto_observation, measured_winner)
+            >= MINIMUM_ROUTE_GAIN
         )
         clears_incumbent_margin = (
-            measured_speedup >= incumbent_speedup * MINIMUM_ROUTE_GAIN
+            target_latency_gain(incumbent_observation, measured_winner)
+            >= MINIMUM_ROUTE_GAIN
         )
         if not (clears_auto_margin and clears_incumbent_margin):
             if (
                 incumbent_policy != DEFAULT_ROUTE_POLICY
-                and auto_speedup >= incumbent_speedup * MINIMUM_ROUTE_GAIN
+                and target_latency_gain(incumbent_observation, auto_observation)
+                >= MINIMUM_ROUTE_GAIN
             ):
                 deployment = auto_observation
             else:
@@ -809,17 +751,6 @@ def _summary_case_id(summary: Mapping[str, Any]) -> str:
     return case_id
 
 
-def _canonical_document_sha256(document: Mapping[str, Any]) -> str:
-    payload = json.dumps(
-        document,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
 def _is_verified_route_destination(path: Path) -> bool:
     resolved = path.resolve()
     return (
@@ -833,10 +764,6 @@ def _json_payload(document: Mapping[str, Any]) -> bytes:
     return (
         json.dumps(document, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     ).encode("utf-8")
-
-
-def _route_match_sha256(match: Mapping[str, Any]) -> str:
-    return _canonical_document_sha256(match)
 
 
 def _build_verified_bundle_manifest(
@@ -865,7 +792,8 @@ def _build_verified_bundle_manifest(
     protocol = summaries[0].get("protocol")
     if not isinstance(protocol, Mapping):
         raise ContractError("formal summary is missing its measurement protocol")
-    protocol_digest = _canonical_document_sha256(protocol)
+    formal_variant = _summary_variant(summaries)
+    variant = formal_variant.as_dict()
     implementation_hash = solution_implementation_hash(
         project_root.resolve() / "solution"
     )
@@ -882,11 +810,25 @@ def _build_verified_bundle_manifest(
         raise ContractError(
             "formal summaries do not share the current official snapshot"
         )
+    workload_set = load_workload_set(project_root, workload_set_id)
+    covered_order = tuple(
+        shape.case_id for shape in local_benchmark_shapes(workload_set.shapes)
+    )
+    covered_set = set(covered_order)
+    excluded_order = tuple(
+        shape.case_id
+        for shape in workload_set.shapes
+        if shape.case_id not in covered_set
+    )
     selected_case_ids = {_summary_case_id(summary) for summary in summaries}
-    selected_route_hashes = {
-        _route_match_sha256(_route_match(summary)) for summary in summaries
-    }
-    source_summaries: list[dict[str, object]] = []
+    unknown_case_ids = selected_case_ids - covered_set
+    if unknown_case_ids:
+        raise ContractError(
+            "formal summaries include excluded or unknown cases: "
+            + ", ".join(sorted(unknown_case_ids))
+        )
+
+    manifested_case_ids = set(selected_case_ids)
     if previous_manifest is not None and not reset_previous:
         try:
             previous = validate_bundle_manifest(previous_manifest)
@@ -899,41 +841,42 @@ def _build_verified_bundle_manifest(
             or previous.workload_set_sha256 != workload_sha256
             or previous.official_snapshot_sha256 != current_official_hash
             or previous.solution_implementation_sha256 != implementation_hash
-            or _canonical_document_sha256(previous.formal_protocol) != protocol_digest
         ):
             raise ContractError(
                 "verified bundle manifest is stale; rerun a complete calibration"
             )
-        for source in previous.source_summaries:
-            if source.route_sha256 not in selected_route_hashes:
-                source_summaries.append(
-                    {
-                        "summary_id": source.summary_id,
-                        "case_id": source.case_id,
-                        "route_sha256": source.route_sha256,
-                    }
-                )
+        previous_formal = previous_manifest.get("formal")
+        if not isinstance(previous_formal, Mapping):
+            raise ContractError(
+                "verified bundle manifest is invalid; rerun a complete calibration"
+            )
+        previous_protocol = previous_formal.get("protocol")
+        previous_variant = previous_formal.get("variant")
+        previous_covered = previous_formal.get("covered_case_ids")
+        previous_excluded = previous_formal.get("excluded_case_ids")
+        if (
+            previous_protocol != protocol
+            or previous_variant != variant
+            or not isinstance(previous_covered, Sequence)
+            or isinstance(previous_covered, (str, bytes))
+            or not isinstance(previous_excluded, Sequence)
+            or isinstance(previous_excluded, (str, bytes))
+            or set(previous_excluded) != set(excluded_order)
+            or not set(previous_covered).issubset(covered_set)
+        ):
+            raise ContractError(
+                "verified bundle manifest is stale; rerun a complete calibration"
+            )
+        manifested_case_ids.update(str(case_id) for case_id in previous_covered)
     else:
-        workload_set = load_workload_set(project_root, workload_set_id)
-        full_case_ids = {
-            shape.case_id for shape in local_benchmark_shapes(workload_set.shapes)
-        }
-        if selected_case_ids != full_case_ids:
+        if selected_case_ids != covered_set:
             raise ContractError(
                 "a verified bundle manifest requires one complete Formal workload "
                 "calibration"
             )
-
-    for summary in summaries:
-        summary_id = summary.get("tuning_id")
-        if not isinstance(summary_id, str) or not summary_id:
-            raise ContractError("formal tuning summary is missing tuning_id")
-        source_summaries.append(
-            {
-                "summary_id": summary_id,
-                "case_id": _summary_case_id(summary),
-                "route_sha256": _route_match_sha256(_route_match(summary)),
-            }
+    if manifested_case_ids != covered_set:
+        raise ContractError(
+            "verified bundle Formal coverage does not include every local shape"
         )
 
     route_digest = hashlib.sha256(_json_payload(route_document)).hexdigest()
@@ -948,27 +891,26 @@ def _build_verified_bundle_manifest(
         "route_table": {"sha256": route_digest},
         "formal": {
             "protocol": copy.deepcopy(dict(protocol)),
-            "source_summaries": source_summaries,
+            "variant": copy.deepcopy(variant),
+            "covered_case_ids": [
+                case_id for case_id in covered_order if case_id in manifested_case_ids
+            ],
+            "excluded_case_ids": list(excluded_order),
         },
     }
     table = validate_verified_route_table(route_document)
-    expected_route_hashes = {
-        _route_match_sha256(match) for match, _policy in table.routes
+    expected_workload_routes = {
+        workload_route_identity(shape, formal_variant)
+        for shape in local_benchmark_shapes(workload_set.shapes)
     }
-    manifested_route_hashes = {
-        str(source["route_sha256"]) for source in source_summaries
+    published_workload_routes = {
+        tuple((field, match[field]) for field in WORKLOAD_ROUTE_FIELDS)
+        for match, _policy in table.routes
     }
-    if manifested_route_hashes != expected_route_hashes:
+    if published_workload_routes != expected_workload_routes:
         raise ContractError(
-            "verified bundle sources do not cover every published exact route"
+            "verified routes do not exactly cover the Formal workload cases"
         )
-    workload_set = load_workload_set(project_root, workload_set_id)
-    expected_case_ids = {
-        shape.case_id for shape in local_benchmark_shapes(workload_set.shapes)
-    }
-    manifested_case_ids = {str(source["case_id"]) for source in source_summaries}
-    if not expected_case_ids.issubset(manifested_case_ids):
-        raise ContractError("verified bundle sources do not cover every local shape")
     try:
         validate_bundle_manifest(document)
     except (TypeError, ValueError) as exc:
@@ -1230,13 +1172,10 @@ def _atomic_replace_json(
 
 __all__ = [
     "DEFAULT_ROUTE_POLICY",
-    "DEPLOYABLE_POLICIES",
     "MINIMUM_ROUTE_GAIN",
-    "TUNING_SCHEMA_VERSION",
     "auto_promote_calibration",
     "build_promoted_route_document",
     "find_matching_verified_route",
-    "select_deployable_winner",
     "validate_promotion_case_set",
     "verified_profile_from_probe_result",
 ]

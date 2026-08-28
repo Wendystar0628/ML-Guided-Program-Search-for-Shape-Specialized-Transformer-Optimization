@@ -8,7 +8,7 @@ import torch
 
 
 class CudaGraphReplay:
-    """Capture one static signature while preserving public tensor ownership."""
+    """Capture exactly one static signature and replay it safely."""
 
     def __init__(self) -> None:
         self._signature: tuple[object, ...] | None = None
@@ -44,16 +44,16 @@ class CudaGraphReplay:
         value: torch.Tensor,
         valid_mask: torch.Tensor | None,
     ) -> None:
-        self._signature = self._input_signature(value, valid_mask)
-        self._static_input = value.detach().clone()
-        self._static_mask = None if valid_mask is None else valid_mask.detach().clone()
+        signature = self._input_signature(value, valid_mask)
+        static_input = value.detach().clone()
+        static_mask = None if valid_mask is None else valid_mask.detach().clone()
 
         current_stream = torch.cuda.current_stream(value.device)
         capture_stream = torch.cuda.Stream(device=value.device)
         capture_stream.wait_stream(current_stream)
         with torch.cuda.stream(capture_stream), torch.inference_mode():
             for _ in range(3):
-                function(self._static_input, self._static_mask)
+                function(static_input, static_mask)
         current_stream.wait_stream(capture_stream)
 
         graph = torch.cuda.CUDAGraph()
@@ -64,9 +64,15 @@ class CudaGraphReplay:
                 stream=capture_stream,
             ),
         ):
-            static_output = function(self._static_input, self._static_mask)
+            static_output = function(static_input, static_mask)
         current_stream.wait_stream(capture_stream)
+
+        # Publish the cache only after every warmup and capture operation has
+        # succeeded. A failed first capture leaves the instance empty.
+        self._signature = signature
         self._graph = graph
+        self._static_input = static_input
+        self._static_mask = static_mask
         self._static_output = static_output
 
     def run(
@@ -78,7 +84,12 @@ class CudaGraphReplay:
         """Copy current inputs, replay the graph, and return independent output."""
 
         signature = self._input_signature(value, valid_mask)
-        if self._graph is None or signature != self._signature:
+        if self._graph is not None and signature != self._signature:
+            raise RuntimeError(
+                "CUDA Graph replay supports one static input signature per model; "
+                "create or reconfigure the model for a different signature"
+            )
+        if self._graph is None:
             self._capture(function, value, valid_mask)
 
         assert self._static_input is not None

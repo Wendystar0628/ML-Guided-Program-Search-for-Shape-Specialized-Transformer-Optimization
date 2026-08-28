@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from policy_registry import POLICY_SELECTORS, policy_ids
 from runner.calibration import (
     CalibrationEvent,
     CalibrationRequest,
@@ -34,7 +35,6 @@ from runner.tuning import (
     candidates_for_shape,
     run_tuning_case,
 )
-from solution.policies import POLICY_SELECTORS, policy_ids
 
 DEFAULT_WORKLOAD_SET = OFFICIAL_WORKLOAD_SET_ID
 DEFAULT_CALIBRATION_SMOKE_LIMIT = 3
@@ -418,9 +418,9 @@ def _print_routing_plan(case_id: str, plan: Mapping[str, Any]) -> None:
         signal_labels = (
             ("machine_ridge_flops_per_byte", "ridge"),
             ("workload_intensity_to_ridge", "intensity/ridge"),
-            ("attention_matrix_to_l2", "attention/L2"),
+            ("dense_attention_to_l2", "attention/L2"),
+            ("estimated_peak_to_device_memory", "peak/device-memory"),
             ("estimated_blocks_per_sm", "blocks/SM"),
-            ("softmax_to_compute_lower_bound", "softmax/compute-LB"),
         )
         parts = [
             f"{label}={float(signals[field]):.3f}"
@@ -463,9 +463,6 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
         details = ""
         if isinstance(target, (int, float)) and isinstance(speedup, (int, float)):
             details = f" | {target:.6f} ms | {speedup:.4f}x"
-            conservative = item.get("conservative_speedup")
-            if isinstance(conservative, (int, float)):
-                details += f" | conservative {conservative:.4f}x"
         print(f"{item['candidate_id']}: {outcome}{details}")
         execution_path = item["execution_path"]
         if isinstance(execution_path, dict):
@@ -475,7 +472,6 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
                     execution_path.get("selected_policy"),
                     execution_path.get("attention_backend"),
                     execution_path.get("runtime_wrapper"),
-                    execution_path.get("batch_strategy"),
                     execution_path.get("block_backend"),
                 )
                 if value not in (None, "none")
@@ -493,16 +489,9 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
     if winner is None:
         print("winner: none (no correct successful candidate)")
     else:
-        conservative = winner.get("conservative_speedup")
-        conservative_suffix = (
-            f" | conservative {conservative:.4f}x"
-            if isinstance(conservative, (int, float))
-            else ""
-        )
         print(
             f"winner: {winner['candidate_id']} | "
             f"{winner['target_median_ms']:.6f} ms | {winner['speedup']:.4f}x"
-            f"{conservative_suffix}"
         )
 
 

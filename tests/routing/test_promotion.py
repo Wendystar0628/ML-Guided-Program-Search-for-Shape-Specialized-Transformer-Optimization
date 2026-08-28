@@ -1,22 +1,30 @@
 from __future__ import annotations
 
 import copy
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from route_contracts import validate_route_table
+from runner import route_promotion
 from runner.contracts import ContractError
 from runner.route_promotion import build_promoted_route_document
-from solution.dispatch import validate_route_table
-from tests.support.routing_fixtures import formal_summary
+from tests.support.routing_fixtures import (
+    exact_match,
+    exact_route_document,
+    formal_summary,
+)
+from tests.support.runner_fixtures import official_shape
 
 
 def test_formal_winner_writes_one_exact_official_shape_route() -> None:
     document, winner = build_promoted_route_document(None, formal_summary())
 
     table = validate_route_table(document)
-    assert winner["solution_policy"] == "causal-sdpa"
+    assert winner["solution_policy"] == "inplace-block"
     assert len(table.routes) == 1
-    assert table.routes[0][1] == "causal-sdpa"
+    assert table.routes[0][1] == "inplace-block"
 
 
 def test_smoke_summary_cannot_be_promoted() -> None:
@@ -49,7 +57,7 @@ def test_candidate_fallback_cannot_be_promoted_as_applied() -> None:
     summary = formal_summary()
     challenger = summary["observations"][1]
     challenger["execution_path"] = {
-        "requested_policy": "causal-sdpa",
+        "requested_policy": "inplace-block",
         "selected_policy": "safe",
     }
 
@@ -69,6 +77,22 @@ def test_challenger_below_gain_margin_keeps_auto() -> None:
     assert document["routes"][0]["policy"] == "auto"
 
 
+def test_promotion_ranks_target_latency_not_worker_baseline_speedup() -> None:
+    document, winner = build_promoted_route_document(
+        None,
+        formal_summary(
+            challenger_policy="graph",
+            auto_speedup=4.0,
+            auto_target_median_ms=2.0,
+            challenger_speedup=1.1,
+            challenger_target_median_ms=1.0,
+        ),
+    )
+
+    assert winner["solution_policy"] == "graph"
+    assert document["routes"][0]["policy"] == "graph"
+
+
 def test_removed_candidate_identity_is_never_accepted() -> None:
     summary = formal_summary()
     summary["observations"][1] = copy.deepcopy(summary["observations"][1])
@@ -78,3 +102,110 @@ def test_removed_candidate_identity_is_never_accepted() -> None:
 
     assert winner["solution_policy"] == "auto"
     assert document["routes"][0]["policy"] == "auto"
+
+
+def _manifest_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    official_hash = "2" * 64
+    implementation_hash = "3" * 64
+    shapes = tuple(official_shape(f"official_{index:02d}") for index in range(1, 15))
+    monkeypatch.setattr(
+        route_promotion,
+        "load_workload_set",
+        lambda _root, _set_id: SimpleNamespace(shapes=shapes),
+    )
+    monkeypatch.setattr(
+        route_promotion,
+        "official_snapshot_hash",
+        lambda _root: official_hash,
+    )
+    monkeypatch.setattr(
+        route_promotion,
+        "solution_implementation_hash",
+        lambda _root: implementation_hash,
+    )
+    summaries = [
+        formal_summary(
+            case_id=f"official_{index:02d}",
+            official_hash=official_hash,
+            implementation_hash=implementation_hash,
+        )
+        for index in range(1, 14)
+    ]
+    route_document = exact_route_document()
+    route_document["routes"] = [
+        {
+            "match": exact_match(case_id=f"official_{index:02d}"),
+            "policy": "inplace-block",
+        }
+        for index in range(1, 14)
+    ]
+    return route_document, summaries
+
+
+def test_manifest_v4_records_complete_local_coverage_and_shape_14_exclusion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route_document, summaries = _manifest_inputs(monkeypatch)
+
+    manifest = route_promotion._build_verified_bundle_manifest(
+        tmp_path,
+        route_document,
+        summaries,
+        previous_manifest=None,
+    )
+
+    assert manifest["formal"] == {
+        "protocol": summaries[0]["protocol"],
+        "variant": summaries[0]["workload"]["variant"],
+        "covered_case_ids": [f"official_{index:02d}" for index in range(1, 14)],
+        "excluded_case_ids": ["official_14"],
+    }
+
+
+def test_manifest_v4_incremental_update_merges_covered_cases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route_document, summaries = _manifest_inputs(monkeypatch)
+    previous = route_promotion._build_verified_bundle_manifest(
+        tmp_path,
+        route_document,
+        summaries,
+        previous_manifest=None,
+    )
+
+    updated = route_promotion._build_verified_bundle_manifest(
+        tmp_path,
+        route_document,
+        [summaries[0]],
+        previous_manifest=previous,
+    )
+
+    assert (
+        updated["formal"]["covered_case_ids"] == previous["formal"]["covered_case_ids"]
+    )
+
+
+def test_manifest_v4_rejects_old_manifest_on_incremental_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route_document, summaries = _manifest_inputs(monkeypatch)
+    previous = route_promotion._build_verified_bundle_manifest(
+        tmp_path,
+        route_document,
+        summaries,
+        previous_manifest=None,
+    )
+    previous["schema_version"] = 3
+
+    with pytest.raises(ContractError, match="complete calibration"):
+        route_promotion._build_verified_bundle_manifest(
+            tmp_path,
+            route_document,
+            [summaries[0]],
+            previous_manifest=previous,
+        )

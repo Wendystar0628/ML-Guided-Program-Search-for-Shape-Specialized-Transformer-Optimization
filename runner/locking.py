@@ -90,12 +90,7 @@ def _device_measurement_lock_path(
     normalized_device: str,
 ) -> Path:
     safe_device = normalized_device.replace(":", "_")
-    return (
-        project_root.resolve()
-        / "results"
-        / ".locks"
-        / f"device_{safe_device}.lock"
-    )
+    return project_root.resolve() / "results" / ".locks" / f"device_{safe_device}.lock"
 
 
 @contextmanager

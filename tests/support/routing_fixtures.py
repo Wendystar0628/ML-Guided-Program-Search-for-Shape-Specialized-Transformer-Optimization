@@ -8,12 +8,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import torch
-import triton
 
+from route_contracts import ROUTE_FIELDS, SCHEMA_VERSION
 from runner.candidates import CANDIDATE_SPECS
 from runner.contracts import RunVariant
-from runner.route_promotion import TUNING_SCHEMA_VERSION
-from solution.dispatch import ROUTE_FIELDS, SCHEMA_VERSION
+from runner.tuning_contracts import TUNING_SCHEMA_VERSION
 from tests.support.runner_fixtures import official_shape
 
 
@@ -34,7 +33,7 @@ def route_runtime_identity(
     *,
     device_name: str = "Fixture GPU",
     compute_capability: str = "8.9",
-) -> dict[str, str]:
+) -> dict[str, object]:
     return {
         "device_type": "cuda",
         "device_name": device_name,
@@ -42,8 +41,9 @@ def route_runtime_identity(
         "platform_system": platform.system(),
         "torch": str(torch.__version__),
         "cuda_runtime": str(torch.version.cuda),
-        "triton": str(triton.__version__),
         "driver": "fixture-driver",
+        "matmul_precision": "high",
+        "allow_tf32": True,
     }
 
 
@@ -70,7 +70,7 @@ def exact_match(
 
 
 def exact_route_document(
-    policy: str = "causal-sdpa",
+    policy: str = "inplace-block",
     *,
     case_id: str = "official_02",
     device_name: str = "Fixture GPU",
@@ -102,14 +102,13 @@ def candidate_execution_path(policy: str) -> dict[str, object]:
     }
     for expectation in candidate.evidence.path_expectations:
         path[expectation.field] = min(expectation.accepted_values, key=repr)
-    if candidate.evidence.requires_observed_execution:
-        observed: dict[str, object] = {"complete": True}
-        for expectation in candidate.evidence.observed_expectations:
-            values = expectation.required_values or frozenset(
-                {min(expectation.accepted_values)}
-            )
-            observed[expectation.field] = sorted(values)
-        path["observed_execution"] = observed
+    observed: dict[str, object] = {"complete": True}
+    for expectation in candidate.evidence.observed_expectations:
+        values = expectation.required_values or frozenset(
+            {min(expectation.accepted_values)}
+        )
+        observed[expectation.field] = sorted(values)
+    path["observed_execution"] = observed
     return path
 
 
@@ -117,6 +116,8 @@ def candidate_observation(
     policy: str,
     speedup: float,
     *,
+    target_median_ms: float | None = None,
+    target_p90_ms: float | None = None,
     implementation_hash: str = "fixture-implementation-hash",
     official_hash: str = "0" * 64,
 ) -> dict[str, object]:
@@ -125,7 +126,8 @@ def candidate_observation(
         for spec in CANDIDATE_SPECS.values()
         if spec.solution_policy == policy and spec.deployable
     )
-    target = 2.0 / speedup
+    target = 2.0 / speedup if target_median_ms is None else target_median_ms
+    p90 = target if target_p90_ms is None else target_p90_ms
     return {
         "candidate_id": candidate.candidate_id,
         "solution_policy": policy,
@@ -134,7 +136,7 @@ def candidate_observation(
         "failed_elements": 0,
         "max_abs_error": 0.0,
         "target_median_ms": target,
-        "target_p90_ms": target,
+        "target_p90_ms": p90,
         "speedup": speedup,
         "solution_sha256": implementation_hash,
         "official_snapshot_sha256": official_hash,
@@ -145,9 +147,13 @@ def candidate_observation(
 def formal_summary(
     *,
     case_id: str = "official_02",
-    challenger_policy: str = "causal-sdpa",
+    challenger_policy: str = "inplace-block",
     challenger_speedup: float = 1.20,
     auto_speedup: float = 1.0,
+    challenger_target_median_ms: float | None = None,
+    challenger_target_p90_ms: float | None = None,
+    auto_target_median_ms: float | None = None,
+    auto_target_p90_ms: float | None = None,
     implementation_hash: str = "fixture-implementation-hash",
     official_hash: str = "0" * 64,
 ) -> dict[str, Any]:
@@ -155,12 +161,16 @@ def formal_summary(
         candidate_observation(
             "auto",
             auto_speedup,
+            target_median_ms=auto_target_median_ms,
+            target_p90_ms=auto_target_p90_ms,
             implementation_hash=implementation_hash,
             official_hash=official_hash,
         ),
         candidate_observation(
             challenger_policy,
             challenger_speedup,
+            target_median_ms=challenger_target_median_ms,
+            target_p90_ms=challenger_target_p90_ms,
             implementation_hash=implementation_hash,
             official_hash=official_hash,
         ),
@@ -191,6 +201,7 @@ def formal_summary(
         "official_consistent": True,
         "official_snapshot_sha256": official_hash,
         "device_profile": route_runtime_identity(),
+        "case_id": case_id,
         "workload": {
             "set_id": "official_transformer_v1",
             "sha256": "1" * 64,
@@ -235,7 +246,6 @@ def routing_probe_result() -> dict[str, object]:
                 "software": {
                     "torch": str(torch.__version__),
                     "cuda_runtime": str(torch.version.cuda),
-                    "triton": str(triton.__version__),
                     "driver": "fixture-driver",
                 },
                 "gpu": {

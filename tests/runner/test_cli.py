@@ -23,7 +23,7 @@ def test_cli_defaults_to_the_official_workload_and_float32_variant() -> None:
             "--case-id",
             "official_02",
             "--candidate",
-            "causal-sdpa",
+            "graph",
         ]
     )
 
@@ -32,7 +32,7 @@ def test_cli_defaults_to_the_official_workload_and_float32_variant() -> None:
     assert benchmark.solution_policy == "dispatch"
     assert profile.case_id == "official_13"
     assert tune.case_id == ["official_02"]
-    assert tune.candidate == ["causal-sdpa"]
+    assert tune.candidate == ["graph"]
 
 
 def test_tune_requires_an_explicit_candidate() -> None:
@@ -161,3 +161,29 @@ def test_calibration_cli_renders_shape_based_formal_events(
     output = capsys.readouterr().out
     assert "official_02: graph, eager-auto" in output
     assert "official_02: deployed graph -> graph" in output
+
+
+def test_routing_plan_renders_the_current_cost_model_signals(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner_cli._print_routing_plan(
+        "official_02",
+        {
+            "source": "hardware_cost_prior",
+            "routing_signals": {
+                "machine_ridge_flops_per_byte": 71.25,
+                "workload_intensity_to_ridge": 0.5,
+                "dense_attention_to_l2": 1.25,
+                "estimated_peak_to_device_memory": 0.125,
+                "estimated_blocks_per_sm": 2.0,
+            },
+            "candidate_order": ["eager-auto", "graph"],
+            "selection_reasons": {},
+            "capability_rejections": {},
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert "attention/L2=1.250" in output
+    assert "peak/device-memory=0.125" in output
+    assert "candidates: eager-auto, graph" in output

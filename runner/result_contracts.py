@@ -22,6 +22,17 @@ from runner.contracts import (
 
 RunKind = Literal["benchmark", "profile", "probe"]
 RunTarget = Literal["baseline", "solution"]
+RUN_RESULT_SCHEMA_VERSION = 4
+EXECUTION_PATH_STRING_FIELDS = (
+    "requested_policy",
+    "selected_policy",
+    "qkv_projection",
+    "attention_backend",
+    "runtime_wrapper",
+    "block_backend",
+    "causal_mask",
+    "valid_token_mask",
+)
 
 ALLOWED_OUTCOMES = frozenset(
     {
@@ -63,7 +74,7 @@ class WorkerResponseDocument(TypedDict, total=False):
     performance: dict[str, Any] | None
     profile: dict[str, Any] | None
     probe: dict[str, Any] | None
-    execution_path: dict[str, Any] | None
+    execution_path: ExecutionPathDocument | None
     failure: dict[str, Any] | None
 
 
@@ -75,6 +86,22 @@ class CorrectnessDocument(TypedDict, total=False):
     max_relative_error: float
     diagnostic: str
     skipped: str
+
+
+class ExecutionPathDocument(TypedDict, total=False):
+    """Common execution identity emitted by baseline and Solution targets."""
+
+    requested_policy: str
+    selected_policy: str
+    qkv_projection: str
+    attention_backend: str
+    runtime_wrapper: str
+    block_backend: str
+    causal_mask: str
+    valid_token_mask: str
+    fallback_reasons: list[str]
+    execution_mode: Literal["eager", "torch_compile"]
+    observed_execution: dict[str, Any]
 
 
 class TimingDocument(TypedDict, total=False):
@@ -277,9 +304,8 @@ class TimingStats:
         value: Any,
         *,
         side: str,
-        expected_rounds: int,
     ) -> TimingStats:
-        _median, error = validate_timing_side(value, side, expected_rounds)
+        _median, error = validate_timing_side(value, side)
         if error is not None:
             raise ContractError(error)
         assert isinstance(value, Mapping)
@@ -337,9 +363,7 @@ def _compact_timing(value: Any) -> TimingDocument | None:
     if not isinstance(value, Mapping):
         return None
     compact: TimingDocument = {
-        key: value[key]
-        for key in ("median_ms", "p90_ms")
-        if value.get(key) is not None
+        key: value[key] for key in ("median_ms", "p90_ms") if value.get(key) is not None
     }
     return compact or None
 
@@ -398,7 +422,6 @@ def validate_correctness(value: Any, *, expected_trials: Any) -> str | None:
 def validate_timing_side(
     value: Any,
     side: str,
-    expected_rounds: int,
 ) -> tuple[float | None, str | None]:
     if not isinstance(value, Mapping):
         return None, f"missing_{side}_timing"
@@ -411,6 +434,25 @@ def validate_timing_side(
     if p90 < median and not math.isclose(p90, median, rel_tol=1e-12, abs_tol=1e-12):
         return None, f"{side}_p90_below_median"
     return median, None
+
+
+def validate_execution_path(value: Any) -> str | None:
+    """Validate the common execution identity shared by both targets."""
+
+    if not isinstance(value, Mapping):
+        return "missing_execution_path"
+    for field in EXECUTION_PATH_STRING_FIELDS:
+        item = value.get(field)
+        if not isinstance(item, str) or not item:
+            return f"missing_{field}"
+    if value.get("execution_mode") not in {"eager", "torch_compile"}:
+        return "invalid_execution_mode"
+    fallback_reasons = value.get("fallback_reasons")
+    if not isinstance(fallback_reasons, list) or not all(
+        isinstance(reason, str) and reason for reason in fallback_reasons
+    ):
+        return "invalid_fallback_reasons"
+    return None
 
 
 def validate_benchmark_performance(
@@ -446,19 +488,15 @@ def validate_benchmark_performance(
         or sample_count != expected_count
     ):
         return None, "sample_count_mismatch"
-    baseline_median, error = validate_timing_side(
-        value.get("baseline"), "baseline", rounds
-    )
+    baseline_median, error = validate_timing_side(value.get("baseline"), "baseline")
     if error is not None:
         return None, error
     assert baseline_median is not None
-    baseline = TimingStats.from_dict(
-        value["baseline"], side="baseline", expected_rounds=rounds
-    )
+    baseline = TimingStats.from_dict(value["baseline"], side="baseline")
     if target == "baseline":
         return BenchmarkPerformance(timer, sample_count, baseline, None, None), None
 
-    target_median, error = validate_timing_side(value.get("target"), "target", rounds)
+    target_median, error = validate_timing_side(value.get("target"), "target")
     if error is not None:
         return None, error
     assert target_median is not None
@@ -473,9 +511,7 @@ def validate_benchmark_performance(
         abs_tol=1e-12,
     ):
         return None, "speedup_mismatch"
-    measured = TimingStats.from_dict(
-        value["target"], side="target", expected_rounds=rounds
-    )
+    measured = TimingStats.from_dict(value["target"], side="target")
     return (
         BenchmarkPerformance(
             timer,
@@ -513,6 +549,10 @@ def worker_response_error(response: Mapping[str, Any], run_kind: str) -> str | N
         return f"successful {run_kind} response is missing {required_payload}"
     if run_kind == "benchmark" and not isinstance(response.get("correctness"), Mapping):
         return "successful benchmark response is missing correctness"
+    if run_kind in {"benchmark", "profile"}:
+        path_error = validate_execution_path(response.get("execution_path"))
+        if path_error is not None:
+            return f"invalid execution path: {path_error}"
     return None
 
 

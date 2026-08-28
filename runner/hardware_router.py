@@ -1,8 +1,9 @@
-"""Explainable cold-start ranking for official Transformer candidates.
+"""Explainable cold-start prior for official Transformer candidates.
 
-The model is a theory-backed prior, not a latency predictor. It limits the
-first measurement sweep on unseen hardware; measured Formal results remain the
-only source that may update the exact dispatch table.
+The router first decides whether the official dense baseline is feasible.  It
+then ranks only distinct, hardware-supported challengers by their incremental
+cost relative to the eager automatic control.  Measurements, not this prior,
+remain the source of deployed routes.
 """
 
 from __future__ import annotations
@@ -12,15 +13,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from runner.candidates import CapabilityTag, RoutingTag, candidate_spec
+from policy_registry import ExecutionComponent
+from runner.candidates import candidate_spec
 from runner.contracts import RunVariant, TransformerShape
 
 _DTYPE_BYTES = {"float16": 2, "bfloat16": 2, "float32": 4}
+_MEMORY_SAFETY_FRACTION = 0.95
+_MAX_CHALLENGERS = 2
 
 
 @dataclass(frozen=True)
 class WorkloadAnalysis:
-    """Hardware-independent shape and cost features used for cold routing."""
+    """Hardware-independent shape and lower-bound cost features."""
 
     case_id: str
     dtype: str
@@ -45,16 +49,38 @@ class WorkloadAnalysis:
     estimated_kernel_launches: int
     dense_gemm_fraction: float
     attention_fraction: float
+    input_output_bytes: int
+    exact_gelu_temporary_bytes: int
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class FeasibilityReport:
+    """Capacity gate for the unmodified official dense baseline."""
+
+    baseline_executable: bool
+    estimated_peak_bytes: int
+    device_memory_bytes: int | None
+    safety_limit_bytes: int | None
+    estimated_peak_to_device_memory: float | None
+    memory_safety_fraction: float
+    rejection_reason: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        document = asdict(self)
+        ratio = document["estimated_peak_to_device_memory"]
+        if isinstance(ratio, float):
+            document["estimated_peak_to_device_memory"] = round(ratio, 6)
+        return document
 
 
 def analyze_workload(
     shape: TransformerShape,
     variant: RunVariant,
 ) -> WorkloadAnalysis:
-    """Estimate compute, traffic, and explicit-attention memory for one run."""
+    """Estimate compute, traffic, and explicit-attention memory."""
 
     if not isinstance(shape, TransformerShape):
         raise TypeError("shape must be a TransformerShape")
@@ -82,8 +108,6 @@ def analyze_workload(
 
     sequence_squared = sequence * sequence
     attention_elements = batch * heads * sequence_squared
-    # The official reference promotes scores to FP32 before softmax and retains
-    # probabilities in the requested dtype. A causal bool mask adds S^2 bytes.
     dense_attention_peak_bytes = attention_elements * (4 + dtype_bytes)
     if shape.causal:
         dense_attention_peak_bytes += sequence_squared
@@ -99,10 +123,12 @@ def analyze_workload(
         + activation_bytes_per_layer
         + attention_traffic_per_layer
     )
-    persistent_io_bytes = 2 * tokens * model_dim * dtype_bytes
+    input_output_bytes = 2 * tokens * model_dim * dtype_bytes
+    # The benchmark keeps the official baseline and optimized model resident
+    # together while executing them sequentially.
     estimated_peak_bytes = (
-        weight_bytes
-        + persistent_io_bytes
+        2 * weight_bytes
+        + input_output_bytes
         + activation_bytes_per_layer
         + dense_attention_peak_bytes
     )
@@ -138,6 +164,8 @@ def analyze_workload(
         estimated_kernel_launches=estimated_launches,
         dense_gemm_fraction=round(projection_ffn_flops / total_flops, 6),
         attention_fraction=round(attention_flops / total_flops, 6),
+        input_output_bytes=input_output_bytes,
+        exact_gelu_temporary_bytes=tokens * ffn_dim * dtype_bytes * layers,
     )
 
 
@@ -159,7 +187,8 @@ def _version_pair(value: object) -> tuple[int, int] | None:
     parts = value.strip().split(".")
     if not parts[0].isdigit():
         return None
-    return int(parts[0]), int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    minor = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    return int(parts[0]), minor
 
 
 def _mapping(value: object) -> Mapping[str, Any]:
@@ -181,13 +210,50 @@ def _lookup_gemm_tflops(anchors: Mapping[str, Any], dtype: str) -> float | None:
 
 
 def _effective_bandwidth_gbps(
-    profile: Mapping[str, Any], anchors: Mapping[str, Any]
+    profile: Mapping[str, Any],
+    anchors: Mapping[str, Any],
 ) -> float | None:
     measured = _positive_float(anchors.get("memory_bandwidth_gbps"))
     theoretical = _positive_float(profile.get("theoretical_memory_bandwidth_gbps"))
     if measured is not None and theoretical is not None:
         return min(measured, theoretical)
     return measured if measured is not None else theoretical
+
+
+def _feasibility_report(
+    analysis: WorkloadAnalysis,
+    profile: Mapping[str, Any],
+) -> FeasibilityReport:
+    total_memory = _positive_int(profile.get("total_memory_bytes"))
+    if total_memory is None:
+        return FeasibilityReport(
+            baseline_executable=False,
+            estimated_peak_bytes=analysis.estimated_peak_bytes,
+            device_memory_bytes=None,
+            safety_limit_bytes=None,
+            estimated_peak_to_device_memory=None,
+            memory_safety_fraction=_MEMORY_SAFETY_FRACTION,
+            rejection_reason="device memory capacity was not established",
+        )
+
+    safety_limit = int(total_memory * _MEMORY_SAFETY_FRACTION)
+    ratio = analysis.estimated_peak_bytes / total_memory
+    executable = analysis.estimated_peak_bytes <= safety_limit
+    reason = None
+    if not executable:
+        reason = (
+            "official dense baseline estimated peak exceeds the device-memory "
+            f"safety limit ({analysis.estimated_peak_bytes} > {safety_limit} bytes)"
+        )
+    return FeasibilityReport(
+        baseline_executable=executable,
+        estimated_peak_bytes=analysis.estimated_peak_bytes,
+        device_memory_bytes=total_memory,
+        safety_limit_bytes=safety_limit,
+        estimated_peak_to_device_memory=ratio,
+        memory_safety_fraction=_MEMORY_SAFETY_FRACTION,
+        rejection_reason=reason,
+    )
 
 
 def _capability_rejection(
@@ -201,32 +267,18 @@ def _capability_rejection(
         return "candidate is not registered"
     if not spec.applies(shape, variant):
         return f"candidate applies only to {spec.applicability_description}"
-    if CapabilityTag.CUDA in spec.capability_tags:
-        if str(profile.get("device_type", "")).lower() != "cuda":
-            return "CUDA device capability was not established"
-        cuda = _version_pair(profile.get("cuda_runtime"))
-        if cuda is None or cuda < (11, 0):
-            return "candidate requires CUDA 11 or newer"
-    capability = _version_pair(profile.get("compute_capability"))
+    if not spec.deployable:
+        return "diagnostic-only candidate is not eligible for routing"
+    if str(profile.get("device_type", "")).lower() != "cuda":
+        return "CUDA device capability was not established"
+    cuda = _version_pair(profile.get("cuda_runtime"))
+    if cuda is None or cuda < (11, 0):
+        return "candidate requires CUDA 11 or newer"
     if (
-        spec.minimum_compute_capability is not None
-        and capability is not None
-        and capability < spec.minimum_compute_capability
+        ExecutionComponent.CUDA_GRAPH in spec.required_components
+        and profile.get("cuda_graph_available") is not True
     ):
-        required = ".".join(map(str, spec.minimum_compute_capability))
-        return f"candidate requires compute capability {required} or newer"
-    if variant.dtype == "bfloat16" and profile.get("bf16_supported") is False:
-        return "native BF16 support is unavailable"
-    if (
-        CapabilityTag.CUDA_GRAPH in spec.capability_tags
-        and profile.get("cuda_graph_available") is False
-    ):
-        return "CUDA Graph runtime capability is unavailable"
-    if not spec.supports_on_hardware(shape, variant):
-        description = (
-            spec.hardware_support_description or spec.applicability_description
-        )
-        return f"candidate backend supports only {description}"
+        return "CUDA Graph runtime capability was not positively established"
     return None
 
 
@@ -243,6 +295,8 @@ class _HardwareSignals:
     blocks_per_sm: float | None
     launch_dominant: bool
     graph_replay_is_cheaper: bool
+    eager_launch_seconds: float | None
+    eager_lower_bound_seconds: float | None
 
 
 def _hardware_signals(
@@ -291,20 +345,15 @@ def _hardware_signals(
         if launch_latency_us
         else None
     )
-    launch_dominant = analysis.tokens <= 512
-    if blocks_per_sm is not None and blocks_per_sm < 1.0:
-        launch_dominant = True
-    if launch_seconds is not None and (
-        compute_seconds is not None or memory_seconds is not None
-    ):
-        launch_dominant = launch_seconds > max(
-            compute_seconds or 0.0,
-            memory_seconds or 0.0,
-        )
+    kernel_lower_bound = max(compute_seconds or 0.0, memory_seconds or 0.0)
+    eager_lower_bound = kernel_lower_bound + (launch_seconds or 0.0)
+    launch_dominant = launch_seconds is not None and launch_seconds > kernel_lower_bound
+    if launch_seconds is None:
+        launch_dominant = analysis.tokens <= 512
+        if blocks_per_sm is not None and blocks_per_sm < 1.0:
+            launch_dominant = True
 
-    if peak_to_memory is not None and peak_to_memory >= 0.8:
-        bottleneck = "memory_capacity"
-    elif launch_dominant:
+    if launch_dominant:
         bottleneck = "launch_underfill"
     elif analysis.attention_fraction >= 0.5 and (
         analysis.seq_len >= 1024 or attention_to_l2 is None or attention_to_l2 >= 1.0
@@ -314,10 +363,6 @@ def _hardware_signals(
         intensity_to_ridge is not None
         and intensity_to_ridge >= 1.2
         and analysis.dense_gemm_fraction >= 0.7
-    ) or (
-        intensity_to_ridge is None
-        and analysis.dense_gemm_fraction >= 0.9
-        and analysis.tokens >= 1024
     ):
         bottleneck = "tensor_compute"
     elif intensity_to_ridge is not None and intensity_to_ridge <= 0.8:
@@ -337,61 +382,66 @@ def _hardware_signals(
         blocks_per_sm=blocks_per_sm,
         launch_dominant=launch_dominant,
         graph_replay_is_cheaper=graph_cheaper,
+        eager_launch_seconds=launch_seconds,
+        eager_lower_bound_seconds=eager_lower_bound or None,
     )
 
 
-def _candidate_score(
+def _incremental_prior(
     candidate_id: str,
     analysis: WorkloadAnalysis,
     signals: _HardwareSignals,
-) -> tuple[int, list[str]]:
-    spec = candidate_spec(candidate_id)
-    tags = spec.routing_tags if spec is not None else frozenset()
-    score = 0
-    reasons: list[str] = []
+    profile: Mapping[str, Any],
+) -> tuple[float, list[str]]:
+    """Estimate benefit relative to eager auto; positive values are challengers."""
 
-    if RoutingTag.AUTO_CONTROL in tags:
-        score += 45
-        reasons.append("retained as the measured automatic control")
-    if RoutingTag.SAFE_FALLBACK in tags:
-        score += 25
-        reasons.append("portable causal fallback")
-    if RoutingTag.CAUSAL_SDPA in tags:
-        score += 60
-        reasons.append("avoids the explicit causal mask and score/probability path")
-        if signals.bottleneck_class in {"attention_memory", "memory_capacity"}:
-            score += 45
-            reasons.append("attention materialization is a primary shape cost")
-        if analysis.head_dim in {32, 64, 128}:
-            score += 10
-            reasons.append("head dimension is friendly to fused SDPA kernels")
-        elif analysis.head_dim in {8, 256}:
-            reasons.append("edge head dimension requires measured backend selection")
-    if RoutingTag.GRAPH in tags:
-        score += 90 if signals.launch_dominant else 15
-        reasons.append("amortizes repeated static launch submission")
-        if signals.graph_replay_is_cheaper:
-            score += 10
-            reasons.append("probe measured graph replay below launch cost")
-    if RoutingTag.BATCH_TILED in tags:
-        score += 100 if analysis.batch_size >= 1024 else 0
-        reasons.append("bounds peak memory for the extreme-batch family")
-        if (
-            signals.estimated_peak_to_memory is not None
-            and signals.estimated_peak_to_memory >= 0.35
-        ):
-            score += 35
-            reasons.append("estimated working set consumes a large memory share")
-    if RoutingTag.INPLACE_BLOCK in tags:
-        score += 25
-        reasons.append("removes an exact-GELU allocation without replacing GEMM")
-        if signals.bottleneck_class == "tensor_compute" or analysis.d_model >= 1024:
-            score += 50
-            reasons.append("wide dense work can amortize the in-place block path")
-        elif signals.launch_dominant:
-            score += 15
-            reasons.append("small shapes benefit from fewer block-level operations")
-    return score, reasons
+    if candidate_id == "eager-auto":
+        return 0.0, ["retained as the measured eager SDPA control"]
+
+    anchors = _mapping(profile.get("performance_anchors"))
+    bandwidth = signals.effective_bandwidth_gbps
+    eager_lower_bound = signals.eager_lower_bound_seconds
+    if candidate_id == "graph":
+        launch_latency_us = _positive_float(anchors.get("launch_latency_us"))
+        replay_node_us = _positive_float(anchors.get("graph_replay_per_node_us"))
+        if launch_latency_us is None or replay_node_us is None or bandwidth is None:
+            return float("-inf"), ["graph cost anchors are incomplete"]
+        saved_submission = (
+            analysis.estimated_kernel_launches
+            * max(launch_latency_us - replay_node_us, 0.0)
+            * 1e-6
+        )
+        copy_seconds = analysis.input_output_bytes / (bandwidth * 1e9)
+        net_seconds = saved_submission - copy_seconds
+        relative = net_seconds / eager_lower_bound if eager_lower_bound else net_seconds
+        return relative, [
+            (
+                "estimated graph benefit is launch submission saved minus static "
+                "input/output copy and replay cost"
+            ),
+            f"estimated relative lower-bound gain={relative:.6f}",
+        ]
+
+    if candidate_id == "inplace-block":
+        saved_fraction = analysis.exact_gelu_temporary_bytes / max(
+            analysis.estimated_bytes,
+            1,
+        )
+        return saved_fraction, [
+            (
+                "estimated benefit is the removable exact-GELU temporary traffic "
+                "relative to total modeled traffic"
+            ),
+            f"estimated removable traffic fraction={saved_fraction:.6f}",
+        ]
+
+    return float("-inf"), ["candidate has no distinct incremental cost model"]
+
+
+def _rounded(value: object) -> object:
+    return (
+        round(value, 6) if isinstance(value, float) and math.isfinite(value) else value
+    )
 
 
 def build_routing_plan(
@@ -403,7 +453,7 @@ def build_routing_plan(
     limit: int = 3,
     required_candidate_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Rank a bounded Smoke shortlist; deployment still requires measurement."""
+    """Return a bounded Smoke shortlist; measurement still decides deployment."""
 
     if not isinstance(shape, TransformerShape):
         raise TypeError("shape must be a TransformerShape")
@@ -412,7 +462,8 @@ def build_routing_plan(
     if not isinstance(hardware_profile, Mapping):
         raise TypeError("hardware_profile must be a mapping")
     if isinstance(candidate_ids, (str, bytes)) or not isinstance(
-        candidate_ids, Sequence
+        candidate_ids,
+        Sequence,
     ):
         raise TypeError("candidate_ids must be a sequence of strings")
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
@@ -428,9 +479,25 @@ def build_routing_plan(
             seen.add(candidate_id)
 
     analysis = analyze_workload(shape, variant)
+    feasibility = _feasibility_report(analysis, hardware_profile)
+    if not feasibility.baseline_executable:
+        reason = feasibility.rejection_reason or "official dense baseline is infeasible"
+        return {
+            "source": "hardware_cost_prior",
+            "decision_scope": "unsupported",
+            "requires_full_workload_measurement": False,
+            "bottleneck_class": "memory_capacity",
+            "workload_analysis": analysis.as_dict(),
+            "feasibility": feasibility.as_dict(),
+            "routing_signals": {},
+            "candidate_order": [],
+            "selection_reasons": {},
+            "capability_rejections": {candidate_id: reason for candidate_id in unique},
+        }
+
     signals = _hardware_signals(analysis, hardware_profile)
     rejections: dict[str, str] = {}
-    ranked: list[tuple[int, int, str, list[str]]] = []
+    ranked: list[tuple[float, int, str, list[str]]] = []
     for index, candidate_id in enumerate(unique):
         rejection = _capability_rejection(
             candidate_id,
@@ -441,12 +508,23 @@ def build_routing_plan(
         if rejection is not None:
             rejections[candidate_id] = rejection
             continue
-        score, reasons = _candidate_score(candidate_id, analysis, signals)
-        ranked.append((score, index, candidate_id, reasons))
+        benefit, reasons = _incremental_prior(
+            candidate_id,
+            analysis,
+            signals,
+            hardware_profile,
+        )
+        if candidate_id != "eager-auto" and benefit <= 0:
+            if candidate_id not in required_candidate_ids:
+                rejections[candidate_id] = reasons[0]
+                continue
+            reasons = [*reasons, "retained as the current calibrated incumbent"]
+        ranked.append((benefit, index, candidate_id, reasons))
     ranked.sort(key=lambda item: (-item[0], item[1]))
 
     required: list[str] = []
-    if any(item[2] == "eager-auto" for item in ranked):
+    eligible_ids = {item[2] for item in ranked}
+    if "eager-auto" in eligible_ids:
         required.append("eager-auto")
     for candidate_id in required_candidate_ids:
         if candidate_id not in seen:
@@ -456,14 +534,17 @@ def build_routing_plan(
                 f"required candidate is not eligible: {candidate_id}: "
                 f"{rejections[candidate_id]}"
             )
+        if candidate_id not in eligible_ids:
+            raise ValueError(f"required candidate is not eligible: {candidate_id}")
         if candidate_id not in required:
             required.append(candidate_id)
-    if len(required) > limit:
-        raise ValueError("candidate limit cannot retain the control and incumbent")
 
-    selected_ids = {item[2] for item in ranked[:limit]}
+    selection_limit = min(limit, 1 + _MAX_CHALLENGERS)
+    if len(required) > selection_limit:
+        raise ValueError("candidate limit cannot retain the control and incumbent")
+    selected_ids = {item[2] for item in ranked[:selection_limit]}
     selected_ids.update(required)
-    while len(selected_ids) > limit:
+    while len(selected_ids) > selection_limit:
         removable = next(
             (
                 item[2]
@@ -489,16 +570,18 @@ def build_routing_plan(
         "estimated_blocks_per_sm": signals.blocks_per_sm,
         "launch_dominant": signals.launch_dominant,
         "graph_replay_is_cheaper": signals.graph_replay_is_cheaper,
+        "eager_launch_lower_bound_seconds": signals.eager_launch_seconds,
+        "eager_total_lower_bound_seconds": signals.eager_lower_bound_seconds,
     }
     return {
-        "source": "hardware_cost_model",
+        "source": "hardware_cost_prior",
         "decision_scope": "candidate_order_only",
         "requires_full_workload_measurement": True,
         "bottleneck_class": signals.bottleneck_class,
         "workload_analysis": analysis.as_dict(),
+        "feasibility": feasibility.as_dict(),
         "routing_signals": {
-            key: round(value, 6) if isinstance(value, float) else value
-            for key, value in routing_signals.items()
+            key: _rounded(value) for key, value in routing_signals.items()
         },
         "candidate_order": [item[2] for item in selected],
         "selection_reasons": {item[2]: item[3] for item in selected},
@@ -506,4 +589,9 @@ def build_routing_plan(
     }
 
 
-__all__ = ["WorkloadAnalysis", "analyze_workload", "build_routing_plan"]
+__all__ = [
+    "FeasibilityReport",
+    "WorkloadAnalysis",
+    "analyze_workload",
+    "build_routing_plan",
+]

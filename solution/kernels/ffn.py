@@ -11,6 +11,12 @@ except (AttributeError, RuntimeError):
     _ATEN_GELU_INPLACE = None
 
 
+def supports_inplace_exact_gelu() -> bool:
+    """Return whether this PyTorch runtime exposes exact in-place GELU."""
+
+    return _ATEN_GELU_INPLACE is not None
+
+
 def can_use_linear_exact_gelu(
     value: torch.Tensor,
     weight: torch.Tensor,
@@ -19,7 +25,7 @@ def can_use_linear_exact_gelu(
     """Return whether linear plus in-place exact GELU is safe for inference."""
 
     return bool(
-        _ATEN_GELU_INPLACE is not None
+        supports_inplace_exact_gelu()
         and not torch.is_grad_enabled()
         and value.ndim >= 2
         and weight.ndim == 2
@@ -59,4 +65,8 @@ def linear_exact_gelu(
     return F.gelu(hidden, approximate="none"), "torch"
 
 
-__all__ = ["can_use_linear_exact_gelu", "linear_exact_gelu"]
+__all__ = [
+    "can_use_linear_exact_gelu",
+    "linear_exact_gelu",
+    "supports_inplace_exact_gelu",
+]

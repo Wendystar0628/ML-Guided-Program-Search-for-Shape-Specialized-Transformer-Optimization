@@ -10,12 +10,13 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from policy_registry import get_policy_spec
+
 from .cuda_graph import CudaGraphReplay
 from .dispatch import OfflineDispatcher
 from .execution_plan import (
     ExecutionContext,
     ExecutionPlan,
-    LayerExecutionPlan,
     resolve_execution_plan,
 )
 from .kernels import (
@@ -25,7 +26,6 @@ from .kernels import (
     residual_add,
     split_qkv,
 )
-from .policies import get_policy_spec
 
 
 @dataclass(slots=True)
@@ -34,10 +34,15 @@ class _ExecutionObservation:
     block_backends: list[str] = field(default_factory=list)
 
     def describe(self, expected_layers: int) -> dict[str, Any]:
+        complete = (
+            len(self.attention_backends) == expected_layers
+            and len(self.block_backends) == expected_layers
+        )
         return {
             "attention_backends": list(self.attention_backends),
             "block_backends": list(self.block_backends),
             "expected_layers": expected_layers,
+            "complete": complete,
         }
 
 
@@ -60,7 +65,7 @@ class _SelfAttention(nn.Module):
         value: torch.Tensor,
         valid_token_mask: torch.Tensor | None,
         causal: bool,
-        plan: LayerExecutionPlan,
+        plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = value.shape
@@ -113,7 +118,7 @@ class _TransformerBlock(nn.Module):
         value: torch.Tensor,
         valid_token_mask: torch.Tensor | None,
         causal: bool,
-        plan: LayerExecutionPlan,
+        plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
         attention_update = self.attention(
@@ -265,11 +270,7 @@ class UserOptimizedTransformer(nn.Module):
         if value is None:
             device = parameter.device
             dtype = parameter.dtype
-            shape = (
-                self.config.batch_size,
-                self.config.seq_len,
-                self.config.d_model,
-            )
+            shape = (self.config.batch_size, self.config.seq_len, self.config.d_model)
             input_contiguous = True
             has_valid_token_mask = False
             mask_compatible = True
@@ -283,18 +284,14 @@ class UserOptimizedTransformer(nn.Module):
             mask_compatible = valid_token_mask is None or (
                 valid_token_mask.device == value.device
                 and valid_token_mask.dtype == torch.bool
-                and valid_token_mask.is_contiguous()
+                and valid_token_mask.ndim == 2
                 and tuple(valid_token_mask.shape) == tuple(value.shape[:2])
             )
             grad_enabled = torch.is_grad_enabled()
-        batch_size, sequence_length, d_model = shape
+        d_model = shape[-1]
         return ExecutionContext(
-            batch_size=batch_size,
-            sequence_length=sequence_length,
             d_model=d_model,
             num_heads=self.config.num_heads,
-            ffn_dim=self.config.ffn_dim,
-            num_layers=self.config.num_layers,
             causal=bool(self.config.causal),
             device=device,
             dtype=dtype,
@@ -314,7 +311,6 @@ class UserOptimizedTransformer(nn.Module):
             get_policy_spec(self._active_policy_id),
             self._execution_context(value, valid_token_mask),
             requested_policy=self.requested_policy,
-            dispatch_policy=self.dispatch_policy,
         )
 
     def _cached_execution_plan(
@@ -328,7 +324,6 @@ class UserOptimizedTransformer(nn.Module):
                 valid_token_mask.device,
                 valid_token_mask.dtype,
                 tuple(valid_token_mask.shape),
-                valid_token_mask.is_contiguous(),
             )
         signature = (
             self._active_policy_id,
@@ -380,12 +375,12 @@ class UserOptimizedTransformer(nn.Module):
             if self._execution_observation_enabled and not torch.compiler.is_compiling()
             else None
         )
-        for layer, layer_plan in zip(self.layers, plan.layers, strict=True):
+        for layer in self.layers:
             value = layer(
                 value,
                 valid_token_mask,
                 bool(self.config.causal),
-                layer_plan,
+                plan,
                 observation,
             )
         value = self.final_norm(value)
@@ -395,37 +390,28 @@ class UserOptimizedTransformer(nn.Module):
             self._last_execution_observation = observation.describe(len(self.layers))
         return value
 
-    def _forward_tiled(
-        self,
-        value: torch.Tensor,
-        valid_token_mask: torch.Tensor | None,
-        plan: ExecutionPlan,
-    ) -> torch.Tensor:
-        assert plan.batch_tile_size is not None
-        outputs: list[torch.Tensor] = []
-        for start in range(0, value.shape[0], plan.batch_tile_size):
-            stop = min(start + plan.batch_tile_size, value.shape[0])
-            mask_tile = (
-                None if valid_token_mask is None else valid_token_mask[start:stop]
-            )
-            outputs.append(self._forward_eager(value[start:stop], mask_tile, plan))
-        return torch.cat(outputs, dim=0)
-
     def _effective_valid_token_mask(
         self,
+        value: torch.Tensor,
         valid_token_mask: torch.Tensor | None,
     ) -> torch.Tensor | None:
         """Collapse an unchanged all-valid official mask once per tensor."""
 
         if valid_token_mask is None or torch.compiler.is_compiling():
             return valid_token_mask
+        if not (
+            valid_token_mask.device == value.device
+            and valid_token_mask.dtype == torch.bool
+            and valid_token_mask.ndim == 2
+            and tuple(valid_token_mask.shape) == tuple(value.shape[:2])
+        ):
+            return valid_token_mask
         try:
             version = valid_token_mask._version
         except RuntimeError:
-            # Tensors created inside inference_mode intentionally do not carry
-            # a version counter. Their identity is stable for the benchmark's
-            # fixed input, so the one-time classification remains valid.
-            version = None
+            # Versionless inference tensors may be mutated without an
+            # observable counter, so their classification is never cached.
+            return None if bool(valid_token_mask.all().item()) else valid_token_mask
         if (
             self._classified_mask is not valid_token_mask
             or self._classified_mask_version != version
@@ -441,15 +427,15 @@ class UserOptimizedTransformer(nn.Module):
         valid_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if torch.compiler.is_compiling():
-            valid_token_mask = self._effective_valid_token_mask(valid_token_mask)
+            if self._active_policy_id == "graph" or self.dispatch_policy == "graph":
+                raise RuntimeError("CUDA Graph policy cannot run under torch.compile")
+            valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._execution_plan(x, valid_token_mask)
         else:
             self._resolve_dispatch(x)
-            valid_token_mask = self._effective_valid_token_mask(valid_token_mask)
+            valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._cached_execution_plan(x, valid_token_mask)
 
-        if plan.use_batch_tiling:
-            return self._forward_tiled(x, valid_token_mask, plan)
         if plan.use_cuda_graph:
             if self._cuda_graph_replay is None:
                 self._cuda_graph_replay = CudaGraphReplay()

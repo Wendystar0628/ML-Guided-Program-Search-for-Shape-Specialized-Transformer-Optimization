@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from route_contracts import (
+    RouteTable,
+    VerifiedBundleManifest,
+    load_verified_bundle,
+    resolve_route_result,
+)
 from runner.candidates import candidate_spec_for_policy
 from runner.contracts import (
     ContractError,
@@ -35,11 +41,6 @@ from runner.sweep import (
     BenchmarkSweepRequest,
     BenchmarkSweepResult,
     BenchmarkSweepService,
-)
-from solution.dispatch import (
-    load_verified_bundle,
-    resolve_route_result,
-    validate_verified_route_table,
 )
 
 _STABLE_HARDWARE_FIELDS = (
@@ -105,16 +106,21 @@ def expected_hardware_identity(profile: Mapping[str, Any]) -> dict[str, str]:
     """Extract the stable GPU identity owned by one persisted Bundle."""
 
     try:
-        route_identity = hardware_identity_from_verified_profile(profile).as_route_fields()
+        route_identity = hardware_identity_from_verified_profile(
+            profile
+        ).as_route_fields()
     except (TypeError, ValueError) as exc:
         raise VerifiedHardwareError(str(exc)) from exc
-    return {
-        field: route_identity[field] for field in _STABLE_HARDWARE_FIELDS
-    }
+    return {field: route_identity[field] for field in _STABLE_HARDWARE_FIELDS}
 
 
-def collect_runtime_identity(device_name: str) -> dict[str, dict[str, str]]:
-    """Collect route identity fields plus useful machine provenance."""
+def collect_runtime_identity(
+    device_name: str,
+    *,
+    matmul_precision: str,
+    allow_tf32: bool,
+) -> dict[str, Any]:
+    """Collect exact route facts for the measurement request about to run."""
 
     try:
         import torch
@@ -137,12 +143,6 @@ def collect_runtime_identity(device_name: str) -> dict[str, dict[str, str]]:
         raise VerifiedHardwareError(
             f"cannot inspect CUDA device {device_name!r}: {exc}"
         ) from exc
-    try:
-        import triton
-    except Exception:  # noqa: BLE001 - absence is itself a comparable runtime fact.
-        triton_version = "unavailable"
-    else:
-        triton_version = str(getattr(triton, "__version__", "unknown"))
     environment = collect_environment(device)
     driver = environment.get("driver")
 
@@ -158,8 +158,11 @@ def collect_runtime_identity(device_name: str) -> dict[str, dict[str, str]]:
         "software": {
             "torch": str(torch.__version__),
             "cuda_runtime": str(torch.version.cuda),
-            "triton": triton_version,
             "driver": str(driver) if driver else "unavailable",
+        },
+        "runtime_policy": {
+            "matmul_precision": matmul_precision,
+            "allow_tf32": allow_tf32,
         },
     }
 
@@ -186,8 +189,7 @@ def validate_hardware_identity(
     ]
     if mismatches:
         raise VerifiedHardwareError(
-            "GPU does not match the verified hardware profile: "
-            + "; ".join(mismatches)
+            "GPU does not match the verified hardware profile: " + "; ".join(mismatches)
         )
 
 
@@ -230,15 +232,11 @@ def _route_key(
 
 
 def _expected_route(
-    routes: Mapping[str, Any],
+    table: RouteTable,
     shape: TransformerShape,
     variant: RunVariant,
     identity: Mapping[str, Any],
 ) -> tuple[str, str]:
-    try:
-        table = validate_verified_route_table(routes)
-    except (TypeError, ValueError) as exc:
-        raise VerifiedHardwareError(f"invalid verified route table: {exc}") from exc
     resolution = resolve_route_result(table, _route_key(shape, variant, identity))
     return resolution.policy, resolution.origin
 
@@ -250,32 +248,73 @@ def _case_id(run: Mapping[str, Any]) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def validate_checked_bundle_scope(
+    manifest: VerifiedBundleManifest,
+    workload_set: WorkloadSet,
+    table: RouteTable,
+    variant: RunVariant,
+) -> None:
+    """Require the checked bundle to describe exactly the local Formal scope."""
+
+    covered_shapes = local_benchmark_shapes(workload_set.shapes)
+    expected_covered = tuple(shape.case_id for shape in covered_shapes)
+    expected_covered_set = frozenset(expected_covered)
+    expected_excluded = tuple(
+        shape.case_id
+        for shape in workload_set.shapes
+        if shape.case_id not in expected_covered_set
+    )
+    if frozenset(manifest.covered_case_ids) != expected_covered_set:
+        raise VerifiedHardwareError(
+            "verified bundle covered_case_ids do not match the local benchmark scope"
+        )
+    if frozenset(manifest.excluded_case_ids) != frozenset(expected_excluded):
+        raise VerifiedHardwareError(
+            "verified bundle excluded_case_ids do not match the local benchmark scope"
+        )
+    if manifest.formal_variant != variant.as_dict():
+        raise VerifiedHardwareError(
+            "verified bundle Formal variant does not match this launch"
+        )
+    if len(table.routes) != len(covered_shapes):
+        raise VerifiedHardwareError(
+            "verified bundle must contain one exact route for each of the "
+            f"{len(covered_shapes)} covered cases"
+        )
+
+
 def validate_workload_route_coverage(
     workload_set: WorkloadSet,
     *,
     variant: RunVariant,
-    routes: Mapping[str, Any],
+    table: RouteTable,
     identity: Mapping[str, Any],
 ) -> None:
     """Require an explicit verified decision for every package workload."""
 
     try:
         route_identity = hardware_identity_from_runtime(identity)
-        validate_verified_route_table(
-            routes,
-            expected_identity={
-                "device_type": route_identity.device_type,
-                "device_name": route_identity.device_name,
-                "compute_capability": route_identity.compute_capability,
-            },
-        )
     except (TypeError, ValueError) as exc:
-        raise VerifiedHardwareError(f"invalid verified route table: {exc}") from exc
+        raise VerifiedHardwareError(
+            f"invalid verified runtime identity: {exc}"
+        ) from exc
+    expected_identity = route_identity.as_route_fields()
+    for index, (match, _policy) in enumerate(table.routes):
+        mismatches = [
+            field
+            for field, expected in expected_identity.items()
+            if match.get(field) != expected
+        ]
+        if mismatches:
+            raise VerifiedHardwareError(
+                f"verified routes[{index}] has a mismatched runtime identity: "
+                + ", ".join(sorted(mismatches))
+            )
 
     missing: list[str] = []
     for shape in local_benchmark_shapes(workload_set.shapes):
         shape_document = shape.as_dict()
-        _, origin = _expected_route(routes, shape, variant, identity)
+        _, origin = _expected_route(table, shape, variant, identity)
         if origin != "calibrated":
             missing.append(str(shape_document.get("case_id", "<unknown>")))
     if missing:
@@ -287,7 +326,7 @@ def validate_workload_route_coverage(
 def validate_run_routes(
     runs: Sequence[Mapping[str, Any]],
     *,
-    routes: Mapping[str, Any],
+    table: RouteTable,
     identity: Mapping[str, Any],
     route_path: Path,
     route_sha256: str,
@@ -298,9 +337,7 @@ def validate_run_routes(
     for run in runs:
         case_id = _case_id(run) or "<missing-case-id>"
         workload = run.get("workload")
-        shape_payload = (
-            workload.get("shape") if isinstance(workload, Mapping) else None
-        )
+        shape_payload = workload.get("shape") if isinstance(workload, Mapping) else None
         variant_payload = (
             workload.get("variant") if isinstance(workload, Mapping) else None
         )
@@ -332,7 +369,7 @@ def validate_run_routes(
             )
 
         expected_policy, expected_origin = _expected_route(
-            routes,
+            table,
             shape,
             variant,
             identity,
@@ -379,9 +416,7 @@ def run_verified(
     config: LaunchConfig,
     *,
     paths: BundlePaths,
-    identity_collector: Callable[[str], dict[str, dict[str, str]]] = (
-        collect_runtime_identity
-    ),
+    identity_collector: Callable[..., dict[str, Any]] = collect_runtime_identity,
     sweep_service: BenchmarkSweepService | None = None,
     cancellation_token: CancellationToken | None = None,
 ) -> Path:
@@ -405,18 +440,15 @@ def _run_verified(
     config: LaunchConfig,
     *,
     paths: BundlePaths,
-    identity_collector: Callable[[str], dict[str, dict[str, str]]] = (
-        collect_runtime_identity
-    ),
+    identity_collector: Callable[..., dict[str, Any]] = collect_runtime_identity,
     sweep_service: BenchmarkSweepService | None = None,
     cancellation_token: CancellationToken | None = None,
 ) -> Path:
     """Validate, execute, attribute, and summarize one verified-device sweep."""
 
     profile = load_json(paths.profile)
-    routes = load_json(paths.routes)
     try:
-        _table, route_sha256, manifest = load_verified_bundle(
+        table, route_sha256, manifest = load_verified_bundle(
             paths.routes,
             project_root=paths.project_root,
         )
@@ -424,18 +456,29 @@ def _run_verified(
         raise VerifiedHardwareError(
             f"verified bundle provenance is stale or invalid: {exc}"
         ) from exc
+    protocol = MeasurementProtocol.for_preset(
+        config.preset,
+        matmul_precision="high",
+        allow_tf32=True,
+        timeout_seconds=config.timeout,
+    )
     expected_identity = expected_hardware_identity(profile)
-    actual_identity = identity_collector(config.device)
+    actual_identity = identity_collector(
+        config.device,
+        matmul_precision=protocol.matmul_precision,
+        allow_tf32=protocol.allow_tf32,
+    )
     validate_hardware_identity(expected_identity, actual_identity)
 
     workload_set = load_workload_set(
         paths.project_root,
         manifest.workload_set_id,
     )
+    validate_checked_bundle_scope(manifest, workload_set, table, config.variant)
     validate_workload_route_coverage(
         workload_set,
         variant=config.variant,
-        routes=routes,
+        table=table,
         identity=actual_identity,
     )
 
@@ -460,7 +503,7 @@ def _run_verified(
             raise VerifiedHardwareError(f"verified sweep is incomplete: {detail}")
         validate_run_routes(
             runs,
-            routes=routes,
+            table=table,
             identity=actual_identity,
             route_path=paths.routes,
             route_sha256=route_sha256,
@@ -483,12 +526,6 @@ def _run_verified(
                     f"{case_result.get('case_id')}: verified summary has no actual policy"
                 )
 
-    protocol = MeasurementProtocol.for_preset(
-        config.preset,
-        matmul_precision="high",
-        allow_tf32=True,
-        timeout_seconds=config.timeout,
-    )
     service = sweep_service or BenchmarkSweepService()
     try:
         sweep: BenchmarkSweepResult = service.run(

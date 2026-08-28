@@ -1,4 +1,4 @@
-"""Small, shape-independent runtime policy registry."""
+"""Single, shape-independent registry for Transformer execution policies."""
 
 from __future__ import annotations
 
@@ -9,24 +9,23 @@ from types import MappingProxyType
 
 
 class ExecutionComponent(StrEnum):
-    """Observable capabilities that make a policy distinct."""
+    """Observable capabilities that make one policy distinct from another."""
 
     CAUSAL_SDPA = "causal_sdpa"
     CUDA_GRAPH = "cuda_graph"
-    BATCH_TILING = "batch_tiling"
     INPLACE_EXACT_GELU = "inplace_exact_gelu"
 
 
 @dataclass(frozen=True, slots=True)
 class PolicySpec:
-    """A deployable algorithm composition, independent of workload shape."""
+    """One execution composition, independent of workload shape and hardware."""
 
     policy_id: str
     attention: str = "safe"
     use_cuda_graph: bool = False
-    use_batch_tiling: bool = False
     use_inplace_exact_gelu: bool = False
     required_components: frozenset[ExecutionComponent] = frozenset()
+    routable: bool = True
 
     def __post_init__(self) -> None:
         if not self.policy_id:
@@ -35,28 +34,21 @@ class PolicySpec:
             raise ValueError(f"unsupported attention backend: {self.attention}")
 
 
+_CAUSAL_SDPA = frozenset({ExecutionComponent.CAUSAL_SDPA})
+
 _POLICY_SPECS = {
-    "auto": PolicySpec("auto", attention="causal_sdpa"),
-    "safe": PolicySpec("safe"),
-    "causal-sdpa": PolicySpec(
-        "causal-sdpa",
+    "auto": PolicySpec(
+        "auto",
         attention="causal_sdpa",
-        required_components=frozenset({ExecutionComponent.CAUSAL_SDPA}),
+        required_components=_CAUSAL_SDPA,
     ),
+    "safe": PolicySpec("safe", routable=False),
     "graph": PolicySpec(
         "graph",
         attention="causal_sdpa",
         use_cuda_graph=True,
         required_components=frozenset(
             {ExecutionComponent.CAUSAL_SDPA, ExecutionComponent.CUDA_GRAPH}
-        ),
-    ),
-    "batch-tiled": PolicySpec(
-        "batch-tiled",
-        attention="causal_sdpa",
-        use_batch_tiling=True,
-        required_components=frozenset(
-            {ExecutionComponent.CAUSAL_SDPA, ExecutionComponent.BATCH_TILING}
         ),
     ),
     "inplace-block": PolicySpec(
@@ -73,27 +65,29 @@ _POLICY_SPECS = {
 }
 
 POLICY_SPECS: Mapping[str, PolicySpec] = MappingProxyType(_POLICY_SPECS)
-ROUTABLE_POLICY_IDS = frozenset(POLICY_SPECS)
+ROUTABLE_POLICY_IDS = frozenset(
+    policy_id for policy_id, spec in POLICY_SPECS.items() if spec.routable
+)
 POLICY_SELECTORS = frozenset({"dispatch"})
 
 
 def get_policy_spec(policy: str) -> PolicySpec:
-    """Return the single registered definition for ``policy``."""
+    """Return the registered definition for an explicit execution policy."""
 
     normalized = policy.strip().lower()
     try:
         return POLICY_SPECS[normalized]
     except KeyError as exc:
-        choices = ", ".join(sorted(ROUTABLE_POLICY_IDS))
+        choices = ", ".join(sorted(POLICY_SPECS))
         raise ValueError(
             f"unknown runtime policy={policy!r}; expected one of {choices}"
         ) from exc
 
 
 def policy_ids() -> frozenset[str]:
-    """Return policies accepted by explicit execution and offline routing."""
+    """Return every policy accepted by explicit execution."""
 
-    return ROUTABLE_POLICY_IDS
+    return frozenset(POLICY_SPECS)
 
 
 __all__ = [

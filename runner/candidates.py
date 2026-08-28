@@ -1,44 +1,25 @@
-"""Finite optimization candidates for the official causal Transformer shapes.
-
-This registry is the runner-side truth for candidate identity, applicability,
-hardware requirements, deployment eligibility, and execution evidence. It is
-deliberately small: calibration compares complete execution strategies rather
-than exposing every internal implementation detail as a candidate.
-"""
+"""Finite execution candidates for the official Transformer workload."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
+from policy_registry import (
+    POLICY_SPECS,
+    ROUTABLE_POLICY_IDS,
+    ExecutionComponent,
+    get_policy_spec,
+    policy_ids,
+)
 from runner.contracts import RunVariant, TransformerShape
-from solution.policies import ROUTABLE_POLICY_IDS
-
-
-class CapabilityTag(StrEnum):
-    """Runtime capabilities required before measuring a candidate."""
-
-    CUDA = "cuda"
-    CUDA_GRAPH = "cuda_graph"
-
-
-class RoutingTag(StrEnum):
-    """Cost-model features used to rank candidates on unseen hardware."""
-
-    AUTO_CONTROL = "auto_control"
-    SAFE_FALLBACK = "safe_fallback"
-    CAUSAL_SDPA = "causal_sdpa"
-    GRAPH = "graph"
-    BATCH_TILED = "batch_tiled"
-    INPLACE_BLOCK = "inplace_block"
 
 
 @dataclass(frozen=True)
 class PathExpectation:
-    """One accepted value for a field in the reported execution path."""
+    """One accepted value for a field in the planned execution path."""
 
     field: str
     accepted_values: frozenset[object]
@@ -59,7 +40,6 @@ class ExecutionEvidence:
 
     selected_policies: frozenset[str] | None = None
     path_expectations: tuple[PathExpectation, ...] = ()
-    requires_observed_execution: bool = False
     observed_expectations: tuple[ObservedPathExpectation, ...] = ()
 
     def matches(
@@ -84,10 +64,9 @@ class ExecutionEvidence:
             for expectation in self.path_expectations
         ):
             return False
-        if not (self.requires_observed_execution or self.observed_expectations):
-            return True
+
         observed = execution_path.get("observed_execution")
-        if not isinstance(observed, Mapping):
+        if not isinstance(observed, Mapping) or observed.get("complete") is not True:
             return False
         for expectation in self.observed_expectations:
             values = observed.get(expectation.field)
@@ -110,29 +89,28 @@ Applicability = Callable[[TransformerShape, RunVariant], bool]
 
 @dataclass(frozen=True)
 class CandidateSpec:
-    """Complete runner contract for one bounded optimization strategy."""
+    """One bounded strategy measured by calibration."""
 
     candidate_id: str
     solution_policy: str
     applies_to: Applicability
     applicability_description: str
-    hardware_support: Applicability | None = None
-    hardware_support_description: str | None = None
-    capability_tags: frozenset[CapabilityTag] = frozenset()
-    routing_tags: frozenset[RoutingTag] = frozenset()
-    deployable: bool = True
-    evidence: ExecutionEvidence = ExecutionEvidence()
-    minimum_compute_capability: tuple[int, int] | None = None
+    evidence: ExecutionEvidence
+
+    @property
+    def required_components(self) -> frozenset[ExecutionComponent]:
+        """Derive runtime requirements from the policy truth source."""
+
+        return get_policy_spec(self.solution_policy).required_components
+
+    @property
+    def deployable(self) -> bool:
+        """Safe is an explicit diagnostic path, not a route target."""
+
+        return get_policy_spec(self.solution_policy).routable
 
     def applies(self, shape: TransformerShape, variant: RunVariant) -> bool:
         return self.applies_to(shape, variant)
-
-    def supports_on_hardware(
-        self,
-        shape: TransformerShape,
-        variant: RunVariant,
-    ) -> bool:
-        return self.hardware_support is None or self.hardware_support(shape, variant)
 
     def evidence_matches(self, execution_path: Mapping[str, Any]) -> bool:
         return self.evidence.matches(
@@ -150,23 +128,19 @@ class CandidateSpec:
         )
 
 
-def _official_causal(shape: TransformerShape, variant: RunVariant) -> bool:
-    return shape.causal and variant.padding_ratio == 0
+def _safe_candidate(_shape: TransformerShape, _variant: RunVariant) -> bool:
+    return True
 
 
-def _graph_candidate(shape: TransformerShape, variant: RunVariant) -> bool:
-    # Graph capture is useful for repeated static launch-heavy work, but the
-    # extreme-batch and long-sequence cases have poor replay benefit relative
-    # to their capture footprint.
+def _native_sdpa_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
     return (
-        _official_causal(shape, variant)
-        and shape.seq_len <= 128
-        and shape.batch_size <= 128
+        shape.causal
+        and variant.padding_ratio == 0
+        and variant.dtype in {"float16", "float32"}
     )
-
-
-def _batch_tiled_candidate(shape: TransformerShape, variant: RunVariant) -> bool:
-    return _official_causal(shape, variant) and shape.batch_size >= 1024
 
 
 def _expect(field: str, *values: object) -> PathExpectation:
@@ -181,32 +155,47 @@ def _observe(field: str, value: str) -> ObservedPathExpectation:
     )
 
 
-_CUDA = frozenset({CapabilityTag.CUDA})
-_CUDA_GRAPH = frozenset({CapabilityTag.CUDA, CapabilityTag.CUDA_GRAPH})
+def _native_evidence(
+    *,
+    policy: str,
+    runtime_wrapper: str = "eager",
+    block_backend: str = "torch",
+) -> ExecutionEvidence:
+    observed = [
+        _observe("attention_backends", "causal_sdpa"),
+        _observe("block_backends", block_backend),
+    ]
+    if runtime_wrapper == "cuda_graph":
+        observed.append(_observe("runtime_wrappers", "cuda_graph"))
+    return ExecutionEvidence(
+        selected_policies=frozenset({policy}),
+        path_expectations=(
+            _expect("attention_backend", "causal_sdpa"),
+            _expect("runtime_wrapper", runtime_wrapper),
+            _expect("block_backend", block_backend),
+        ),
+        observed_expectations=tuple(observed),
+    )
 
 
 _CANDIDATE_SPECS = (
     CandidateSpec(
         "eager-auto",
         "auto",
-        _official_causal,
-        "official causal shapes",
-        capability_tags=_CUDA,
-        routing_tags=frozenset({RoutingTag.AUTO_CONTROL}),
+        _native_sdpa_candidate,
+        "causal FP16/FP32 shapes without padding",
+        _native_evidence(policy="auto"),
     ),
     CandidateSpec(
         "eager-safe",
         "safe",
-        _official_causal,
-        "official causal shapes",
-        capability_tags=_CUDA,
-        routing_tags=frozenset({RoutingTag.SAFE_FALLBACK}),
-        evidence=ExecutionEvidence(
-            requires_observed_execution=True,
+        _safe_candidate,
+        "all valid shapes and variants",
+        ExecutionEvidence(
+            selected_policies=frozenset({"safe"}),
             path_expectations=(
                 _expect("attention_backend", "safe_streaming"),
                 _expect("runtime_wrapper", "eager"),
-                _expect("batch_strategy", "full"),
                 _expect("block_backend", "torch"),
             ),
             observed_expectations=(
@@ -216,88 +205,20 @@ _CANDIDATE_SPECS = (
         ),
     ),
     CandidateSpec(
-        "causal-sdpa",
-        "causal-sdpa",
-        _official_causal,
-        "official causal shapes supported by the fused SDPA backend",
-        capability_tags=_CUDA,
-        routing_tags=frozenset({RoutingTag.CAUSAL_SDPA}),
-        evidence=ExecutionEvidence(
-            requires_observed_execution=True,
-            path_expectations=(
-                _expect("attention_backend", "causal_sdpa"),
-                _expect("runtime_wrapper", "eager"),
-                _expect("batch_strategy", "full"),
-                _expect("block_backend", "torch"),
-            ),
-            observed_expectations=(
-                _observe("attention_backends", "causal_sdpa"),
-                _observe("block_backends", "torch"),
-            ),
-        ),
-    ),
-    CandidateSpec(
         "graph",
         "graph",
-        _graph_candidate,
-        "static causal shapes with B<=128 and S<=128",
-        capability_tags=_CUDA_GRAPH,
-        routing_tags=frozenset({RoutingTag.CAUSAL_SDPA, RoutingTag.GRAPH}),
-        evidence=ExecutionEvidence(
-            requires_observed_execution=True,
-            path_expectations=(
-                _expect("attention_backend", "causal_sdpa"),
-                _expect("runtime_wrapper", "cuda_graph"),
-                _expect("batch_strategy", "full"),
-                _expect("block_backend", "torch"),
-            ),
-            observed_expectations=(
-                _observe("attention_backends", "causal_sdpa"),
-                _observe("block_backends", "torch"),
-                _observe("runtime_wrappers", "cuda_graph"),
-            ),
-        ),
-    ),
-    CandidateSpec(
-        "batch-tiled",
-        "batch-tiled",
-        _batch_tiled_candidate,
-        "causal shapes with batch size at least 1024",
-        capability_tags=_CUDA,
-        routing_tags=frozenset({RoutingTag.CAUSAL_SDPA, RoutingTag.BATCH_TILED}),
-        evidence=ExecutionEvidence(
-            requires_observed_execution=True,
-            path_expectations=(
-                _expect("attention_backend", "causal_sdpa"),
-                _expect("runtime_wrapper", "eager"),
-                _expect("batch_strategy", "tiled"),
-                _expect("block_backend", "torch"),
-            ),
-            observed_expectations=(
-                _observe("attention_backends", "causal_sdpa"),
-                _observe("block_backends", "torch"),
-            ),
-        ),
+        _native_sdpa_candidate,
+        "causal FP16/FP32 shapes without padding",
+        _native_evidence(policy="graph", runtime_wrapper="cuda_graph"),
     ),
     CandidateSpec(
         "inplace-block",
         "inplace-block",
-        _official_causal,
-        "official causal shapes using exact in-place GELU",
-        capability_tags=_CUDA,
-        routing_tags=frozenset({RoutingTag.CAUSAL_SDPA, RoutingTag.INPLACE_BLOCK}),
-        evidence=ExecutionEvidence(
-            requires_observed_execution=True,
-            path_expectations=(
-                _expect("attention_backend", "causal_sdpa"),
-                _expect("runtime_wrapper", "eager"),
-                _expect("batch_strategy", "full"),
-                _expect("block_backend", "inplace_exact_gelu"),
-            ),
-            observed_expectations=(
-                _observe("attention_backends", "causal_sdpa"),
-                _observe("block_backends", "inplace_exact_gelu"),
-            ),
+        _native_sdpa_candidate,
+        "causal FP16/FP32 shapes without padding",
+        _native_evidence(
+            policy="inplace-block",
+            block_backend="inplace_exact_gelu",
         ),
     ),
 )
@@ -305,26 +226,31 @@ _CANDIDATE_SPECS = (
 
 def _build_registry(specs: Sequence[CandidateSpec]) -> Mapping[str, CandidateSpec]:
     registry: dict[str, CandidateSpec] = {}
-    active_policy_ids: set[str] = set()
+    policy_owners: set[str] = set()
     for spec in specs:
         if spec.candidate_id in registry:
             raise RuntimeError(f"duplicate candidate id: {spec.candidate_id}")
-        if spec.deployable:
-            if spec.solution_policy in active_policy_ids:
-                raise RuntimeError(
-                    "multiple deployable candidates map to policy "
-                    f"{spec.solution_policy!r}"
-                )
-            active_policy_ids.add(spec.solution_policy)
+        if spec.solution_policy in policy_owners:
+            raise RuntimeError(
+                f"multiple candidates map to policy {spec.solution_policy!r}"
+            )
+        if spec.solution_policy not in POLICY_SPECS:
+            raise RuntimeError(
+                f"candidate maps to unknown policy {spec.solution_policy!r}"
+            )
+        policy_owners.add(spec.solution_policy)
         registry[spec.candidate_id] = spec
-    represented_policies = {spec.solution_policy for spec in specs}
-    if represented_policies != ROUTABLE_POLICY_IDS:
-        missing = ", ".join(sorted(ROUTABLE_POLICY_IDS - represented_policies))
-        extra = ", ".join(sorted(represented_policies - ROUTABLE_POLICY_IDS))
+
+    if policy_owners != policy_ids():
+        missing = ", ".join(sorted(policy_ids() - policy_owners))
+        extra = ", ".join(sorted(policy_owners - policy_ids()))
         raise RuntimeError(
-            "candidate and Solution policy registries disagree; "
+            "candidate and policy registries disagree; "
             f"missing={missing}; extra={extra}"
         )
+    deployable = {spec.solution_policy for spec in specs if spec.deployable}
+    if deployable != ROUTABLE_POLICY_IDS:
+        raise RuntimeError("candidate deployability disagrees with policy registry")
     return MappingProxyType(registry)
 
 
@@ -351,7 +277,7 @@ def candidate_spec_for_policy(
     *,
     deployable_only: bool = False,
 ) -> CandidateSpec | None:
-    """Resolve one unambiguous candidate for a policy and shape variant."""
+    """Resolve the single candidate for a policy and shape variant."""
 
     matches = [
         spec
@@ -374,11 +300,9 @@ def deployable_policy_ids() -> frozenset[str]:
 __all__ = [
     "CANDIDATE_SPECS",
     "CandidateSpec",
-    "CapabilityTag",
     "ExecutionEvidence",
     "ObservedPathExpectation",
     "PathExpectation",
-    "RoutingTag",
     "candidate_spec",
     "candidate_spec_for_policy",
     "candidate_specs_for_shape",
