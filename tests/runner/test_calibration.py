@@ -34,7 +34,7 @@ def _service(
         planned.append((shape.case_id, variant))
         return plan_document or {
             "source": "fixture",
-            "candidate_order": ["eager-auto", "graph"],
+            "candidate_order": ["eager-sdpa", "graph"],
             "feasibility": {"baseline_executable": True},
         }
 
@@ -54,7 +54,7 @@ def _service(
     )
 
 
-def test_plan_only_defaults_to_official_01_through_13(
+def test_plan_only_defaults_to_formal_eligible_shapes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,9 +108,11 @@ def test_duplicate_shape_ids_are_rejected_before_probe(tmp_path: Path) -> None:
         CalibrationService().run(request)
 
 
-def test_explicit_official_14_is_rejected_before_probe(
+@pytest.mark.parametrize("plan_only", [True, False])
+def test_explicit_provisional_shape_uses_the_independent_streamed_workflow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    plan_only: bool,
 ) -> None:
     workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
     monkeypatch.setattr(calibration, "load_workload_set", lambda *_args: workload)
@@ -119,7 +121,7 @@ def test_explicit_official_14_is_rejected_before_probe(
     def run_probe(*_args: Any, **_kwargs: Any):
         nonlocal probe_called
         probe_called = True
-        pytest.fail("resource guard must reject before the hardware probe")
+        pytest.fail("provisional scope must be rejected before the hardware probe")
 
     service = CalibrationService(
         CalibrationDependencies(
@@ -128,19 +130,21 @@ def test_explicit_official_14_is_rejected_before_probe(
         )
     )
 
-    with pytest.raises(ContractError, match="official_14"):
+    with pytest.raises(
+        ContractError,
+        match=r"streamed benchmark/tune workflow.*official_14 \(batch_streamed\)",
+    ):
         service.run(
             CalibrationRequest(
                 project_root=tmp_path,
                 workload_set_id=WORKLOAD_SET_ID,
                 case_ids=("official_14",),
-                plan_only=True,
-                session_id="guarded-shape",
+                plan_only=plan_only,
+                session_id="shape-14-execution",
             )
         )
 
     assert not probe_called
-    assert not (tmp_path / "results" / "calibration").exists()
 
 
 def test_formal_deployment_keeps_the_official_runtime_precision_contract() -> None:
@@ -189,13 +193,13 @@ def test_incumbent_lookup_uses_the_shared_exact_route_identity(
 
     def resolve(_table: object, key: dict[str, object]) -> SimpleNamespace:
         captured.update(key)
-        return SimpleNamespace(origin="calibrated", policy="auto")
+        return SimpleNamespace(origin="calibrated", policy="eager-sdpa")
 
     monkeypatch.setattr(calibration, "resolve_route_result", resolve)
     monkeypatch.setattr(
         calibration,
         "deployable_candidate_id_for_policy",
-        lambda *_args: "eager-auto",
+        lambda *_args: "eager-sdpa",
     )
     shape = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID).shapes[1]
     profile = calibration.hardware_profile_from_probe(routing_probe_result())
@@ -207,7 +211,7 @@ def test_incumbent_lookup_uses_the_shared_exact_route_identity(
         route_path,
     )
 
-    assert incumbent == "eager-auto"
+    assert incumbent == "eager-sdpa"
     assert captured["driver"] == "fixture-driver"
     assert captured["matmul_precision"] == "high"
     assert captured["allow_tf32"] is True

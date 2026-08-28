@@ -1,7 +1,7 @@
 {
-  "schema_version": 3,
-  "sweep_id": "20260828T084343.169945Z-110f92c1",
-  "created_at": "2026-08-28T08:43:43.170945+00:00",
+  "schema_version": 6,
+  "sweep_id": "20260828T145205.139821Z-84d7e448",
+  "created_at": "2026-08-28T14:52:05.140822+00:00",
   "workload_set_id": "official_transformer_v1",
   "workload_sha256": "621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9",
   "variant": {
@@ -12,7 +12,7 @@
   "target": "solution",
   "source": {
     "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
-    "solution_sha256": "3a5fdd7533b2897f9cfa614cbdb2447d395362d9a1bd26d976f875a9867c870b"
+    "solution_sha256": "07882d07b4d1f682ebaa1fc2d8bc1a7a2ff65ab2d9a3740481e4c9499ae34d9a"
   },
   "protocol": {
     "preset": "formal",
@@ -42,7 +42,7 @@
   },
   "dispatch": {
     "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
-    "sha256": "a73028d8e0d371e511dd1915d847e8990896abd98ca51755a552baa5196e65b1"
+    "sha256": "abe29c3fba8efcf2aaf74c5d3177f74e57d2b9fb462fec2a290e14356f9a9b3b"
   },
   "sweep_outcome": "complete",
   "case_results": [
@@ -50,38 +50,48 @@
       "case_id": "official_01",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.5697439908981323,
-        "p90_ms": 2.011222410202026
+        "median_ms": 4.544159889221191,
+        "p90_ms": 5.013929462432861
       },
       "solution": {
-        "median_ms": 0.5406720042228699,
-        "p90_ms": 0.7677951991558077
+        "median_ms": 0.4915199875831604,
+        "p90_ms": 0.49264639616012573
       },
-      "speedup": 2.903320272989518,
+      "speedup": 9.245117195671241,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0011050701141357422,
-        "max_relative_error": 296.2870788574219
+        "max_relative_error": 268.9901428222656
       },
-      "selected_policy": "graph-mixed-fp16-efficient",
+      "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
       "policy_applied": true,
-      "actual_policy": "graph-mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "failure": null,
+      "useful_matmul_flops": 7524581376,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 15.308800386732827,
+      "estimated_logical_operator_bytes": 446169088,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.864865,
+      "estimated_logical_operator_traffic_gbps": 907.7333562646066,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 89970688,
+      "measured_compute_roof_tflops": 50.85044090471462,
+      "project_estimated_mfu": 0.3010554110124435
     },
     {
       "case_id": "official_02",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.782047986984253,
-        "p90_ms": 2.1951550960540773
+        "median_ms": 4.641983985900879,
+        "p90_ms": 6.008169794082642
       },
       "solution": {
         "median_ms": 0.14028799533843994,
-        "p90_ms": 0.14131200313568115
+        "p90_ms": 0.14336000382900238
       },
-      "speedup": 12.70278317603102,
+      "speedup": 33.08896085300993,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -92,20 +102,30 @@
       "selected_policy": "graph-fused-norm",
       "policy_applied": true,
       "actual_policy": "graph-fused-norm",
-      "failure": null
+      "failure": null,
+      "useful_matmul_flops": 117571584,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 0.8380730205486407,
+      "estimated_logical_operator_bytes": 8519680,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 13.8,
+      "estimated_logical_operator_traffic_gbps": 60.72992902526383,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 19750912,
+      "measured_compute_roof_tflops": 47.221735461917646,
+      "project_estimated_mfu": 0.017747611610431206
     },
     {
       "case_id": "official_03",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7904640436172485,
-        "p90_ms": 2.134016036987305
+        "median_ms": 4.5268800258636475,
+        "p90_ms": 5.050422239303589
       },
       "solution": {
-        "median_ms": 0.14745600521564484,
+        "median_ms": 0.14847999811172485,
         "p90_ms": 0.14847999811172485
       },
-      "speedup": 12.142360977423817,
+      "speedup": 30.488147113642633,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -116,20 +136,30 @@
       "selected_policy": "graph-fused-norm",
       "policy_applied": true,
       "actual_policy": "graph-fused-norm",
-      "failure": null
+      "failure": null,
+      "useful_matmul_flops": 470286336,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 3.1673379713146925,
+      "estimated_logical_operator_bytes": 29360128,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.017857,
+      "estimated_logical_operator_traffic_gbps": 197.73793354918928,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 23093248,
+      "measured_compute_roof_tflops": 47.221735461917646,
+      "project_estimated_mfu": 0.06707373077952668
     },
     {
       "case_id": "official_04",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7875360250473022,
-        "p90_ms": 2.1364927530288695
+        "median_ms": 4.482320070266724,
+        "p90_ms": 5.0759679794311525
       },
       "solution": {
-        "median_ms": 0.23654399812221527,
+        "median_ms": 0.23756800591945648,
         "p90_ms": 0.23756800591945648
       },
-      "speedup": 7.556885988389084,
+      "speedup": 18.86752407134478,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -140,20 +170,30 @@
       "selected_policy": "graph-fused-norm",
       "policy_applied": true,
       "actual_policy": "graph-fused-norm",
-      "failure": null
+      "failure": null,
+      "useful_matmul_flops": 1881145344,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 7.9183446302856595,
+      "estimated_logical_operator_bytes": 112721920,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.688372,
+      "estimated_logical_operator_traffic_gbps": 474.4827467980537,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 36468736,
+      "measured_compute_roof_tflops": 47.221735461917646,
+      "project_estimated_mfu": 0.16768432063814073
     },
     {
       "case_id": "official_05",
       "outcome": "success",
       "baseline": {
-        "median_ms": 2.37772798538208,
-        "p90_ms": 2.8938241004943848
+        "median_ms": 4.2142558097839355,
+        "p90_ms": 4.867651271820069
       },
       "solution": {
-        "median_ms": 0.9983999729156494,
-        "p90_ms": 1.404313564300537
+        "median_ms": 0.92876797914505,
+        "p90_ms": 1.146060824394226
       },
-      "speedup": 2.381538511502909,
+      "speedup": 4.537468888261247,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -161,119 +201,169 @@
         "max_abs_error": 0.0011050701141357422,
         "max_relative_error": 296.2870788574219
       },
-      "selected_policy": "graph-mixed-fp16-efficient",
+      "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
       "policy_applied": true,
-      "actual_policy": "graph-mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "failure": null,
+      "useful_matmul_flops": 15049162752,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 16.203360893054327,
+      "estimated_logical_operator_bytes": 890765312,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.894644,
+      "estimated_logical_operator_traffic_gbps": 959.0827117230804,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 161306624,
+      "measured_compute_roof_tflops": 50.85044090471462,
+      "project_estimated_mfu": 0.3186474021615027
     },
     {
       "case_id": "official_06",
       "outcome": "success",
       "baseline": {
-        "median_ms": 483.2209930419922,
-        "p90_ms": 486.2452789306641
+        "median_ms": 450.0889587402344,
+        "p90_ms": 481.0534973144531
       },
       "solution": {
-        "median_ms": 141.27308654785156,
-        "p90_ms": 142.83652954101564
+        "median_ms": 104.4403190612793,
+        "p90_ms": 106.29970092773438
       },
-      "speedup": 3.4204745210144263,
+      "speedup": 4.309532590341372,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0013269931077957153,
-        "max_relative_error": 258616528.0
+        "max_abs_error": 0.0017772167921066284,
+        "max_relative_error": 142133008.0
       },
-      "selected_policy": "auto",
+      "selected_policy": "mixed-fp16-core-efficient-triton-norm",
       "policy_applied": true,
-      "actual_policy": "auto",
-      "failure": null
+      "actual_policy": "mixed-fp16-core-efficient-triton-norm",
+      "failure": null,
+      "useful_matmul_flops": 1175715840000,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 11.25729843194141,
+      "estimated_logical_operator_bytes": 69469732864,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.924145,
+      "estimated_logical_operator_traffic_gbps": 665.1620129888663,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 5261089792,
+      "measured_compute_roof_tflops": 93.73155816657429,
+      "project_estimated_mfu": 0.12010147544902212
     },
     {
       "case_id": "official_07",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7024799585342407,
-        "p90_ms": 2.0547583580017093
+        "median_ms": 4.402544021606445,
+        "p90_ms": 4.968550539016724
       },
       "solution": {
-        "median_ms": 0.3532800078392029,
-        "p90_ms": 0.3563520014286041
+        "median_ms": 0.2949120104312897,
+        "p90_ms": 0.2959359884262085
       },
-      "speedup": 4.819066804677871,
+      "speedup": 14.928330708430662,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0015511512756347656,
-        "max_relative_error": 965.2197265625
+        "max_relative_error": 955.4859619140625
       },
-      "selected_policy": "graph-mixed-fp16-efficient",
+      "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
       "policy_applied": true,
-      "actual_policy": "graph-mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "failure": null,
+      "useful_matmul_flops": 673185792,
+      "attention_flops_fraction": 0.401869,
+      "achieved_tflops": 2.282666585926797,
+      "estimated_logical_operator_bytes": 111247360,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 6.051252,
+      "estimated_logical_operator_traffic_gbps": 377.22220887955007,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 35030784,
+      "measured_compute_roof_tflops": 58.98354776639104,
+      "project_estimated_mfu": 0.03870005573363401
     },
     {
       "case_id": "official_08",
       "outcome": "success",
       "baseline": {
-        "median_ms": 14.114815711975098,
-        "p90_ms": 14.54079990386963
+        "median_ms": 13.209648132324219,
+        "p90_ms": 13.428735733032227
       },
       "solution": {
-        "median_ms": 12.617727756500244,
-        "p90_ms": 12.925234985351564
+        "median_ms": 7.564895868301392,
+        "p90_ms": 7.774537658691407
       },
-      "speedup": 1.1186495686359694,
+      "speedup": 1.74617712686246,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0010819435119628906,
-        "max_relative_error": 14516.63671875
+        "max_abs_error": 0.0014119446277618408,
+        "max_relative_error": 160059.625
       },
-      "selected_policy": "auto",
+      "selected_policy": "mixed-fp16-core-efficient",
       "policy_applied": true,
-      "actual_policy": "auto",
-      "failure": null
+      "actual_policy": "mixed-fp16-core-efficient",
+      "failure": null,
+      "useful_matmul_flops": 420973903872,
+      "attention_flops_fraction": 0.020564,
+      "achieved_tflops": 55.64834086295556,
+      "estimated_logical_operator_bytes": 3657433088,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 115.100917,
+      "estimated_logical_operator_traffic_gbps": 483.4743467290097,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 377798656,
+      "measured_compute_roof_tflops": 93.73155816657429,
+      "project_estimated_mfu": 0.59369909080206
     },
     {
       "case_id": "official_09",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.5320959687232971,
-        "p90_ms": 1.8904831767082215
+        "median_ms": 3.8924319744110107,
+        "p90_ms": 4.56310396194458
       },
       "solution": {
-        "median_ms": 0.5294079780578613,
-        "p90_ms": 0.6108351767063145
+        "median_ms": 0.4792320132255554,
+        "p90_ms": 0.48025599122047424
       },
-      "speedup": 2.893979751389103,
+      "speedup": 8.12222862202446,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.00125199556350708,
-        "max_relative_error": 376.62847900390625
+        "max_relative_error": 336.782958984375
       },
-      "selected_policy": "graph-mixed-fp16-efficient",
+      "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
       "policy_applied": true,
-      "actual_policy": "graph-mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "failure": null,
+      "useful_matmul_flops": 7524581376,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 15.701332900017427,
+      "estimated_logical_operator_bytes": 446169088,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.864865,
+      "estimated_logical_operator_traffic_gbps": 931.0085213151359,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 89970688,
+      "measured_compute_roof_tflops": 50.85044090471462,
+      "project_estimated_mfu": 0.3087747642038964
     },
     {
       "case_id": "official_10",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7209280133247375,
-        "p90_ms": 2.110729694366455
+        "median_ms": 4.330672025680542,
+        "p90_ms": 4.899827194213867
       },
       "solution": {
-        "median_ms": 0.5191680192947388,
-        "p90_ms": 0.7134207963943485
+        "median_ms": 0.4689919948577881,
+        "p90_ms": 0.4700160026550293
       },
-      "speedup": 3.3147804744647478,
+      "speedup": 9.233999883076313,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -281,47 +371,67 @@
         "max_abs_error": 0.0010663270950317383,
         "max_relative_error": 613.007568359375
       },
-      "selected_policy": "graph-mixed-fp16-efficient",
+      "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
       "policy_applied": true,
-      "actual_policy": "graph-mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "failure": null,
+      "useful_matmul_flops": 7524581376,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 16.044157381154598,
+      "estimated_logical_operator_bytes": 446169088,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.864865,
+      "estimated_logical_operator_traffic_gbps": 951.3362549723079,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 89970688,
+      "measured_compute_roof_tflops": 50.85044090471462,
+      "project_estimated_mfu": 0.3155165834494673
     },
     {
       "case_id": "official_11",
       "outcome": "success",
       "baseline": {
-        "median_ms": 7.536128044128418,
-        "p90_ms": 8.034815692901612
+        "median_ms": 7.102976083755493,
+        "p90_ms": 7.283711910247803
       },
       "solution": {
-        "median_ms": 0.6584320068359375,
-        "p90_ms": 1.0502144098281863
+        "median_ms": 0.609279990196228,
+        "p90_ms": 0.6113280057907104
       },
-      "speedup": 11.445567599823875,
+      "speedup": 11.657983518329349,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0009748935699462891,
-        "max_relative_error": 102.97013092041016
+        "max_relative_error": 96.669677734375
       },
-      "selected_policy": "graph-mixed-fp16-efficient",
+      "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
       "policy_applied": true,
-      "actual_policy": "graph-mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "graph-mixed-fp16-efficient-compiled-norm",
+      "failure": null,
+      "useful_matmul_flops": 7524581376,
+      "attention_flops_fraction": 0.143813,
+      "achieved_tflops": 12.349956501241067,
+      "estimated_logical_operator_bytes": 446169088,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 16.864865,
+      "estimated_logical_operator_traffic_gbps": 732.2890874133325,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 89970688,
+      "measured_compute_roof_tflops": 50.85044090471462,
+      "project_estimated_mfu": 0.24286822850529177
     },
     {
       "case_id": "official_12",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.8411359786987305,
-        "p90_ms": 2.154201602935791
+        "median_ms": 4.499007940292358,
+        "p90_ms": 5.059024095535278
       },
       "solution": {
         "median_ms": 0.21401600539684296,
-        "p90_ms": 0.21503999829292297
+        "p90_ms": 0.21401600539684296
       },
-      "speedup": 8.602795736163618,
+      "speedup": 21.02182933444624,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -332,36 +442,62 @@
       "selected_policy": "graph-fused-norm",
       "policy_applied": true,
       "actual_policy": "graph-fused-norm",
-      "failure": null
+      "failure": null,
+      "useful_matmul_flops": 1679818752,
+      "attention_flops_fraction": 0.041199,
+      "achieved_tflops": 7.8490332948938395,
+      "estimated_logical_operator_bytes": 112721920,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 14.902326,
+      "estimated_logical_operator_traffic_gbps": 526.6985513115404,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 36468736,
+      "measured_compute_roof_tflops": 47.221735461917646,
+      "project_estimated_mfu": 0.1662165360530588
     },
     {
       "case_id": "official_13",
       "outcome": "success",
       "baseline": {
-        "median_ms": 116.7856674194336,
-        "p90_ms": 117.84540328979493
+        "median_ms": 108.42427444458008,
+        "p90_ms": 108.84239654541015
       },
       "solution": {
-        "median_ms": 7.038464069366455,
-        "p90_ms": 7.521279811859131
+        "median_ms": 5.302271842956543,
+        "p90_ms": 5.4824960231781015
       },
-      "speedup": 16.5924932298398,
+      "speedup": 20.44864496878055,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0010006949305534363,
-        "max_relative_error": 1295.8857421875
+        "max_abs_error": 0.0013132095336914062,
+        "max_relative_error": 11999.6318359375
       },
-      "selected_policy": "mixed-fp16-efficient",
+      "selected_policy": "mixed-fp16-core-efficient",
       "policy_applied": true,
-      "actual_policy": "mixed-fp16-efficient",
-      "failure": null
+      "actual_policy": "mixed-fp16-core-efficient",
+      "failure": null,
+      "useful_matmul_flops": 120326193152,
+      "attention_flops_fraction": 0.571668,
+      "achieved_tflops": 22.693327825475315,
+      "estimated_logical_operator_bytes": 3558342656,
+      "logical_operator_arithmetic_intensity_flops_per_byte": 33.815235,
+      "estimated_logical_operator_traffic_gbps": 671.0977410045183,
+      "logical_operator_traffic_scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic",
+      "peak_device_allocated_bytes": 278615040,
+      "measured_compute_roof_tflops": 93.7315581665743,
+      "project_estimated_mfu": 0.2421097895881134
     }
   ],
   "failed_cases": [],
-  "excluded_case_ids": [
+  "streamed_case_ids": [
     "official_14"
   ],
-  "geomean_speedup": 5.254752705085461
+  "geomean_speedup": 10.979957207298224,
+  "metric_definition": {
+    "id": "project_estimated_mfu_v1",
+    "measured_compute_roof_tflops": "FLOP-weighted harmonic roof from saturated GEMM anchors matched to observed linear and attention compute dtypes",
+    "project_estimated_mfu": "segmented ideal compute time divided by measured Transformer target time; project estimate, not an official score",
+    "publication_rule": "omit instead of clamp when inputs or anchors are unavailable or the estimate exceeds 1.05"
+  }
 }

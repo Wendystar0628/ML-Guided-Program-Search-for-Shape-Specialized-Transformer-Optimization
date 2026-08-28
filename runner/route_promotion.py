@@ -27,6 +27,7 @@ from route_contracts import (
     validate_route_table,
     validate_verified_route_table,
 )
+from runner.candidates import exact_route_policy_ids
 from runner.contracts import (
     ContractError,
     RunVariant,
@@ -39,7 +40,6 @@ from runner.locking import (
     exclusive_file_lock,
     hardware_bundle_lock_path,
 )
-from runner.resource_guard import local_benchmark_shapes
 from runner.routing_contracts import (
     hardware_identity_from_verified_profile,
     route_match_from_summary,
@@ -51,8 +51,13 @@ from runner.tuning_contracts import (
     select_deployable_winner,
     target_latency_gain,
 )
+from runner.workload_execution import (
+    all_benchmark_shapes,
+    plan_workload_execution,
+    route_eligible_shapes,
+)
 
-DEFAULT_ROUTE_POLICY = "auto"
+DEFAULT_ROUTE_POLICY = "eager-sdpa"
 MINIMUM_ROUTE_GAIN = 1.02
 _FORMAL_MINIMUM_COUNTS = {
     "accuracy_trials": 5,
@@ -83,6 +88,11 @@ def _upsert_exact_route(
     policy: str,
 ) -> dict[str, Any]:
     """Return a validated route document with one exact decision updated."""
+
+    if policy not in exact_route_policy_ids():
+        raise ContractError(
+            f"policy {policy!r} is not eligible for a resident exact route"
+        )
 
     updated = copy.deepcopy(dict(document))
     identity = _match_identity(match)
@@ -370,7 +380,7 @@ def _write_new_bundle_support_files(
         encoding="utf-8",
     )
     (results_root / ".gitignore").write_text(
-        "*\n!.gitignore\n!reference_formal.json\n",
+        "*\n!.gitignore\n!reference_formal.json\n!reference_streamed.json\n",
         encoding="utf-8",
     )
     _atomic_replace_json(
@@ -393,6 +403,14 @@ def validate_promotion_case_set(
         return
     if variant is None:
         raise ContractError("promotion route validation requires a run variant")
+    eligible_case_ids = {shape.case_id for shape in all_shapes}
+    ineligible_case_ids = set(case_ids) - eligible_case_ids
+    if ineligible_case_ids:
+        raise ContractError(
+            "formal promotion accepts only shapes with a formal reference path; "
+            "currently provisional or unknown: "
+            + ", ".join(sorted(ineligible_case_ids))
+        )
     try:
         validate_selected_route_groups(case_ids, all_shapes, variant)
     except (TypeError, ValueError) as exc:
@@ -459,13 +477,14 @@ def _auto_promote_calibration_locked(
     workload_set = load_workload_set(project_root, workload_set_id)
     if workload_set.sha256 != workload_sha256:
         raise ContractError("formal summary workload hash is stale; rerun calibration")
-    local_shapes = local_benchmark_shapes(workload_set.shapes)
-    authoritative_case_ids = [shape.case_id for shape in local_shapes]
+    formal_variant = _summary_variant(summaries)
+    formal_shapes = route_eligible_shapes(workload_set.shapes, formal_variant)
+    authoritative_case_ids = [shape.case_id for shape in formal_shapes]
     if set(authoritative_case_ids) != set(full_workload_shape_ids):
         raise ContractError(
             "calibration shape list does not match the persisted workload set"
         )
-    validate_promotion_case_set(case_ids, local_shapes, _summary_variant(summaries))
+    validate_promotion_case_set(case_ids, formal_shapes, formal_variant)
     existing_route = find_matching_verified_route(
         project_root,
         profile,
@@ -698,13 +717,13 @@ def build_promoted_route_document(
         existing_table = validate_route_table(document)
 
     measured_winner = select_deployable_winner(summary)
-    auto_observation = select_deployable_winner(
+    eager_sdpa_observation = select_deployable_winner(
         summary,
         allowed_policies=frozenset({DEFAULT_ROUTE_POLICY}),
     )
     incumbent_policy = resolve_route(existing_table, match)
     if incumbent_policy == DEFAULT_ROUTE_POLICY:
-        incumbent_observation = auto_observation
+        incumbent_observation = eager_sdpa_observation
     else:
         try:
             incumbent_observation = select_deployable_winner(
@@ -719,22 +738,25 @@ def build_promoted_route_document(
     measured_policy = str(measured_winner["solution_policy"])
     deployment = measured_winner
     if measured_policy != incumbent_policy:
-        clears_auto_margin = (
+        clears_default_margin = (
             measured_policy == DEFAULT_ROUTE_POLICY
-            or target_latency_gain(auto_observation, measured_winner)
+            or target_latency_gain(eager_sdpa_observation, measured_winner)
             >= MINIMUM_ROUTE_GAIN
         )
         clears_incumbent_margin = (
             target_latency_gain(incumbent_observation, measured_winner)
             >= MINIMUM_ROUTE_GAIN
         )
-        if not (clears_auto_margin and clears_incumbent_margin):
+        if not (clears_default_margin and clears_incumbent_margin):
             if (
                 incumbent_policy != DEFAULT_ROUTE_POLICY
-                and target_latency_gain(incumbent_observation, auto_observation)
+                and target_latency_gain(
+                    incumbent_observation,
+                    eager_sdpa_observation,
+                )
                 >= MINIMUM_ROUTE_GAIN
             ):
-                deployment = auto_observation
+                deployment = eager_sdpa_observation
             else:
                 deployment = incumbent_observation
 
@@ -811,20 +833,22 @@ def _build_verified_bundle_manifest(
             "formal summaries do not share the current official snapshot"
         )
     workload_set = load_workload_set(project_root, workload_set_id)
+    all_shapes = all_benchmark_shapes(workload_set.shapes)
     covered_order = tuple(
-        shape.case_id for shape in local_benchmark_shapes(workload_set.shapes)
+        shape.case_id for shape in route_eligible_shapes(all_shapes, formal_variant)
     )
     covered_set = set(covered_order)
-    excluded_order = tuple(
+    provisional_order = tuple(
         shape.case_id
-        for shape in workload_set.shapes
-        if shape.case_id not in covered_set
+        for shape in all_shapes
+        if not plan_workload_execution(shape, formal_variant).formal_eligible
     )
+    excluded_order: tuple[str, ...] = ()
     selected_case_ids = {_summary_case_id(summary) for summary in summaries}
     unknown_case_ids = selected_case_ids - covered_set
     if unknown_case_ids:
         raise ContractError(
-            "formal summaries include excluded or unknown cases: "
+            "formal summaries include provisional or unknown cases: "
             + ", ".join(sorted(unknown_case_ids))
         )
 
@@ -853,14 +877,18 @@ def _build_verified_bundle_manifest(
         previous_protocol = previous_formal.get("protocol")
         previous_variant = previous_formal.get("variant")
         previous_covered = previous_formal.get("covered_case_ids")
+        previous_provisional = previous_formal.get("provisional_case_ids")
         previous_excluded = previous_formal.get("excluded_case_ids")
         if (
             previous_protocol != protocol
             or previous_variant != variant
             or not isinstance(previous_covered, Sequence)
             or isinstance(previous_covered, (str, bytes))
+            or not isinstance(previous_provisional, Sequence)
+            or isinstance(previous_provisional, (str, bytes))
             or not isinstance(previous_excluded, Sequence)
             or isinstance(previous_excluded, (str, bytes))
+            or set(previous_provisional) != set(provisional_order)
             or set(previous_excluded) != set(excluded_order)
             or not set(previous_covered).issubset(covered_set)
         ):
@@ -895,13 +923,14 @@ def _build_verified_bundle_manifest(
             "covered_case_ids": [
                 case_id for case_id in covered_order if case_id in manifested_case_ids
             ],
+            "provisional_case_ids": list(provisional_order),
             "excluded_case_ids": list(excluded_order),
         },
     }
     table = validate_verified_route_table(route_document)
     expected_workload_routes = {
         workload_route_identity(shape, formal_variant)
-        for shape in local_benchmark_shapes(workload_set.shapes)
+        for shape in route_eligible_shapes(workload_set.shapes, formal_variant)
     }
     published_workload_routes = {
         tuple((field, match[field]) for field in WORKLOAD_ROUTE_FIELDS)
@@ -951,11 +980,12 @@ def _publish_bundle_tuning_summaries_locked(
     workload_set = load_workload_set(project_root, workload_set_id)
     if workload_set.sha256 != workload_sha256:
         raise ContractError("formal summary workload hash is stale; rerun calibration")
-    local_shapes = local_benchmark_shapes(workload_set.shapes)
+    formal_variant = _summary_variant(summaries)
+    formal_shapes = route_eligible_shapes(workload_set.shapes, formal_variant)
     validate_promotion_case_set(
         case_ids,
-        local_shapes,
-        _summary_variant(summaries),
+        formal_shapes,
+        formal_variant,
     )
 
     if reset_verified_bundle and not _is_verified_route_destination(destination):
@@ -1027,7 +1057,7 @@ def _publish_bundle_tuning_summaries_locked(
 
     winners = [deployments_by_index[index] for index in range(len(summaries))]
     if reset_verified_bundle or not destination.with_name("manifest.json").is_file():
-        full_case_ids = {shape.case_id for shape in local_shapes}
+        full_case_ids = {shape.case_id for shape in formal_shapes}
         if set(case_ids) != full_case_ids:
             raise ContractError(
                 "a verified bundle manifest requires one complete Formal workload "

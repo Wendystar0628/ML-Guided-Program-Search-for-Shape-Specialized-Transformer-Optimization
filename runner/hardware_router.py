@@ -1,9 +1,9 @@
 """Explainable cold-start prior for official Transformer candidates.
 
-The router first decides whether the official dense baseline is feasible.  It
-then ranks only distinct, hardware-supported challengers by their incremental
-cost relative to the eager automatic control.  Measurements, not this prior,
-remain the source of deployed routes.
+Dense-baseline feasibility and optimized-candidate feasibility are separate:
+an oversized reference workload can still admit batch-streamed fused
+Attention candidates. Measurements, not this prior, remain the source of
+deployed routes.
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from policy_registry import ExecutionComponent
+from policy_registry import (
+    ExecutionComponent,
+    ResidualNormBackend,
+    get_policy_spec,
+)
 from runner.candidates import candidate_spec
 from runner.contracts import RunVariant, TransformerShape
 
@@ -314,12 +318,27 @@ def _capability_rejection(
         and profile.get("triton_available") is not True
     ):
         return "local compiler fusion requires a positively established Triton runtime"
+    if (
+        ExecutionComponent.TRITON_RESIDUAL_LAYER_NORM in spec.required_components
+        and profile.get("triton_available") is not True
+    ):
+        return "custom Triton fusion requires a positively established Triton runtime"
     if ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION in spec.required_components:
         capability = _version_pair(profile.get("compute_capability"))
         if capability is None or capability < (8, 0):
             return "mixed FP16 Efficient Attention requires SM80 or newer"
         if profile.get("efficient_sdpa_enabled") is not True:
             return "Efficient SDPA runtime capability was not positively established"
+    if ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION in spec.required_components:
+        capability = _version_pair(profile.get("compute_capability"))
+        if capability is None or capability < (8, 0):
+            return "mixed FP16 cuDNN Attention requires SM80 or newer"
+        if profile.get("cudnn_sdpa_enabled") is not True:
+            return "cuDNN SDPA runtime capability was not positively established"
+    if ExecutionComponent.MIXED_FP16_CORE in spec.required_components:
+        capability = _version_pair(profile.get("compute_capability"))
+        if capability is None or capability < (8, 0):
+            return "mixed FP16 core execution requires SM80 or newer"
     return None
 
 
@@ -443,14 +462,22 @@ def _incremental_prior(
     signals: _HardwareSignals,
     profile: Mapping[str, Any],
 ) -> tuple[float, list[str]]:
-    """Estimate benefit relative to eager auto; positive values are challengers."""
+    """Estimate benefit relative to eager SDPA; positive values are challengers."""
 
-    if candidate_id == "eager-auto":
+    if candidate_id == "eager-sdpa":
         return 0.0, ["retained as the measured eager SDPA control"]
 
+    candidate = candidate_spec(candidate_id)
+    if candidate is None:
+        return float("-inf"), ["candidate is not registered"]
+    policy = get_policy_spec(candidate.solution_policy)
     anchors = _mapping(profile.get("performance_anchors"))
     eager_cost_estimate = signals.eager_cost_estimate_seconds
-    if candidate_id in {"graph", "graph-fused-norm"}:
+    relative = 0.0
+    reasons: list[str] = []
+    has_incremental_model = False
+
+    if policy.use_cuda_graph:
         launch_latency_us = _positive_float(anchors.get("launch_latency_us"))
         replay_node_us = _positive_float(anchors.get("graph_replay_per_node_us"))
         copy_bandwidth = signals.copy_bandwidth_gbps
@@ -467,53 +494,59 @@ def _incremental_prior(
         )
         copy_seconds = analysis.input_output_bytes / (copy_bandwidth * 1e9)
         net_seconds = saved_node_timing - copy_seconds
-        relative = (
+        graph_relative = (
             net_seconds / eager_cost_estimate if eager_cost_estimate else net_seconds
         )
-        reasons = [
-            (
-                "estimated graph benefit is measured eager-versus-replay node "
-                "timing saved minus static input/output copy cost"
-            ),
-            f"estimated relative cost gain={relative:.6f}",
-        ]
-        if candidate_id == "graph-fused-norm":
-            fused_fraction = analysis.residual_norm_fusible_bytes / max(
-                analysis.separate_operator_bytes,
-                1,
-            )
-            relative += fused_fraction
-            reasons.extend(
-                [
-                    "adds the measured residual-plus-LayerNorm fusion opportunity",
-                    f"estimated combined relative opportunity={relative:.6f}",
-                ]
-            )
-        return relative, reasons
+        relative += graph_relative
+        reasons.extend(
+            [
+                (
+                    "estimated graph benefit is measured eager-versus-replay node "
+                    "timing saved minus static input/output copy cost"
+                ),
+                f"estimated relative cost gain={graph_relative:.6f}",
+            ]
+        )
+        has_incremental_model = True
 
-    if candidate_id in {
-        "mixed-fp16-efficient",
-        "graph-mixed-fp16-efficient",
-    }:
+    if policy.residual_norm is not ResidualNormBackend.TORCH:
+        fused_fraction = analysis.residual_norm_fusible_bytes / max(
+            analysis.separate_operator_bytes,
+            1,
+        )
+        relative += fused_fraction
+        reasons.append("adds the measured residual-plus-LayerNorm fusion opportunity")
+        has_incremental_model = True
+
+    if policy.attention in {"mixed_fp16_efficient", "mixed_fp16_cudnn"}:
         # The candidate halves Q/K/V element width around the measured
         # Attention family. Attention share is a transparent ordering signal;
         # Formal measurement, not this prior, decides whether conversion pays.
-        relative = analysis.attention_fraction * 0.5
-        if candidate_id == "graph-mixed-fp16-efficient":
-            graph_benefit, _reasons = _incremental_prior(
-                "graph",
-                analysis,
-                signals,
-                profile,
-            )
-            if math.isfinite(graph_benefit):
-                relative += max(graph_benefit, 0.0)
-        return relative, [
-            "heuristic opportunity follows Attention share and FP16 execution width",
-            f"heuristic relative opportunity={relative:.6f}",
-        ]
+        attention_relative = analysis.attention_fraction * 0.5
+        relative += attention_relative
+        reasons.extend(
+            [
+                "heuristic opportunity follows Attention share and FP16 execution width",
+                f"heuristic Attention opportunity={attention_relative:.6f}",
+            ]
+        )
+        has_incremental_model = True
 
-    return float("-inf"), ["candidate has no distinct incremental cost model"]
+    if policy.linear_compute == "float16":
+        linear_relative = analysis.dense_gemm_fraction * 0.5
+        relative += linear_relative
+        reasons.extend(
+            [
+                "heuristic opportunity follows projection/FFN share and FP16 linear compute",
+                f"heuristic linear opportunity={linear_relative:.6f}",
+            ]
+        )
+        has_incremental_model = True
+
+    if not has_incremental_model:
+        return float("-inf"), ["candidate has no distinct incremental cost model"]
+    reasons.append(f"estimated combined relative opportunity={relative:.6f}")
+    return relative, reasons
 
 
 def _rounded(value: object) -> object:
@@ -558,25 +591,20 @@ def build_routing_plan(
 
     analysis = analyze_workload(shape, variant)
     feasibility = _feasibility_report(analysis, hardware_profile)
-    if not feasibility.baseline_executable:
-        reason = feasibility.rejection_reason or "official dense baseline is infeasible"
-        return {
-            "source": "hardware_cost_prior",
-            "decision_scope": "unsupported",
-            "requires_full_workload_measurement": False,
-            "bottleneck_class": "memory_capacity",
-            "workload_analysis": analysis.as_dict(),
-            "feasibility": feasibility.as_dict(),
-            "routing_signals": {},
-            "candidate_order": [],
-            "selection_reasons": {},
-            "capability_rejections": {candidate_id: reason for candidate_id in unique},
-        }
-
     signals = _hardware_signals(analysis, hardware_profile)
     rejections: dict[str, str] = {}
     ranked: list[tuple[float, int, str, list[str]]] = []
     for index, candidate_id in enumerate(unique):
+        spec = candidate_spec(candidate_id)
+        if (
+            not feasibility.baseline_executable
+            and spec is not None
+            and "batch_streamed" not in spec.workload_execution_modes
+        ):
+            rejections[candidate_id] = (
+                "candidate has no batch-streamed memory-safe execution path"
+            )
+            continue
         rejection = _capability_rejection(
             candidate_id,
             shape,
@@ -592,7 +620,7 @@ def build_routing_plan(
             signals,
             hardware_profile,
         )
-        if candidate_id != "eager-auto" and benefit <= 0:
+        if candidate_id != "eager-sdpa" and benefit <= 0:
             if candidate_id not in required_candidate_ids:
                 rejections[candidate_id] = reasons[0]
                 continue
@@ -602,8 +630,8 @@ def build_routing_plan(
 
     required: list[str] = []
     eligible_ids = {item[2] for item in ranked}
-    if "eager-auto" in eligible_ids:
-        required.append("eager-auto")
+    if feasibility.baseline_executable and "eager-sdpa" in eligible_ids:
+        required.append("eager-sdpa")
     for candidate_id in required_candidate_ids:
         if candidate_id not in seen:
             raise ValueError(f"required candidate is unavailable: {candidate_id}")
@@ -656,7 +684,11 @@ def build_routing_plan(
         "source": "hardware_cost_prior",
         "decision_scope": "candidate_order_only",
         "requires_full_workload_measurement": True,
-        "bottleneck_class": signals.bottleneck_class,
+        "bottleneck_class": (
+            signals.bottleneck_class
+            if feasibility.baseline_executable
+            else "memory_capacity"
+        ),
         "workload_analysis": analysis.as_dict(),
         "feasibility": feasibility.as_dict(),
         "routing_signals": {

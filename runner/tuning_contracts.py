@@ -7,7 +7,7 @@ import math
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
-from runner.candidates import candidate_spec, deployable_policy_ids
+from runner.candidates import candidate_spec, exact_route_policy_ids
 from runner.contracts import ContractError
 
 TUNING_SCHEMA_VERSION = 5
@@ -59,7 +59,7 @@ def select_deployable_winner(
     if not isinstance(observations, Sequence) or isinstance(observations, (str, bytes)):
         raise ContractError("tuning summary observations must be a sequence")
     policies = (
-        frozenset(deployable_policy_ids())
+        exact_route_policy_ids()
         if allowed_policies is None
         else frozenset(allowed_policies)
     )
@@ -75,7 +75,7 @@ def select_deployable_winner(
         if (
             policy not in policies
             or spec is None
-            or not spec.deployable
+            or not spec.exact_route_eligible
             or spec.solution_policy != policy
             or observation.get("outcome") != "success"
             or observation.get("correctness_passed") is not True

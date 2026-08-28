@@ -14,7 +14,18 @@ class ExecutionComponent(StrEnum):
     CAUSAL_SDPA = "causal_sdpa"
     CUDA_GRAPH = "cuda_graph"
     COMPILED_RESIDUAL_LAYER_NORM = "compiled_residual_layer_norm"
+    TRITON_RESIDUAL_LAYER_NORM = "triton_residual_layer_norm"
     MIXED_FP16_EFFICIENT_ATTENTION = "mixed_fp16_efficient_attention"
+    MIXED_FP16_CUDNN_ATTENTION = "mixed_fp16_cudnn_attention"
+    MIXED_FP16_CORE = "mixed_fp16_core"
+
+
+class ResidualNormBackend(StrEnum):
+    """Supported residual-plus-LayerNorm implementations."""
+
+    TORCH = "torch"
+    COMPILED = "compiled_residual_layer_norm"
+    TRITON = "triton_residual_layer_norm"
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,8 +34,9 @@ class PolicySpec:
 
     policy_id: str
     attention: str = "safe_streaming"
+    linear_compute: str = "input"
+    residual_norm: ResidualNormBackend = ResidualNormBackend.TORCH
     use_cuda_graph: bool = False
-    use_compiled_residual_layer_norm: bool = False
     routable: bool = True
 
     def __post_init__(self) -> None:
@@ -34,8 +46,18 @@ class PolicySpec:
             "safe_streaming",
             "causal_sdpa",
             "mixed_fp16_efficient",
+            "mixed_fp16_cudnn",
         }:
             raise ValueError(f"unsupported attention backend: {self.attention}")
+        if self.linear_compute not in {"input", "float16"}:
+            raise ValueError(f"unsupported linear compute mode: {self.linear_compute}")
+        try:
+            backend = ResidualNormBackend(self.residual_norm)
+        except ValueError as exc:
+            raise ValueError(
+                f"unsupported residual norm backend: {self.residual_norm}"
+            ) from exc
+        object.__setattr__(self, "residual_norm", backend)
 
     @property
     def required_components(self) -> frozenset[ExecutionComponent]:
@@ -46,16 +68,22 @@ class PolicySpec:
             components.add(ExecutionComponent.CAUSAL_SDPA)
         elif self.attention == "mixed_fp16_efficient":
             components.add(ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION)
+        elif self.attention == "mixed_fp16_cudnn":
+            components.add(ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION)
+        if self.linear_compute == "float16":
+            components.add(ExecutionComponent.MIXED_FP16_CORE)
         if self.use_cuda_graph:
             components.add(ExecutionComponent.CUDA_GRAPH)
-        if self.use_compiled_residual_layer_norm:
+        if self.residual_norm is ResidualNormBackend.COMPILED:
             components.add(ExecutionComponent.COMPILED_RESIDUAL_LAYER_NORM)
+        elif self.residual_norm is ResidualNormBackend.TRITON:
+            components.add(ExecutionComponent.TRITON_RESIDUAL_LAYER_NORM)
         return frozenset(components)
 
 
 _POLICY_SPECS = {
-    "auto": PolicySpec(
-        "auto",
+    "eager-sdpa": PolicySpec(
+        "eager-sdpa",
         attention="causal_sdpa",
     ),
     "safe": PolicySpec("safe", routable=False),
@@ -68,15 +96,41 @@ _POLICY_SPECS = {
         "graph-fused-norm",
         attention="causal_sdpa",
         use_cuda_graph=True,
-        use_compiled_residual_layer_norm=True,
+        residual_norm=ResidualNormBackend.COMPILED,
     ),
     "mixed-fp16-efficient": PolicySpec(
         "mixed-fp16-efficient",
         attention="mixed_fp16_efficient",
     ),
+    "mixed-fp16-cudnn": PolicySpec(
+        "mixed-fp16-cudnn",
+        attention="mixed_fp16_cudnn",
+    ),
+    "mixed-fp16-core-efficient": PolicySpec(
+        "mixed-fp16-core-efficient",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+    ),
+    "mixed-fp16-core-efficient-triton-norm": PolicySpec(
+        "mixed-fp16-core-efficient-triton-norm",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+        residual_norm=ResidualNormBackend.TRITON,
+    ),
+    "mixed-fp16-core-cudnn": PolicySpec(
+        "mixed-fp16-core-cudnn",
+        attention="mixed_fp16_cudnn",
+        linear_compute="float16",
+    ),
     "graph-mixed-fp16-efficient": PolicySpec(
         "graph-mixed-fp16-efficient",
         attention="mixed_fp16_efficient",
+        use_cuda_graph=True,
+    ),
+    "graph-mixed-fp16-efficient-compiled-norm": PolicySpec(
+        "graph-mixed-fp16-efficient-compiled-norm",
+        attention="mixed_fp16_efficient",
+        residual_norm=ResidualNormBackend.COMPILED,
         use_cuda_graph=True,
     ),
 }
@@ -113,6 +167,7 @@ __all__ = [
     "ROUTABLE_POLICY_IDS",
     "ExecutionComponent",
     "PolicySpec",
+    "ResidualNormBackend",
     "get_policy_spec",
     "policy_ids",
 ]

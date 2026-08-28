@@ -20,16 +20,21 @@ from runner.contracts import (
     utc_now,
 )
 from runner.locking import device_measurement_lease
-from runner.resource_guard import local_benchmark_shapes
+from runner.performance_metrics import LOGICAL_OPERATOR_TRAFFIC_SCOPE
 from runner.result_contracts import (
     RUN_RESULT_SCHEMA_VERSION,
+    ComparisonMode,
     validate_benchmark_performance,
     validate_correctness,
 )
 from runner.supervisor import CancellationToken, run_managed_benchmark
+from runner.workload_execution import (
+    resident_benchmark_shapes,
+    streamed_benchmark_shapes,
+)
 
 ManagedBenchmark = Callable[..., tuple[dict[str, Any], Path]]
-SWEEP_SUMMARY_SCHEMA_VERSION = 3
+SWEEP_SUMMARY_SCHEMA_VERSION = 6
 SweepValidator = Callable[
     [WorkloadSet, Sequence[Mapping[str, Any]], Sequence[Path], dict[str, Any]],
     None,
@@ -83,9 +88,15 @@ def _validated_performance(
     protocol = run.get("protocol")
     if not isinstance(protocol, Mapping):
         return None, "missing_protocol"
+    expected_comparison_mode: ComparisonMode = (
+        "baseline_only" if target == "baseline" else "paired"
+    )
+    if run.get("comparison_mode") != expected_comparison_mode:
+        return None, "comparison_mode_mismatch"
     performance, error = validate_benchmark_performance(
         run.get("performance"),
         target=target,
+        comparison_mode=expected_comparison_mode,
         repeats=protocol.get("repeats"),
         rounds=protocol.get("rounds"),
         expected_timer="cuda_event",
@@ -198,6 +209,111 @@ def _timing_summary(value: Any) -> dict[str, float] | None:
     return {"median_ms": float(median), "p90_ms": float(p90)}
 
 
+def _validated_metric_summary(
+    value: Any,
+    *,
+    target: str,
+) -> tuple[dict[str, int | float | str] | None, str | None]:
+    """Validate the compact useful-work metrics derived by the supervisor."""
+
+    if not isinstance(value, Mapping):
+        return None, "missing_performance"
+    useful_flops = value.get("useful_matmul_flops")
+    attention_fraction = value.get("attention_flops_fraction")
+    achieved_tflops = value.get("achieved_tflops")
+    logical_bytes = value.get("estimated_logical_operator_bytes")
+    logical_intensity = value.get(
+        "logical_operator_arithmetic_intensity_flops_per_byte"
+    )
+    logical_traffic_gbps = value.get("estimated_logical_operator_traffic_gbps")
+    logical_traffic_scope = value.get("logical_operator_traffic_scope")
+    if (
+        isinstance(useful_flops, bool)
+        or not isinstance(useful_flops, int)
+        or useful_flops <= 0
+    ):
+        return None, "invalid_useful_matmul_flops"
+    if (
+        isinstance(attention_fraction, bool)
+        or not isinstance(attention_fraction, (int, float))
+        or not math.isfinite(float(attention_fraction))
+        or not 0.0 <= float(attention_fraction) <= 1.0
+    ):
+        return None, "invalid_attention_flops_fraction"
+    if (
+        isinstance(achieved_tflops, bool)
+        or not isinstance(achieved_tflops, (int, float))
+        or not math.isfinite(float(achieved_tflops))
+        or float(achieved_tflops) <= 0
+    ):
+        return None, "invalid_achieved_tflops"
+    if (
+        isinstance(logical_bytes, bool)
+        or not isinstance(logical_bytes, int)
+        or logical_bytes <= 0
+    ):
+        return None, "invalid_estimated_logical_operator_bytes"
+    if (
+        isinstance(logical_intensity, bool)
+        or not isinstance(logical_intensity, (int, float))
+        or not math.isfinite(float(logical_intensity))
+        or float(logical_intensity) <= 0
+    ):
+        return None, "invalid_logical_operator_arithmetic_intensity"
+    if (
+        isinstance(logical_traffic_gbps, bool)
+        or not isinstance(logical_traffic_gbps, (int, float))
+        or not math.isfinite(float(logical_traffic_gbps))
+        or float(logical_traffic_gbps) <= 0
+    ):
+        return None, "invalid_estimated_logical_operator_traffic_gbps"
+    if logical_traffic_scope != LOGICAL_OPERATOR_TRAFFIC_SCOPE:
+        return None, "invalid_logical_operator_traffic_scope"
+
+    measured_side = value.get("baseline" if target == "baseline" else "target")
+    timing = _timing_summary(measured_side)
+    if timing is None:
+        return None, "missing_measured_timing"
+    expected_tflops = useful_flops / (timing["median_ms"] * 1_000_000_000.0)
+    if not math.isclose(
+        float(achieved_tflops),
+        expected_tflops,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        return None, "achieved_tflops_mismatch"
+    expected_intensity = useful_flops / logical_bytes
+    if not math.isclose(
+        float(logical_intensity),
+        expected_intensity,
+        rel_tol=1e-6,
+        abs_tol=1e-6,
+    ):
+        return None, "logical_operator_arithmetic_intensity_mismatch"
+    expected_traffic_gbps = logical_bytes / (timing["median_ms"] * 1_000_000.0)
+    if not math.isclose(
+        float(logical_traffic_gbps),
+        expected_traffic_gbps,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        return None, "estimated_logical_operator_traffic_gbps_mismatch"
+    return (
+        {
+            "useful_matmul_flops": useful_flops,
+            "attention_flops_fraction": float(attention_fraction),
+            "achieved_tflops": float(achieved_tflops),
+            "estimated_logical_operator_bytes": logical_bytes,
+            "logical_operator_arithmetic_intensity_flops_per_byte": float(
+                logical_intensity
+            ),
+            "estimated_logical_operator_traffic_gbps": float(logical_traffic_gbps),
+            "logical_operator_traffic_scope": logical_traffic_scope,
+        },
+        None,
+    )
+
+
 def _accuracy_summary(run: Mapping[str, Any]) -> dict[str, Any] | None:
     value = run.get("correctness")
     if not isinstance(value, Mapping):
@@ -243,6 +359,7 @@ def _compact_shape_result(
     target: str,
     outcome: str,
     speedup: float | None,
+    metric_summary: Mapping[str, int | float | str] | None,
 ) -> dict[str, Any]:
     performance = run.get("performance") if run is not None else None
     baseline = None
@@ -257,7 +374,7 @@ def _compact_shape_result(
             "type": "InvalidResult",
             "message": outcome,
         }
-    return {
+    compact = {
         "case_id": shape_id,
         "outcome": outcome,
         "baseline": baseline,
@@ -271,6 +388,17 @@ def _compact_shape_result(
         else None,
         "failure": failure,
     }
+    if metric_summary is not None:
+        compact.update(metric_summary)
+    if isinstance(performance, Mapping):
+        peak_bytes = performance.get("peak_device_allocated_bytes")
+        if (
+            isinstance(peak_bytes, int)
+            and not isinstance(peak_bytes, bool)
+            and peak_bytes > 0
+        ):
+            compact["peak_device_allocated_bytes"] = peak_bytes
+    return compact
 
 
 def _common_dispatch(runs: Sequence[Mapping[str, Any]]) -> dict[str, str] | None:
@@ -297,12 +425,15 @@ def summarize_sweep(
     target: str,
     variant: RunVariant | None = None,
 ) -> dict[str, Any]:
-    """Build one compact, unweighted summary for official cases 1 through 13."""
+    """Build one compact, unweighted summary for resident benchmark shapes."""
 
     if target not in {"baseline", "solution"}:
         raise ContractError(f"unsupported sweep target: {target}")
     expected_variant = variant or RunVariant()
-    expected_shapes = local_benchmark_shapes(workload_set.shapes)
+    expected_shapes = resident_benchmark_shapes(
+        workload_set.shapes,
+        expected_variant,
+    )
     expected_ids = [shape.case_id for shape in expected_shapes]
     indexed: dict[str, dict[str, Any]] = {}
     duplicates: list[str] = []
@@ -349,8 +480,14 @@ def summarize_sweep(
                     reason = _context_mismatch(context_anchor, context)
 
         speedup: float | None = None
+        metric_summary: dict[str, int | float | str] | None = None
         if run is not None and reason is None:
             speedup, reason = _validated_performance(run, target)
+        if run is not None and reason is None:
+            metric_summary, reason = _validated_metric_summary(
+                run.get("performance"),
+                target=target,
+            )
         compact_outcome = reason or outcome
         shape_results.append(
             _compact_shape_result(
@@ -359,6 +496,7 @@ def summarize_sweep(
                 target=target,
                 outcome=compact_outcome,
                 speedup=speedup,
+                metric_summary=metric_summary,
             )
         )
         if reason is not None:
@@ -400,10 +538,12 @@ def summarize_sweep(
         "sweep_outcome": "complete" if complete else "incomplete",
         "case_results": shape_results,
         "failed_cases": failed_cases,
-        "excluded_case_ids": [
+        "streamed_case_ids": [
             shape.case_id
-            for shape in workload_set.shapes
-            if shape.case_id not in expected_ids
+            for shape in streamed_benchmark_shapes(
+                workload_set.shapes,
+                expected_variant,
+            )
         ],
         "geomean_speedup": _geometric_mean(speedups)
         if complete and target == "solution"
@@ -427,7 +567,7 @@ def _validated_sweep_id(value: str | None) -> str:
 
 
 class BenchmarkSweepService:
-    """Run official cases 1 through 13 in isolated workers."""
+    """Run resident benchmark shapes in isolated workers."""
 
     def __init__(self, run_shape: ManagedBenchmark | None = None) -> None:
         self._run_shape = run_shape or run_managed_benchmark
@@ -472,7 +612,10 @@ class BenchmarkSweepService:
 
         project_root = request.project_root.resolve()
         workload_set = load_workload_set(project_root, request.workload_set_id)
-        shapes = local_benchmark_shapes(workload_set.shapes)
+        shapes = resident_benchmark_shapes(
+            workload_set.shapes,
+            request.variant,
+        )
         sweep_id = _validated_sweep_id(request.sweep_id)
         sweep_directory = _resolve_output_root(request) / sweep_id
         if sweep_directory.exists():

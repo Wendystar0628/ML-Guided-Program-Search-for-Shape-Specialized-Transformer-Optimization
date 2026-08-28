@@ -8,22 +8,32 @@ import pytest
 from policy_registry import (
     POLICY_SPECS,
     ROUTABLE_POLICY_IDS,
+    ResidualNormBackend,
     policy_ids,
 )
 from route_contracts import ALLOWED_POLICIES
-from runner.candidates import CANDIDATE_SPECS, deployable_policy_ids
+from runner.candidates import (
+    CANDIDATE_SPECS,
+    deployable_policy_ids,
+    exact_route_policy_ids,
+)
 
 pytestmark = pytest.mark.architecture
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_EXPLICIT_POLICIES = frozenset(
     {
-        "auto",
+        "eager-sdpa",
         "safe",
         "graph",
         "graph-fused-norm",
         "mixed-fp16-efficient",
+        "mixed-fp16-cudnn",
+        "mixed-fp16-core-efficient",
+        "mixed-fp16-core-efficient-triton-norm",
+        "mixed-fp16-core-cudnn",
         "graph-mixed-fp16-efficient",
+        "graph-mixed-fp16-efficient-compiled-norm",
     }
 )
 EXPECTED_ROUTABLE_POLICIES = EXPECTED_EXPLICIT_POLICIES - {"safe"}
@@ -52,6 +62,9 @@ def test_policy_candidate_and_route_contract_share_one_registry() -> None:
     assert ROUTABLE_POLICY_IDS == EXPECTED_ROUTABLE_POLICIES
     assert ALLOWED_POLICIES == EXPECTED_ROUTABLE_POLICIES
     assert deployable_policy_ids() == EXPECTED_ROUTABLE_POLICIES
+    assert exact_route_policy_ids() == EXPECTED_ROUTABLE_POLICIES - {
+        "mixed-fp16-core-cudnn"
+    }
 
 
 def test_each_policy_has_one_shape_independent_candidate_owner() -> None:
@@ -60,6 +73,8 @@ def test_each_policy_has_one_shape_independent_candidate_owner() -> None:
     assert set(owners) == EXPECTED_EXPLICIT_POLICIES
     assert len(owners) == len(set(owners))
     assert CANDIDATE_SPECS["eager-safe"].deployable is False
+    assert CANDIDATE_SPECS["mixed-fp16-core-cudnn"].deployable is True
+    assert CANDIDATE_SPECS["mixed-fp16-core-cudnn"].exact_route_eligible is False
 
 
 def test_candidates_derive_capabilities_from_policy_specs() -> None:
@@ -69,17 +84,28 @@ def test_candidates_derive_capabilities_from_policy_specs() -> None:
             == POLICY_SPECS[candidate.solution_policy].required_components
         )
 
-    assert POLICY_SPECS["graph-fused-norm"].use_compiled_residual_layer_norm
+    assert (
+        POLICY_SPECS["graph-fused-norm"].residual_norm is ResidualNormBackend.COMPILED
+    )
+    assert (
+        POLICY_SPECS["mixed-fp16-core-efficient-triton-norm"].residual_norm
+        is ResidualNormBackend.TRITON
+    )
 
 
 def test_candidate_registry_contains_only_distinct_strategies() -> None:
     assert set(CANDIDATE_SPECS) == {
-        "eager-auto",
+        "eager-sdpa",
         "eager-safe",
         "graph",
         "graph-fused-norm",
         "mixed-fp16-efficient",
+        "mixed-fp16-cudnn",
+        "mixed-fp16-core-efficient",
+        "mixed-fp16-core-efficient-triton-norm",
+        "mixed-fp16-core-cudnn",
         "graph-mixed-fp16-efficient",
+        "graph-mixed-fp16-efficient-compiled-norm",
     }
 
 

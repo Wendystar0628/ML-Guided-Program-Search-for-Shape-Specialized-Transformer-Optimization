@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from official import torch_transformer_benchmark as official
-from runner.execution import load_solution_module
+from runner.model_runtime import load_solution_module
 from solution.cuda_graph import CudaGraphReplay
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -200,7 +200,7 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
 @pytest.mark.parametrize(
     ("policy", "selected", "attention", "wrapper", "residual_norm"),
     [
-        ("auto", "auto", "causal_sdpa", "eager", "torch"),
+        ("eager-sdpa", "eager-sdpa", "causal_sdpa", "eager", "torch"),
         ("safe", "safe", "safe_streaming", "eager", "torch"),
         ("graph", "safe", "safe_streaming", "eager", "torch"),
         ("graph-fused-norm", "safe", "safe_streaming", "eager", "torch"),
@@ -212,7 +212,42 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
             "torch",
         ),
         (
+            "mixed-fp16-cudnn",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "mixed-fp16-core-efficient",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "mixed-fp16-core-efficient-triton-norm",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "mixed-fp16-core-cudnn",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
             "graph-mixed-fp16-efficient",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "graph-mixed-fp16-efficient-compiled-norm",
             "safe",
             "safe_streaming",
             "eager",
@@ -263,6 +298,36 @@ def test_module_transform_invalidates_cached_runtime_state() -> None:
     assert solution._cuda_graph_replay is None
     assert solution._runtime_plan is None
     assert solution._dispatch_signature is None
+
+
+def test_execution_plan_cache_tracks_cudnn_sdpa_runtime_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    inputs = torch.zeros(2, 4, 8)
+    runtime = {"cudnn": False}
+    resolutions: list[bool] = []
+    original_resolve = solution._execution_plan
+
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "cudnn_sdp_enabled",
+        lambda: runtime["cudnn"],
+    )
+
+    def counted_resolve(value, valid_mask):  # type: ignore[no-untyped-def]
+        resolutions.append(runtime["cudnn"])
+        return original_resolve(value, valid_mask)
+
+    monkeypatch.setattr(solution, "_execution_plan", counted_resolve)
+    with torch.inference_mode():
+        solution._cached_execution_plan(inputs, None)
+        solution._cached_execution_plan(inputs, None)
+        runtime["cudnn"] = True
+        solution._cached_execution_plan(inputs, None)
+
+    assert resolutions == [False, True]
 
 
 def test_execution_observation_does_not_bypass_the_graph_wrapper(
@@ -354,6 +419,56 @@ def test_execution_observation_reports_complete_layer_coverage() -> None:
     }
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_mixed_cudnn_policy_reports_the_backend_that_passed_comparator() -> None:
+    if not torch.backends.cudnn.is_available():
+        pytest.skip("cuDNN is unavailable")
+    solution_module = load_solution_module(PROJECT_ROOT)
+    config = official.TransformerConfig(
+        batch_size=1,
+        seq_len=1024,
+        d_model=64,
+        num_heads=1,
+        ffn_dim=64,
+        num_layers=1,
+        causal=True,
+    )
+    torch.manual_seed(2031)
+    baseline = official.BaselineTransformer(config).eval().cuda()
+    solution = solution_module.UserOptimizedTransformer(config).eval().cuda()
+    solution_module.copy_model_weights(baseline, solution, strict=True)
+    solution.configure_runtime_policy(policy="mixed-fp16-cudnn")
+    solution.set_execution_observation(True)
+    inputs = torch.randn(1, 1024, 64, device="cuda")
+    valid_mask = torch.ones(1, 1024, dtype=torch.bool, device="cuda")
+    input_snapshot = inputs.clone()
+    mask_snapshot = valid_mask.clone()
+
+    with torch.inference_mode():
+        reference = baseline(inputs, valid_mask)
+        actual = solution(inputs, valid_mask)
+
+    comparison = official.compare_outputs(
+        reference,
+        actual,
+        rtol=0.02,
+        atol=0.002,
+    )
+    path = solution.describe_execution_path()
+    assert comparison.passed
+    assert torch.equal(inputs, input_snapshot)
+    assert torch.equal(valid_mask, mask_snapshot)
+    assert path["selected_policy"] == "mixed-fp16-cudnn"
+    assert path["attention_backend"] == "mixed_fp16_cudnn"
+    assert path["observed_execution"] == {
+        "attention_backends": ["mixed_fp16_cudnn"],
+        "residual_norm_backends": ["torch"],
+        "expected_layers": 1,
+        "complete": True,
+    }
+
+
 def test_graph_policy_fails_clearly_under_torch_compile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -376,13 +491,13 @@ def test_cuda_graph_replay_rejects_a_second_signature_without_recapture() -> Non
         replay.run(lambda value, _mask: value, torch.zeros(2, 4, 8), None)
 
 
-def test_dispatch_is_the_default_and_falls_back_to_auto() -> None:
+def test_dispatch_is_the_default_and_falls_back_to_eager_sdpa() -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
 
     path = solution.describe_execution_path()
 
     assert path["requested_policy"] == "dispatch"
-    assert path["selected_policy"] == "auto"
-    assert path["dispatch_policy"] == "auto"
+    assert path["selected_policy"] == "eager-sdpa"
+    assert path["dispatch_policy"] == "eager-sdpa"
     assert path["route_origin"] == "fallback"

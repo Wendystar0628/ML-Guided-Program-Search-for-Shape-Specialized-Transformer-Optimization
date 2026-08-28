@@ -22,7 +22,7 @@ _GRAPH_REPEATS = 64
 _MIN_COPY_BYTES = 64 * 1024 * 1024
 _MAX_COPY_BYTES = 256 * 1024 * 1024
 _COPY_REPEATS = 16
-_GEMM_DIMENSION = 1024
+_GEMM_DIMENSIONS = (2048, 4096)
 _GEMM_REPEATS = 32
 _SOFTMAX_ROWS = 2048
 _SOFTMAX_COLUMNS = 1024
@@ -170,6 +170,7 @@ def _hardware_profile(device: torch.device) -> dict[str, Any]:
             "efficient_sdpa_enabled": bool(
                 torch.backends.cuda.mem_efficient_sdp_enabled()
             ),
+            "cudnn_sdpa_enabled": bool(torch.backends.cuda.cudnn_sdp_enabled()),
         },
     }
     if device.type != "cuda":
@@ -400,14 +401,13 @@ def _device_copy_anchor(device: torch.device) -> dict[str, Any]:
     }
 
 
-def _gemm_anchor(device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
-    dtype_name = str(dtype).removeprefix("torch.")
-    if dtype == torch.bfloat16:
-        bf16_supported = getattr(torch.cuda, "is_bf16_supported", None)
-        if callable(bf16_supported) and not bf16_supported():
-            return _unavailable("bfloat16_not_supported")
+def _measure_square_gemm(
+    device: torch.device,
+    dtype: torch.dtype,
+    dimension: int,
+) -> dict[str, float | int]:
+    """Measure one aligned square GEMM candidate for the compute roof."""
 
-    dimension = _GEMM_DIMENSION
     left = torch.ones((dimension, dimension), device=device, dtype=dtype)
     right = torch.ones_like(left)
     output = torch.empty_like(left)
@@ -422,16 +422,43 @@ def _gemm_anchor(device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
         repeats=_GEMM_REPEATS,
     )
     flops = 2.0 * dimension**3
+    return {
+        "dimension": dimension,
+        "latency_ms": latency_ms,
+        "tflops": flops / (latency_ms * 1_000_000_000.0),
+    }
+
+
+def _gemm_anchor(device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
+    dtype_name = str(dtype).removeprefix("torch.")
+    if dtype == torch.bfloat16:
+        bf16_supported = getattr(torch.cuda, "is_bf16_supported", None)
+        if callable(bf16_supported) and not bf16_supported():
+            return _unavailable("bfloat16_not_supported")
+
+    measurements: list[dict[str, float | int]] = []
+    last_error: Exception | None = None
+    for dimension in _GEMM_DIMENSIONS:
+        try:
+            measurements.append(_measure_square_gemm(device, dtype, dimension))
+        except Exception as exc:  # noqa: BLE001 - retain a smaller valid candidate.
+            last_error = exc
+    if not measurements:
+        if last_error is None:
+            raise RuntimeError("GEMM roof search produced no measurements")
+        raise last_error
+
+    winner = max(measurements, key=lambda item: float(item["tflops"]))
     result: dict[str, Any] = {
         "available": True,
-        "method": "square_torch_mm",
+        "method": "saturated_square_torch_mm",
         "dtype": dtype_name,
-        "dimension": dimension,
+        "dimension": winner["dimension"],
         "repeats_per_round": _GEMM_REPEATS,
         "rounds": _ANCHOR_ROUNDS,
         "matmul_precision": torch.get_float32_matmul_precision(),
-        "latency_ms": latency_ms,
-        "tflops": flops / (latency_ms * 1_000_000_000.0),
+        "latency_ms": winner["latency_ms"],
+        "tflops": winner["tflops"],
     }
     if dtype == torch.float32:
         result["tf32_allowed"] = bool(torch.backends.cuda.matmul.allow_tf32)

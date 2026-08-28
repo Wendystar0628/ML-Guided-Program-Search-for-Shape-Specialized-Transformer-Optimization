@@ -22,7 +22,8 @@ from runner.contracts import (
 
 RunKind = Literal["benchmark", "profile", "probe"]
 RunTarget = Literal["baseline", "solution"]
-RUN_RESULT_SCHEMA_VERSION = 5
+ComparisonMode = Literal["baseline_only", "paired", "target_only"]
+RUN_RESULT_SCHEMA_VERSION = 6
 EXECUTION_PATH_STRING_FIELDS = (
     "requested_policy",
     "selected_policy",
@@ -58,10 +59,60 @@ class WorkerRequestDocument(TypedDict, total=False):
     protocol: dict[str, Any]
     device: str
     target: RunTarget
+    comparison_mode: ComparisonMode
     solution_policy: str
     probe_mode: str
     matmul_precision: str
     allow_tf32: bool
+
+
+class StreamedScheduleDocument(TypedDict, total=False):
+    timing_microbatch_size: int
+    microbatch_count: int
+    passed: bool
+    forward_median_ms: float
+    estimated_logical_batch_ms: float
+    failure_kind: str
+    error: str
+
+
+class StreamedCandidateScreeningDocument(TypedDict, total=False):
+    policy: str
+    comparator_passed: bool
+    failed_elements: int
+    max_abs_error: float
+    attention_backend: str
+    timing_schedules: list[StreamedScheduleDocument]
+    error: str
+
+
+class StreamedSelectionDocument(TypedDict, total=False):
+    method: str
+    policy: str
+    timing_microbatch_size: int
+    microbatch_count: int
+    estimated_logical_batch_ms: float
+    evidence_sha256: str
+
+
+class WorkloadExecutionDocument(TypedDict, total=False):
+    mode: str
+    microbatch_size: int
+    validation_microbatch_size: int
+    timing_microbatch_candidates: list[int]
+    timing_microbatch_size: int
+    microbatch_count: int
+    microbatches_per_sample: int
+    completed_logical_batches: int
+    completed_microbatches: int
+    warmup_microbatches: int
+    end_to_end_microbatches: int
+    estimated_dense_attention_bytes: int
+    reference_kind: str
+    reference_scope: str
+    validation_level: str
+    selection: StreamedSelectionDocument
+    candidate_screening: list[StreamedCandidateScreeningDocument]
 
 
 class WorkerResponseDocument(TypedDict, total=False):
@@ -75,6 +126,7 @@ class WorkerResponseDocument(TypedDict, total=False):
     profile: dict[str, Any] | None
     probe: dict[str, Any] | None
     execution_path: ExecutionPathDocument | None
+    workload_execution: WorkloadExecutionDocument | None
     failure: dict[str, Any] | None
 
 
@@ -86,6 +138,11 @@ class CorrectnessDocument(TypedDict, total=False):
     max_relative_error: float
     diagnostic: str
     skipped: str
+    reference_kind: str
+    reference_scope: str
+    validation_level: str
+    compared_elements: int
+    reference_latency_ms: float
 
 
 class ExecutionPathDocument(TypedDict, total=False):
@@ -110,11 +167,24 @@ class TimingDocument(TypedDict, total=False):
 
 
 class BenchmarkPerformanceDocument(TypedDict, total=False):
+    comparison_mode: ComparisonMode
     timer: str
     sample_count: int
     baseline: TimingDocument
     target: TimingDocument
     speedup: float
+    useful_matmul_flops: int
+    attention_matmul_flops: int
+    projection_ffn_matmul_flops: int
+    attention_flops_fraction: float
+    achieved_tflops: float
+    flops_convention: str
+    estimated_logical_operator_bytes: int
+    logical_operator_arithmetic_intensity_flops_per_byte: float
+    estimated_logical_operator_traffic_gbps: float
+    logical_operator_traffic_scope: str
+    peak_device_allocated_bytes: int
+    end_to_end_ms: float
 
 
 @dataclass(frozen=True)
@@ -128,6 +198,7 @@ class WorkerRequest:
     variant: RunVariant | None = None
     protocol: MeasurementProtocol | None = None
     target: RunTarget | None = None
+    comparison_mode: ComparisonMode | None = None
     solution_policy: str | None = None
     probe_mode: str | None = None
     matmul_precision: str | None = None
@@ -158,6 +229,20 @@ class WorkerRequest:
             raise ContractError("worker request protocol must be a MeasurementProtocol")
         if self.target not in {"baseline", "solution"}:
             raise ContractError(f"unsupported {self.run_kind} target: {self.target!r}")
+        if self.run_kind == "benchmark":
+            expected_modes = (
+                {"baseline_only"}
+                if self.target == "baseline"
+                else {"paired", "target_only"}
+            )
+            if self.comparison_mode not in expected_modes:
+                choices = ", ".join(sorted(expected_modes))
+                raise ContractError(
+                    f"benchmark target={self.target!r} requires comparison_mode "
+                    f"in {{{choices}}}"
+                )
+        elif self.comparison_mode is not None:
+            raise ContractError("profile requests do not accept comparison_mode")
         if self.solution_policy is not None and (
             not isinstance(self.solution_policy, str)
             or not self.solution_policy.strip()
@@ -216,9 +301,12 @@ class WorkerRequest:
             "protocol",
             "device",
             "target",
+            "comparison_mode",
             "solution_policy",
         }
-        required = allowed - {"solution_policy"}
+        required = allowed - {"solution_policy", "comparison_mode"}
+        if run_kind == "benchmark":
+            required.add("comparison_mode")
         missing = sorted(required - set(value))
         extra = sorted(set(value) - allowed)
         if missing or extra:
@@ -250,6 +338,14 @@ class WorkerRequest:
             not isinstance(solution_policy, str) or not solution_policy.strip()
         ):
             raise ContractError("solution_policy must be a non-empty string")
+        raw_comparison_mode = value.get("comparison_mode")
+        comparison_mode: ComparisonMode | None
+        if raw_comparison_mode is None:
+            comparison_mode = None
+        elif raw_comparison_mode in {"baseline_only", "paired", "target_only"}:
+            comparison_mode = raw_comparison_mode
+        else:
+            raise ContractError(f"unsupported comparison_mode: {raw_comparison_mode!r}")
         return cls(
             run_kind=run_kind,
             device=device,
@@ -258,6 +354,7 @@ class WorkerRequest:
             variant=RunVariant.from_dict(raw_variant),
             protocol=protocol,
             target=target,
+            comparison_mode=comparison_mode,
             solution_policy=solution_policy,
         )
 
@@ -288,6 +385,8 @@ class WorkerRequest:
             protocol=self.protocol.as_dict(),
             target=self.target,
         )
+        if self.comparison_mode is not None:
+            document["comparison_mode"] = self.comparison_mode
         if self.solution_policy is not None:
             document["solution_policy"] = self.solution_policy
         return document
@@ -317,9 +416,10 @@ class TimingStats:
 
 @dataclass(frozen=True)
 class BenchmarkPerformance:
+    comparison_mode: ComparisonMode
     timer: str
     sample_count: int
-    baseline: TimingStats
+    baseline: TimingStats | None
     target: TimingStats | None
     speedup: float | None
 
@@ -346,6 +446,11 @@ def compact_correctness(value: Any) -> CorrectnessDocument | None:
             "max_relative_error",
             "diagnostic",
             "skipped",
+            "reference_kind",
+            "reference_scope",
+            "validation_level",
+            "compared_elements",
+            "reference_latency_ms",
         )
         if value.get(key) is not None
     }
@@ -371,26 +476,36 @@ def _compact_timing(value: Any) -> TimingDocument | None:
 def compact_performance(
     value: Any,
     target: str,
+    comparison_mode: ComparisonMode,
 ) -> BenchmarkPerformanceDocument | None:
     if not isinstance(value, Mapping):
         return None
     baseline_source = value.get("baseline")
     baseline = _compact_timing(baseline_source)
-    if baseline is None:
-        return None
+    target_source = value.get("target")
+    measured = _compact_timing(target_source)
+    sample_source = (
+        baseline_source if comparison_mode == "baseline_only" else target_source
+    )
     compact: BenchmarkPerformanceDocument = {
+        "comparison_mode": comparison_mode,
         "timer": value.get("timer"),
-        "sample_count": baseline_source.get("sample_count")
-        if isinstance(baseline_source, Mapping)
+        "sample_count": sample_source.get("sample_count")
+        if isinstance(sample_source, Mapping)
         else None,
-        "baseline": baseline,
     }
-    if target == "solution":
-        measured = _compact_timing(value.get("target"))
-        if measured is not None:
-            compact["target"] = measured
-        if value.get("speedup") is not None:
-            compact["speedup"] = value["speedup"]
+    if baseline is not None:
+        compact["baseline"] = baseline
+    if measured is not None:
+        compact["target"] = measured
+    if value.get("speedup") is not None:
+        compact["speedup"] = value["speedup"]
+    for key in (
+        "peak_device_allocated_bytes",
+        "end_to_end_ms",
+    ):
+        if value.get(key) is not None:
+            compact[key] = value[key]
     return compact
 
 
@@ -455,10 +570,95 @@ def validate_execution_path(value: Any) -> str | None:
     return None
 
 
+def validate_workload_execution(value: Any) -> str | None:
+    """Validate the runtime schedule identity for streamed benchmarks."""
+
+    if not isinstance(value, Mapping):
+        return None
+    mode = value.get("mode")
+    if mode != "batch_streamed":
+        return None if mode == "resident" else "invalid_workload_execution_mode"
+
+    validation_size = value.get("validation_microbatch_size")
+    if validation_size != 1:
+        return "invalid_validation_microbatch_size"
+    candidates = value.get("timing_microbatch_candidates")
+    if (
+        not isinstance(candidates, list)
+        or not candidates
+        or any(
+            isinstance(item, bool) or not isinstance(item, int) or item <= 0
+            for item in candidates
+        )
+        or len(candidates) != len(set(candidates))
+    ):
+        return "invalid_timing_microbatch_candidates"
+    timing_size = value.get("timing_microbatch_size")
+    if timing_size not in candidates:
+        return "selected_timing_microbatch_is_not_a_candidate"
+    microbatch_count = value.get("microbatch_count")
+    if (
+        isinstance(microbatch_count, bool)
+        or not isinstance(microbatch_count, int)
+        or microbatch_count <= 0
+    ):
+        return "invalid_streamed_microbatch_count"
+
+    selection = value.get("selection")
+    if not isinstance(selection, Mapping):
+        return "missing_streamed_selection"
+    if selection.get("method") != "runtime_policy_and_microbatch_screen":
+        return "invalid_streamed_selection_method"
+    policy = selection.get("policy")
+    if not isinstance(policy, str) or not policy:
+        return "missing_streamed_selection_policy"
+    if selection.get("timing_microbatch_size") != timing_size:
+        return "streamed_selection_microbatch_mismatch"
+    if selection.get("microbatch_count") != microbatch_count:
+        return "streamed_selection_count_mismatch"
+    if finite_positive(selection.get("estimated_logical_batch_ms")) is None:
+        return "invalid_streamed_selection_estimate"
+    digest = selection.get("evidence_sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        return "invalid_streamed_selection_digest"
+
+    screening = value.get("candidate_screening")
+    if not isinstance(screening, list) or not screening:
+        return "missing_streamed_candidate_screening"
+    selected_observations = [
+        item
+        for item in screening
+        if isinstance(item, Mapping)
+        and item.get("policy") == policy
+        and item.get("comparator_passed") is True
+    ]
+    if len(selected_observations) != 1:
+        return "selected_streamed_candidate_is_not_comparator_valid"
+    schedules = selected_observations[0].get("timing_schedules")
+    if not isinstance(schedules, list):
+        return "missing_selected_streamed_schedules"
+    selected_schedules = [
+        item
+        for item in schedules
+        if isinstance(item, Mapping)
+        and item.get("timing_microbatch_size") == timing_size
+        and item.get("microbatch_count") == microbatch_count
+        and item.get("passed") is True
+    ]
+    if len(selected_schedules) != 1:
+        return "selected_streamed_schedule_is_not_measured"
+    return None
+
+
 def validate_benchmark_performance(
     value: Any,
     *,
     target: str,
+    comparison_mode: ComparisonMode,
     repeats: Any,
     rounds: Any,
     expected_timer: str,
@@ -474,6 +674,8 @@ def validate_benchmark_performance(
         return None, "invalid_protocol_counts"
     if not isinstance(value, Mapping):
         return None, "missing_performance"
+    if value.get("comparison_mode") != comparison_mode:
+        return None, "comparison_mode_mismatch"
     timer = value.get("timer")
     if timer != expected_timer:
         return (
@@ -488,13 +690,59 @@ def validate_benchmark_performance(
         or sample_count != expected_count
     ):
         return None, "sample_count_mismatch"
+    if comparison_mode == "baseline_only":
+        if target != "baseline":
+            return None, "comparison_mode_target_mismatch"
+        if "target" in value:
+            return None, "baseline_only_has_target"
+        if "speedup" in value:
+            return None, "baseline_only_has_speedup"
+        baseline_median, error = validate_timing_side(value.get("baseline"), "baseline")
+        if error is not None:
+            return None, error
+        assert baseline_median is not None
+        baseline = TimingStats.from_dict(value["baseline"], side="baseline")
+        return (
+            BenchmarkPerformance(
+                comparison_mode,
+                timer,
+                sample_count,
+                baseline,
+                None,
+                None,
+            ),
+            None,
+        )
+
+    if target != "solution":
+        return None, "comparison_mode_target_mismatch"
+    if comparison_mode == "target_only":
+        if "baseline" in value:
+            return None, "target_only_has_baseline"
+        if "speedup" in value:
+            return None, "target_only_has_speedup"
+        target_median, error = validate_timing_side(value.get("target"), "target")
+        if error is not None:
+            return None, error
+        assert target_median is not None
+        measured = TimingStats.from_dict(value["target"], side="target")
+        return (
+            BenchmarkPerformance(
+                comparison_mode,
+                timer,
+                sample_count,
+                None,
+                measured,
+                None,
+            ),
+            None,
+        )
+
     baseline_median, error = validate_timing_side(value.get("baseline"), "baseline")
     if error is not None:
         return None, error
     assert baseline_median is not None
     baseline = TimingStats.from_dict(value["baseline"], side="baseline")
-    if target == "baseline":
-        return BenchmarkPerformance(timer, sample_count, baseline, None, None), None
 
     target_median, error = validate_timing_side(value.get("target"), "target")
     if error is not None:
@@ -514,6 +762,7 @@ def validate_benchmark_performance(
     measured = TimingStats.from_dict(value["target"], side="target")
     return (
         BenchmarkPerformance(
+            comparison_mode,
             timer,
             sample_count,
             baseline,
@@ -553,6 +802,10 @@ def worker_response_error(response: Mapping[str, Any], run_kind: str) -> str | N
         path_error = validate_execution_path(response.get("execution_path"))
         if path_error is not None:
             return f"invalid execution path: {path_error}"
+    if run_kind == "benchmark":
+        workload_error = validate_workload_execution(response.get("workload_execution"))
+        if workload_error is not None:
+            return f"invalid workload execution: {workload_error}"
     return None
 
 

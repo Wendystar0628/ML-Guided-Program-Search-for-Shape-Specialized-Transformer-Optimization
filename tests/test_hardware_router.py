@@ -9,13 +9,18 @@ from runner.hardware_router import analyze_workload, build_routing_plan
 from tests.support.runner_fixtures import official_shape
 
 DEPLOYABLE_CANDIDATES = (
-    "eager-auto",
+    "eager-sdpa",
     "graph",
     "graph-fused-norm",
     "mixed-fp16-efficient",
+    "mixed-fp16-cudnn",
+    "mixed-fp16-core-efficient",
+    "mixed-fp16-core-efficient-triton-norm",
+    "mixed-fp16-core-cudnn",
     "graph-mixed-fp16-efficient",
+    "graph-mixed-fp16-efficient-compiled-norm",
 )
-ALL_CANDIDATES = ("eager-auto", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
+ALL_CANDIDATES = ("eager-sdpa", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
 
 
 def _ada_profile() -> dict[str, object]:
@@ -28,6 +33,7 @@ def _ada_profile() -> dict[str, object]:
         "cuda_graph_available": True,
         "triton_available": True,
         "efficient_sdpa_enabled": True,
+        "cudnn_sdpa_enabled": True,
         "total_memory_bytes": 16 * 1024**3,
         "free_memory_bytes": 16 * 1024**3,
         "sm_count": 76,
@@ -75,7 +81,7 @@ def test_small_width128_shapes_prioritize_graph_fused_norm(case_id: str) -> None
     assert plan["candidate_order"] == [
         "graph-fused-norm",
         "graph",
-        "eager-auto",
+        "eager-sdpa",
     ]
     assert plan["feasibility"]["baseline_executable"] is True
     assert plan["routing_signals"]["launch_dominant"] is True
@@ -127,9 +133,9 @@ def test_measured_s128_family_prioritizes_graph_mixed_attention(
     )
 
     assert plan["candidate_order"] == [
+        "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-efficient",
-        "graph",
-        "eager-auto",
+        "eager-sdpa",
     ]
 
 
@@ -143,8 +149,29 @@ def test_extreme_batch_does_not_receive_a_negative_graph_prior() -> None:
     )
 
     assert plan["feasibility"]["baseline_executable"] is True
-    assert plan["candidate_order"] == ["eager-auto"]
+    assert plan["candidate_order"] == [
+        "mixed-fp16-core-efficient-triton-norm",
+        "mixed-fp16-core-efficient",
+        "eager-sdpa",
+    ]
     assert "graph" in plan["capability_rejections"]
+
+
+@pytest.mark.parametrize("case_id", ["official_08", "official_13"])
+def test_dense_mixed_core_families_prioritize_full_fp16_compute(
+    case_id: str,
+) -> None:
+    plan = build_routing_plan(
+        official_shape(case_id),
+        RunVariant(),
+        _ada_profile(),
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["candidate_order"][0] == "mixed-fp16-core-efficient"
+    reasons = " ".join(plan["selection_reasons"]["mixed-fp16-core-efficient"])
+    assert "projection/FFN share" in reasons
 
 
 def test_negative_prior_still_retains_the_current_incumbent() -> None:
@@ -157,7 +184,7 @@ def test_negative_prior_still_retains_the_current_incumbent() -> None:
         required_candidate_ids=("graph",),
     )
 
-    assert "eager-auto" in plan["candidate_order"]
+    assert "eager-sdpa" in plan["candidate_order"]
     assert "graph" in plan["candidate_order"]
     assert "current calibrated incumbent" in plan["selection_reasons"]["graph"][-1]
 
@@ -189,7 +216,7 @@ def test_diagnostic_safe_candidate_is_never_ranked_for_deployment() -> None:
     assert "diagnostic-only" in plan["capability_rejections"]["eager-safe"]
 
 
-def test_case_14_is_rejected_before_candidate_ranking() -> None:
+def test_case_14_ranks_only_batch_streamed_memory_safe_candidates() -> None:
     plan = build_routing_plan(
         official_shape("official_14"),
         RunVariant(),
@@ -197,12 +224,34 @@ def test_case_14_is_rejected_before_candidate_ranking() -> None:
         DEPLOYABLE_CANDIDATES,
     )
 
-    assert plan["candidate_order"] == []
-    assert plan["decision_scope"] == "unsupported"
-    assert plan["requires_full_workload_measurement"] is False
+    assert plan["candidate_order"] == [
+        "mixed-fp16-core-efficient",
+        "mixed-fp16-core-cudnn",
+        "mixed-fp16-efficient",
+    ]
+    assert plan["decision_scope"] == "candidate_order_only"
+    assert plan["requires_full_workload_measurement"] is True
+    assert plan["bottleneck_class"] == "memory_capacity"
     assert plan["feasibility"]["baseline_executable"] is False
     assert plan["feasibility"]["estimated_peak_to_device_memory"] > 1000
-    assert set(plan["capability_rejections"]) == set(DEPLOYABLE_CANDIDATES)
+    assert "eager-sdpa" in plan["capability_rejections"]
+    assert "graph" in plan["capability_rejections"]
+    assert "batch-streamed" in plan["capability_rejections"]["eager-sdpa"]
+
+
+def test_case_14_keeps_efficient_mixed_core_when_cudnn_is_unavailable() -> None:
+    profile = _ada_profile()
+    profile["cudnn_sdpa_enabled"] = False
+
+    plan = build_routing_plan(
+        official_shape("official_14"),
+        RunVariant(),
+        profile,
+        DEPLOYABLE_CANDIDATES,
+    )
+
+    assert plan["candidate_order"][0] == "mixed-fp16-core-efficient"
+    assert "mixed-fp16-core-cudnn" in plan["capability_rejections"]
 
 
 def test_cpu_profile_rejects_cuda_candidates_before_measurement() -> None:
@@ -230,7 +279,7 @@ def test_router_never_selects_more_than_two_challengers() -> None:
     )
 
     assert len(plan["candidate_order"]) == 3
-    assert "eager-auto" in plan["candidate_order"]
+    assert "eager-sdpa" in plan["candidate_order"]
 
 
 @pytest.mark.parametrize("limit", [0, -1, True])

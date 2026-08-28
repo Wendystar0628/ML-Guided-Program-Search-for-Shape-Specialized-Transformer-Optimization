@@ -122,14 +122,17 @@ def test_solution_hash_includes_shared_runtime_contracts(tmp_path: Path) -> None
     (solution_root / "transformer.py").write_text("VALUE = 1\n", encoding="utf-8")
     policy_path = tmp_path / "policy_registry.py"
     route_path = tmp_path / "route_contracts.py"
-    policy_path.write_text("POLICIES = {'auto'}\n", encoding="utf-8")
+    policy_path.write_text("POLICIES = {'eager-sdpa'}\n", encoding="utf-8")
     route_path.write_text("ROUTE_SCHEMA = 1\n", encoding="utf-8")
     original_implementation = solution_implementation_hash(solution_root)
 
-    policy_path.write_text("POLICIES = {'auto', 'graph'}\n", encoding="utf-8")
+    policy_path.write_text(
+        "POLICIES = {'eager-sdpa', 'graph'}\n",
+        encoding="utf-8",
+    )
     assert solution_implementation_hash(solution_root) != original_implementation
 
-    policy_path.write_text("POLICIES = {'auto'}\n", encoding="utf-8")
+    policy_path.write_text("POLICIES = {'eager-sdpa'}\n", encoding="utf-8")
     route_path.write_text("ROUTE_SCHEMA = 2\n", encoding="utf-8")
     assert solution_implementation_hash(solution_root) != original_implementation
 

@@ -70,7 +70,7 @@ def _merge_catalog_tables(
             route_provenance.append((path.resolve(), digest))
         digests.append(digest)
     return (
-        RouteTable(default_policy="auto", routes=tuple(routes)),
+        RouteTable(default_policy="eager-sdpa", routes=tuple(routes)),
         tuple(digests),
         tuple(route_provenance),
         tuple(ignored),

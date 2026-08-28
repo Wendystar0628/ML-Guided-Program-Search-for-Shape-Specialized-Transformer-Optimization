@@ -49,7 +49,7 @@ def test_runtime_identity_drift_falls_back_closed(tmp_path: Path) -> None:
 
     resolution = _resolve(OfflineDispatcher(route_path), device_name="Other GPU")
 
-    assert resolution.policy == "auto"
+    assert resolution.policy == "eager-sdpa"
     assert resolution.origin == "fallback"
 
 
@@ -73,15 +73,17 @@ def test_runtime_policy_drift_falls_back_closed(tmp_path: Path) -> None:
         allow_tf32=identity["allow_tf32"],
     )
 
-    assert resolution.policy == "auto"
+    assert resolution.policy == "eager-sdpa"
     assert resolution.origin == "fallback"
 
 
-def test_missing_catalog_has_a_deterministic_auto_fallback(tmp_path: Path) -> None:
+def test_missing_catalog_has_a_deterministic_eager_sdpa_fallback(
+    tmp_path: Path,
+) -> None:
     dispatcher = OfflineDispatcher(catalog_root=tmp_path / "missing")
 
     resolution = _resolve(dispatcher)
 
-    assert resolution.policy == "auto"
+    assert resolution.policy == "eager-sdpa"
     assert resolution.origin == "fallback"
     assert dispatcher.source is None

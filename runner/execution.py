@@ -2,18 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
 import math
 import statistics
-import sys
-import tempfile
 import time
-import types
-import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import torch
@@ -27,63 +21,26 @@ from runner.contracts import (
     RunVariant,
     TransformerShape,
 )
+from runner.model_runtime import (
+    build_solution as _build_solution,
+)
+from runner.model_runtime import (
+    config_for_shape as _config_for_shape,
+)
+from runner.model_runtime import (
+    configure_runtime as _configure_runtime,
+)
+from runner.model_runtime import (
+    load_solution_source as _load_solution_source,
+)
 from runner.probe import collect_environment
-from runner.resource_guard import ResourceGuardError, ensure_local_benchmark_allowed
 from runner.result_contracts import WorkerRequest
+from runner.streamed_execution import execute_streamed_benchmark
+from runner.workload_execution import plan_workload_execution
 
 _CUDA_CONDITIONING_SECONDS = 0.5
 _CUDA_CONDITIONING_MATRIX_SIZE = 2048
 _CUDA_CONDITIONING_BATCH = 32
-
-
-def load_solution_module(project_root: Path) -> ModuleType:
-    """Load the current Solution without depending on the caller's working directory."""
-
-    solution_root = (project_root / "solution").resolve()
-    source_path = solution_root / "transformer.py"
-    if not source_path.is_file():
-        raise ContractError(f"Solution entry file is missing: {source_path}")
-
-    package_name = f"_benchmark_solution_{uuid.uuid4().hex}"
-    bytecode_cache = tempfile.TemporaryDirectory(prefix="solution-bytecode-")
-    previous_pycache_prefix = sys.pycache_prefix
-    previous_dont_write_bytecode = sys.dont_write_bytecode
-    sys.pycache_prefix = bytecode_cache.name
-    sys.dont_write_bytecode = True
-    package = types.ModuleType(package_name)
-    package.__path__ = [str(solution_root)]
-    package.__bytecode_cache__ = bytecode_cache
-    sys.modules[package_name] = package
-    module_name = f"{package_name}.transformer"
-    try:
-        try:
-            module = importlib.import_module(module_name)
-        finally:
-            sys.pycache_prefix = previous_pycache_prefix
-            sys.dont_write_bytecode = previous_dont_write_bytecode
-    except BaseException:
-        for loaded_name in tuple(sys.modules):
-            if loaded_name == package_name or loaded_name.startswith(
-                f"{package_name}."
-            ):
-                sys.modules.pop(loaded_name, None)
-        bytecode_cache.cleanup()
-        raise
-
-    solution_class = getattr(module, "UserOptimizedTransformer", None)
-    if not isinstance(solution_class, type) or not issubclass(
-        solution_class, nn.Module
-    ):
-        for loaded_name in tuple(sys.modules):
-            if loaded_name == package_name or loaded_name.startswith(
-                f"{package_name}."
-            ):
-                sys.modules.pop(loaded_name, None)
-        bytecode_cache.cleanup()
-        raise ContractError(
-            "Solution must export an nn.Module named UserOptimizedTransformer"
-        )
-    return module
 
 
 def _assert_unchanged(name: str, value: torch.Tensor, snapshot: torch.Tensor) -> None:
@@ -314,11 +271,61 @@ def run_performance(
     if not math.isfinite(speedup) or speedup <= 0:
         raise ContractError("speedup must be a finite positive number")
     return {
+        "comparison_mode": "paired",
         "timer": "cuda_event" if device.type == "cuda" else "perf_counter_ns",
         "baseline": baseline_stats,
         "target": solution_stats,
         "speedup": speedup,
     }
+
+
+def _module_cuda_storage_bytes(module: nn.Module, device: torch.device) -> int:
+    """Count unique parameter and buffer storages owned by one CUDA module."""
+
+    storages: set[tuple[int, int]] = set()
+    for tensor in (*module.parameters(), *module.buffers()):
+        if tensor.device != device:
+            continue
+        storage = tensor.untyped_storage()
+        storages.add((int(storage.data_ptr()), int(storage.nbytes())))
+    return sum(size for _pointer, size in storages)
+
+
+def measure_solution_peak_allocated_bytes(
+    baseline: nn.Module,
+    solution: nn.Module,
+    config: official.TransformerConfig,
+    variant: RunVariant,
+    protocol: MeasurementProtocol,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> int | None:
+    """Measure a solution-only deployment peak after paired timing completes.
+
+    The paired worker still owns the reference model. Its disjoint parameter
+    storage is subtracted from the allocator peak so the reported number does
+    not pretend that deploying the optimized Transformer requires both models.
+    """
+
+    if device.type != "cuda":
+        return None
+    baseline_storage_bytes = _module_cuda_storage_bytes(baseline, device)
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+    inputs, valid_mask = official.generate_random_case(
+        config=config,
+        device=device,
+        dtype=dtype,
+        seed=protocol.seed + 200000,
+        padding_ratio=variant.padding_ratio,
+        input_scale=variant.input_scale,
+    )
+    with torch.inference_mode():
+        output = solution(inputs, valid_mask)
+    torch.cuda.synchronize(device)
+    combined_peak = int(torch.cuda.max_memory_allocated(device))
+    del inputs, valid_mask, output
+    return max(combined_peak - baseline_storage_bytes, 0)
 
 
 def run_baseline_performance(
@@ -356,59 +363,10 @@ def run_baseline_performance(
         rounds=protocol.rounds,
     )
     return {
+        "comparison_mode": "baseline_only",
         "timer": "cuda_event" if device.type == "cuda" else "perf_counter_ns",
         "baseline": stats,
     }
-
-
-def _config_for_shape(shape: TransformerShape) -> official.TransformerConfig:
-    config = official.TransformerConfig(
-        batch_size=shape.batch_size,
-        seq_len=shape.seq_len,
-        d_model=shape.d_model,
-        num_heads=shape.num_heads,
-        ffn_dim=shape.ffn_dim,
-        num_layers=shape.num_layers,
-        causal=shape.causal,
-    )
-    config.validate()
-    return config
-
-
-def _configure_runtime(protocol: MeasurementProtocol, device: torch.device) -> None:
-    torch.manual_seed(protocol.seed)
-    torch.set_float32_matmul_precision(protocol.matmul_precision)
-    if device.type == "cuda":
-        torch.cuda.manual_seed_all(protocol.seed)
-        torch.backends.cuda.matmul.allow_tf32 = protocol.allow_tf32
-        torch.backends.cudnn.allow_tf32 = protocol.allow_tf32
-
-
-def _load_solution_source(project_root: Path) -> tuple[ModuleType, str]:
-    source_hash_before_load = solution_implementation_hash(project_root / "solution")
-    solution_module = load_solution_module(project_root)
-    measured_source_hash = solution_implementation_hash(project_root / "solution")
-    if measured_source_hash != source_hash_before_load:
-        raise ContractError("Solution source changed while it was being loaded")
-    return solution_module, measured_source_hash
-
-
-def _build_solution(
-    solution_module: ModuleType,
-    config: official.TransformerConfig,
-    solution_policy: str | None,
-) -> nn.Module:
-    solution = solution_module.UserOptimizedTransformer(config)
-    if solution_policy is None:
-        return solution
-    configure = getattr(solution, "configure_runtime_policy", None)
-    if not callable(configure):
-        raise ContractError(
-            "Solution does not expose configure_runtime_policy() for an explicit "
-            "solution_policy request"
-        )
-    configure(policy=solution_policy)
-    return solution
 
 
 @dataclass(frozen=True)
@@ -492,8 +450,12 @@ def prepare_execution(
         protocol = parsed_request.protocol
         target = parsed_request.target
 
-        stage = "resource_guard"
-        ensure_local_benchmark_allowed(shape)
+        stage = "workload_execution"
+        workload_plan = plan_workload_execution(shape, variant)
+        if workload_plan.is_streamed:
+            raise ContractError(
+                "this request requires the batch-streamed benchmark executor"
+            )
 
         stage = "device"
         device = official.resolve_device(parsed_request.device)
@@ -666,8 +628,8 @@ def _exception_outcome(exc: BaseException, stage: str) -> str:
         return "oom"
     if isinstance(exc, KeyboardInterrupt):
         return "cancelled"
-    if isinstance(exc, ResourceGuardError) or stage in {
-        "resource_guard",
+    if stage in {
+        "workload_execution",
         "device",
         "dtype",
     }:
@@ -720,7 +682,23 @@ def execute_benchmark(
     measured_source_hash: str | None = None
     execution_path: dict[str, Any] | None = None
     try:
-        prepared = prepare_execution(request, expected_run_kind="benchmark")
+        parsed_request = (
+            request
+            if isinstance(request, WorkerRequest)
+            else WorkerRequest.from_dict(request)
+        )
+        assert parsed_request.shape is not None
+        assert parsed_request.variant is not None
+        workload_plan = plan_workload_execution(
+            parsed_request.shape,
+            parsed_request.variant,
+        )
+        if workload_plan.is_streamed:
+            return execute_streamed_benchmark(parsed_request, workload_plan)
+        prepared = prepare_execution(
+            parsed_request,
+            expected_run_kind="benchmark",
+        )
         environment = prepared.environment
         measured_source_hash = prepared.solution_source_sha256
         execution_path = dict(prepared.execution_path)
@@ -752,6 +730,17 @@ def execute_benchmark(
                 prepared.device,
                 prepared.dtype,
             )
+            target_peak = measure_solution_peak_allocated_bytes(
+                prepared.baseline,
+                prepared.target_model,
+                prepared.config,
+                prepared.variant,
+                prepared.protocol,
+                prepared.device,
+                prepared.dtype,
+            )
+            if target_peak is not None:
+                performance["peak_device_allocated_bytes"] = target_peak
         else:
             correctness = {
                 "passed": True,
@@ -783,6 +772,15 @@ def execute_benchmark(
             "correctness": correctness,
             "performance": performance,
             "execution_path": execution_path,
+            "workload_execution": {
+                "mode": "resident",
+                "microbatch_size": prepared.shape.batch_size,
+                "microbatch_count": 1,
+                "completed_microbatches": 1,
+                "reference_kind": "live_baseline",
+                "reference_scope": "full_workload",
+                "validation_level": "official",
+            },
             "failure": None,
         }
     except _PreparationFailure as failure:

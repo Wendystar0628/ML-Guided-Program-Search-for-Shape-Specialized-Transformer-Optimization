@@ -23,6 +23,7 @@ from runner.execution import (
     _validate_profile_execution_path,
     execute_benchmark,
     execute_profile,
+    measure_solution_peak_allocated_bytes,
     prepare_execution,
     run_performance,
 )
@@ -53,6 +54,7 @@ def _request(run_kind: str, protocol: MeasurementProtocol) -> WorkerRequest:
         protocol=protocol,
         device="cpu",
         target="baseline",
+        comparison_mode="baseline_only" if run_kind == "benchmark" else None,
     )
 
 
@@ -67,6 +69,33 @@ def test_solution_graph_rejects_torch_compile() -> None:
 def test_operator_profile_rejects_the_solution_graph_wrapper() -> None:
     with pytest.raises(ContractError, match="hides per-operator"):
         _validate_profile_execution_path({"runtime_wrapper": "cuda_graph"})
+
+
+def test_solution_peak_measurement_is_cuda_only() -> None:
+    config = official.TransformerConfig(
+        batch_size=1,
+        seq_len=2,
+        d_model=4,
+        num_heads=1,
+        ffn_dim=4,
+        num_layers=1,
+        causal=True,
+    )
+    baseline = nn.Identity()
+    solution = nn.Identity()
+
+    assert (
+        measure_solution_peak_allocated_bytes(
+            baseline,
+            solution,
+            config,
+            RunVariant(),
+            MeasurementProtocol(preset="smoke"),
+            torch.device("cpu"),
+            torch.float32,
+        )
+        is None
+    )
 
 
 def test_prepare_execution_returns_one_frozen_shared_context() -> None:
@@ -119,6 +148,7 @@ def test_eager_solution_observation_preserves_execution_mode() -> None:
             ),
             device="cpu",
             target="solution",
+            comparison_mode="paired",
             solution_policy="safe",
         )
     )

@@ -45,6 +45,7 @@ def _run_policy(
         ),
         device="cuda:0",
         target="solution",
+        comparison_mode="paired",
         solution_policy=policy,
     )
     return execute_benchmark(request)
@@ -56,7 +57,7 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
     execution_path = result["execution_path"]
     assert execution_path["selected_policy"] == policy
     candidate_id = {
-        "auto": "eager-auto",
+        "eager-sdpa": "eager-sdpa",
         "safe": "eager-safe",
     }.get(policy, policy)
     candidate = candidate_spec(candidate_id)
@@ -69,12 +70,15 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
 @pytest.mark.parametrize(
     ("case_id", "policy"),
     [
-        ("official_02", "auto"),
+        ("official_02", "eager-sdpa"),
         ("official_02", "safe"),
         ("official_02", "graph"),
         ("official_02", "graph-fused-norm"),
         ("official_13", "mixed-fp16-efficient"),
+        ("official_08", "mixed-fp16-core-efficient"),
+        ("official_06", "mixed-fp16-core-efficient-triton-norm"),
         ("official_07", "graph-mixed-fp16-efficient"),
+        ("official_07", "graph-mixed-fp16-efficient-compiled-norm"),
     ],
 )
 def test_representative_policy_executes_and_passes_the_official_comparator(

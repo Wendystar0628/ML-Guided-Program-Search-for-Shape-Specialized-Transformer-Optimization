@@ -1,0 +1,136 @@
+"""Triton residual-plus-LayerNorm for the measured large-row width-128 family."""
+
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+try:
+    import triton
+    import triton.language as tl
+except ImportError:  # pragma: no cover - exercised by environments without Triton.
+    triton = None
+    tl = None
+
+
+TRITON_RESIDUAL_LAYER_NORM_BACKEND = "triton_residual_layer_norm"
+_WIDTH = 128
+_BLOCK_ROWS = 2
+_MIN_ROWS = 1_000_000
+
+
+if triton is not None and tl is not None:
+
+    @triton.jit
+    def _residual_layer_norm_kernel(
+        value,
+        update,
+        weight,
+        bias,
+        residual,
+        normalized,
+        row_count,
+        eps: tl.constexpr,
+        width: tl.constexpr,
+        block_rows: tl.constexpr,
+    ) -> None:
+        row_start = tl.program_id(0) * block_rows
+        rows = row_start + tl.arange(0, block_rows)[:, None]
+        columns = tl.arange(0, width)[None, :]
+        offsets = rows * width + columns
+        mask = rows < row_count
+
+        summed = tl.load(value + offsets, mask=mask, other=0.0) + tl.load(
+            update + offsets,
+            mask=mask,
+            other=0.0,
+        )
+        mean = tl.sum(summed, axis=1) / width
+        centered = summed - mean[:, None]
+        variance = tl.sum(centered * centered, axis=1) / width
+        reciprocal_std = tl.rsqrt(variance + eps)
+        scale = tl.load(weight + columns)
+        shift = tl.load(bias + columns)
+        output = centered * reciprocal_std[:, None] * scale + shift
+
+        tl.store(residual + offsets, summed, mask=mask)
+        tl.store(normalized + offsets, output, mask=mask)
+
+
+def triton_residual_layer_norm_available() -> bool:
+    """Return whether the optional Triton runtime can load this specialization."""
+
+    return triton is not None and tl is not None
+
+
+def can_use_triton_residual_layer_norm(
+    value: torch.Tensor,
+    update: torch.Tensor,
+    layer_norm: nn.LayerNorm,
+) -> bool:
+    """Return whether the strictly bounded Triton specialization is eligible."""
+
+    if triton is None or tl is None or not isinstance(layer_norm, nn.LayerNorm):
+        return False
+    if torch.is_grad_enabled() or value.device.type != "cuda":
+        return False
+    if value.dtype != torch.float32 or update.dtype != value.dtype:
+        return False
+    if value.shape != update.shape or value.device != update.device:
+        return False
+    if value.ndim < 2 or not value.is_contiguous() or not update.is_contiguous():
+        return False
+    if value.shape[-1] != _WIDTH or value.numel() // _WIDTH < _MIN_ROWS:
+        return False
+    if tuple(layer_norm.normalized_shape) != (_WIDTH,):
+        return False
+    if layer_norm.weight is None or layer_norm.bias is None:
+        return False
+    return all(
+        parameter.device == value.device and parameter.dtype == value.dtype
+        for parameter in (layer_norm.weight, layer_norm.bias)
+    )
+
+
+def triton_residual_layer_norm(
+    value: torch.Tensor,
+    update: torch.Tensor,
+    layer_norm: nn.LayerNorm,
+) -> tuple[torch.Tensor, torch.Tensor, str]:
+    """Run the measured specialization without a silent implementation fallback."""
+
+    if not can_use_triton_residual_layer_norm(value, update, layer_norm):
+        raise RuntimeError(
+            "Triton residual LayerNorm is ineligible for the requested inputs"
+        )
+    assert triton is not None
+    assert layer_norm.weight is not None
+    assert layer_norm.bias is not None
+    row_count = value.numel() // _WIDTH
+    residual = torch.empty_like(value)
+    normalized = torch.empty_like(value)
+    try:
+        _residual_layer_norm_kernel[(triton.cdiv(row_count, _BLOCK_ROWS),)](
+            value,
+            update,
+            layer_norm.weight,
+            layer_norm.bias,
+            residual,
+            normalized,
+            row_count,
+            eps=layer_norm.eps,
+            width=_WIDTH,
+            block_rows=_BLOCK_ROWS,
+            num_warps=_BLOCK_ROWS,
+        )
+    except Exception as exc:
+        raise RuntimeError("Triton residual LayerNorm execution failed") from exc
+    return residual, normalized, TRITON_RESIDUAL_LAYER_NORM_BACKEND
+
+
+__all__ = [
+    "TRITON_RESIDUAL_LAYER_NORM_BACKEND",
+    "can_use_triton_residual_layer_norm",
+    "triton_residual_layer_norm",
+    "triton_residual_layer_norm_available",
+]

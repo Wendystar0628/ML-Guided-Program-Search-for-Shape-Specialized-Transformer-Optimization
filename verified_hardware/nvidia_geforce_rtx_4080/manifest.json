@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "workload_set": {
     "set_id": "official_transformer_v1",
     "sha256": "621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9"
@@ -8,10 +8,10 @@
     "snapshot_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762"
   },
   "solution": {
-    "implementation_sha256": "3a5fdd7533b2897f9cfa614cbdb2447d395362d9a1bd26d976f875a9867c870b"
+    "implementation_sha256": "07882d07b4d1f682ebaa1fc2d8bc1a7a2ff65ab2d9a3740481e4c9499ae34d9a"
   },
   "route_table": {
-    "sha256": "a73028d8e0d371e511dd1915d847e8990896abd98ca51755a552baa5196e65b1"
+    "sha256": "abe29c3fba8efcf2aaf74c5d3177f74e57d2b9fb462fec2a290e14356f9a9b3b"
   },
   "formal": {
     "protocol": {
@@ -50,8 +50,9 @@
       "official_12",
       "official_13"
     ],
-    "excluded_case_ids": [
+    "provisional_case_ids": [
       "official_14"
-    ]
+    ],
+    "excluded_case_ids": []
   }
 }

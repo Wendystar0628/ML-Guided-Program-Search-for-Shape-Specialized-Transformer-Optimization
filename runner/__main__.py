@@ -22,6 +22,10 @@ from runner.contracts import (
     load_workload_set,
     select_transformer_shape,
 )
+from runner.streamed_service import (
+    StreamedBenchmarkRequest,
+    StreamedBenchmarkService,
+)
 from runner.supervisor import (
     run_managed_benchmark,
     run_managed_probe,
@@ -35,6 +39,7 @@ from runner.tuning import (
     candidates_for_shape,
     run_tuning_case,
 )
+from runner.workload_execution import STREAMED_POLICY_SELECTOR, plan_workload_execution
 
 DEFAULT_WORKLOAD_SET = OFFICIAL_WORKLOAD_SET_ID
 DEFAULT_CALIBRATION_SMOKE_LIMIT = 3
@@ -47,11 +52,18 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def _add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_protocol_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_compile_arguments: bool = True,
+) -> None:
     parser.add_argument("--preset", choices=("smoke", "formal"), default="smoke")
     parser.add_argument("--timeout", type=float)
-    parser.add_argument("--compile-baseline", action="store_true")
-    parser.add_argument("--compile-solution", action="store_true")
+    if include_compile_arguments:
+        parser.add_argument("--compile-baseline", action="store_true")
+        parser.add_argument("--compile-solution", action="store_true")
+    else:
+        parser.set_defaults(compile_baseline=False, compile_solution=False)
     parser.add_argument(
         "--compile-mode",
         choices=("default", "reduce-overhead", "max-autotune"),
@@ -136,6 +148,34 @@ def build_parser() -> argparse.ArgumentParser:
     _add_protocol_arguments(benchmark)
     _add_variant_arguments(benchmark)
 
+    streamed = subparsers.add_parser(
+        "benchmark-streamed",
+        help="run memory-bounded shapes independently from the resident sweep",
+    )
+    streamed.add_argument("--workload-set", default=DEFAULT_WORKLOAD_SET)
+    streamed.add_argument(
+        "--case-id",
+        action="append",
+        help=(
+            "streamed case to run; repeat as needed, or omit to discover all "
+            "streamed cases from the workload execution planner"
+        ),
+    )
+    streamed.add_argument("--device", default="cuda:0")
+    streamed.add_argument(
+        "--result-dir",
+        type=Path,
+        help="write streamed run results here (default: results/streamed)",
+    )
+    streamed.add_argument(
+        "--solution-policy",
+        choices=tuple(sorted({STREAMED_POLICY_SELECTOR} | policy_ids())),
+        default=STREAMED_POLICY_SELECTOR,
+        help="screen streamed candidates or select one explicit policy",
+    )
+    _add_protocol_arguments(streamed, include_compile_arguments=False)
+    _add_variant_arguments(streamed)
+
     profile = subparsers.add_parser(
         "profile", help="collect a compact top-operation profile for one case"
     )
@@ -215,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CALIBRATION_SMOKE_LIMIT,
         help=(
             "maximum deployable candidates in the Smoke screening pool, "
-            "including eager-auto and the current incumbent (default: 3)"
+            "including eager-sdpa and the current incumbent (default: 3)"
         ),
     )
     calibrate.add_argument(
@@ -280,14 +320,24 @@ def _print_run_summary(result: dict[str, Any], result_path: Path) -> None:
         print(f"correctness: {'PASS' if correctness['passed'] else 'FAIL'}")
     performance = result.get("performance")
     if performance is not None and result["outcome"] == "success":
-        baseline = performance["baseline"]["median_ms"]
-        print(f"baseline median: {baseline:.6f} ms")
+        baseline_record = performance.get("baseline")
+        if isinstance(baseline_record, dict):
+            print(f"baseline median: {baseline_record['median_ms']:.6f} ms")
         target_record = performance.get("target")
         if isinstance(target_record, dict):
             print(f"target median: {target_record['median_ms']:.6f} ms")
         speedup = performance.get("speedup")
         if speedup is not None:
             print(f"observed speedup: {speedup:.4f}x")
+        achieved_tflops = performance.get("achieved_tflops")
+        if isinstance(achieved_tflops, (int, float)):
+            print(f"useful matmul throughput: {achieved_tflops:.3f} TFLOP/s")
+        peak_bytes = performance.get("peak_device_allocated_bytes")
+        if isinstance(peak_bytes, int):
+            print(f"peak device allocation: {peak_bytes / 1024**3:.3f} GiB")
+        end_to_end_ms = performance.get("end_to_end_ms")
+        if isinstance(end_to_end_ms, (int, float)):
+            print(f"host-streamed end-to-end: {end_to_end_ms:.3f} ms")
     profile = result.get("profile")
     if profile is not None and result["outcome"] == "success":
         print(f"profile iterations: {profile['iterations']}")
@@ -333,6 +383,11 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
     if args.case_id is not None:
         workload_set = load_workload_set(project_root, args.workload_set)
         shape = select_transformer_shape(workload_set, args.case_id)
+        if plan_workload_execution(shape, variant).is_streamed:
+            raise ContractError(
+                f"{shape.case_id} uses batch-streamed execution; run "
+                "benchmark-streamed instead"
+            )
         result, result_path = run_managed_benchmark(
             project_root,
             workload_set_id=args.workload_set,
@@ -373,6 +428,42 @@ def _run_benchmark(args: argparse.Namespace, project_root: Path) -> int:
     if any(run["outcome"] == "cancelled" for run in sweep.runs):
         return 130
     return 0 if sweep.summary["sweep_outcome"] == "complete" else 1
+
+
+def _run_streamed_benchmark(args: argparse.Namespace, project_root: Path) -> int:
+    def on_case_started(
+        index: int,
+        total: int,
+        shape: TransformerShape,
+    ) -> None:
+        print(f"\n[{index}/{total}] streamed {shape.case_id}")
+
+    def on_case_completed(
+        _index: int,
+        _total: int,
+        _shape: TransformerShape,
+        result: dict[str, Any],
+        result_path: Path,
+    ) -> None:
+        _print_run_summary(result, result_path)
+
+    completed = StreamedBenchmarkService().run(
+        StreamedBenchmarkRequest(
+            project_root=project_root,
+            workload_set_id=args.workload_set,
+            protocol=_protocol_from_args(args),
+            device=args.device,
+            variant=_variant_from_args(args),
+            solution_policy=args.solution_policy,
+            case_ids=tuple(args.case_id or ()),
+            output_root=args.result_dir,
+        ),
+        on_case_started=on_case_started,
+        on_case_completed=on_case_completed,
+    )
+    if any(run.get("outcome") == "cancelled" for run in completed.runs):
+        return 130
+    return 0 if all(run.get("outcome") == "success" for run in completed.runs) else 1
 
 
 def _run_profile(args: argparse.Namespace, project_root: Path) -> int:
@@ -455,14 +546,14 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
     if isinstance(summary_path, str):
         print(f"tuning summary: {summary_path}")
     for item in summary["observations"]:
-        speedup = item["speedup"]
-        target = item["target_median_ms"]
+        speedup = item.get("speedup")
+        target = item.get("target_median_ms")
         outcome = item["outcome"]
         if outcome == "success" and not item["policy_applied"]:
             outcome = "policy_not_applied"
-        details = ""
-        if isinstance(target, (int, float)) and isinstance(speedup, (int, float)):
-            details = f" | {target:.6f} ms | {speedup:.4f}x"
+        details = f" | {target:.6f} ms" if isinstance(target, (int, float)) else ""
+        if isinstance(speedup, (int, float)):
+            details += f" | {speedup:.4f}x"
         print(f"{item['candidate_id']}: {outcome}{details}")
         execution_path = item["execution_path"]
         if isinstance(execution_path, dict):
@@ -489,10 +580,14 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
     if winner is None:
         print("winner: none (no correct successful candidate)")
     else:
-        print(
-            f"winner: {winner['candidate_id']} | "
-            f"{winner['target_median_ms']:.6f} ms | {winner['speedup']:.4f}x"
-        )
+        winner_text = f"winner: {winner['candidate_id']}"
+        winner_target = winner.get("target_median_ms")
+        if isinstance(winner_target, (int, float)):
+            winner_text += f" | {winner_target:.6f} ms"
+        winner_speedup = winner.get("speedup")
+        if isinstance(winner_speedup, (int, float)):
+            winner_text += f" | {winner_speedup:.4f}x"
+        print(winner_text)
 
 
 def _run_tune(args: argparse.Namespace, project_root: Path) -> int:
@@ -648,6 +743,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_probe(args, project_root)
         if args.command == "benchmark":
             return _run_benchmark(args, project_root)
+        if args.command == "benchmark-streamed":
+            return _run_streamed_benchmark(args, project_root)
         if args.command == "profile":
             return _run_profile(args, project_root)
         if args.command == "tune":

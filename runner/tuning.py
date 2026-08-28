@@ -14,6 +14,7 @@ from runner.candidates import (
     CandidateSpec,
     candidate_spec,
     candidate_spec_for_policy,
+    candidate_specs_for_execution_mode,
     candidate_specs_for_shape,
 )
 from runner.contracts import (
@@ -33,6 +34,7 @@ from runner.tuning_contracts import (
     observation_latency_key,
     select_deployable_winner,
 )
+from runner.workload_execution import plan_workload_execution
 
 _DEVICE_PROFILE_FIELDS = (
     "device_type",
@@ -84,7 +86,7 @@ def candidates_for_shape(
     shape: TransformerShape,
     variant: RunVariant,
 ) -> tuple[CandidateSpec, ...]:
-    """Return the small candidate set meaningful for one shape variant."""
+    """Return candidates supported by the shape's selected executor."""
 
     if not isinstance(shape, TransformerShape):
         raise TypeError("shape must be a TransformerShape")
@@ -92,14 +94,17 @@ def candidates_for_shape(
         raise TypeError("variant must be a RunVariant")
     shape.validate()
     variant.validate()
-    return candidate_specs_for_shape(shape, variant)
+    execution_mode = plan_workload_execution(shape, variant).execution_mode
+    if execution_mode == "resident":
+        return candidate_specs_for_shape(shape, variant)
+    return candidate_specs_for_execution_mode(shape, variant, execution_mode)
 
 
 def is_deployable_candidate(candidate: CandidateSpec) -> bool:
     """Return whether a candidate can be represented by the static dispatcher."""
 
     spec = candidate_spec(candidate.candidate_id)
-    return bool(spec is not None and spec.deployable and spec == candidate)
+    return bool(spec is not None and spec.exact_route_eligible and spec == candidate)
 
 
 def _deployable_candidates_by_policy(
@@ -181,8 +186,8 @@ def align_shared_smoke_plans(
         common_policies = set(policy_candidates[0])
         for by_policy in policy_candidates[1:]:
             common_policies.intersection_update(by_policy)
-        if "auto" not in common_policies:
-            raise ContractError("a shared Smoke route group has no eager-auto control")
+        if "eager-sdpa" not in common_policies:
+            raise ContractError("a shared Smoke route group has no eager-sdpa control")
 
         incumbents: list[str] = []
         for index, by_policy in zip(indices, policy_candidates, strict=True):
@@ -204,14 +209,17 @@ def align_shared_smoke_plans(
                 )
             if candidate.solution_policy not in incumbents:
                 incumbents.append(candidate.solution_policy)
-        non_auto_incumbents = [policy for policy in incumbents if policy != "auto"]
-        if len(non_auto_incumbents) > 1:
+        non_default_incumbents = [
+            policy for policy in incumbents if policy != "eager-sdpa"
+        ]
+        if len(non_default_incumbents) > 1:
             raise ContractError("cases sharing one route key have different incumbents")
 
-        required_policies = ["auto", *non_auto_incumbents]
+        required_policies = ["eager-sdpa", *non_default_incumbents]
         if len(required_policies) > candidate_limit:
             raise ContractError(
-                "candidate limit is too small to retain auto and the current incumbent"
+                "candidate limit is too small to retain eager-sdpa and the "
+                "current incumbent"
             )
         union_order = {
             policy for order in ordered_policies for policy in order
@@ -372,12 +380,12 @@ def build_formal_candidate_plans(
                     )
                 if incumbent.solution_policy not in incumbent_policies:
                     incumbent_policies.append(incumbent.solution_policy)
-        non_auto_incumbents = [
-            policy for policy in incumbent_policies if policy != "auto"
+        non_default_incumbents = [
+            policy for policy in incumbent_policies if policy != "eager-sdpa"
         ]
-        if len(non_auto_incumbents) > 1:
+        if len(non_default_incumbents) > 1:
             raise ContractError("cases sharing one route key have different incumbents")
-        control_policies = ["auto", *non_auto_incumbents]
+        control_policies = ["eager-sdpa", *non_default_incumbents]
         for index in indices:
             missing = set(control_policies) - set(eligible_by_case[index])
             if missing:
@@ -411,8 +419,8 @@ def build_formal_candidate_plans(
             candidate_order = [
                 by_policy[policy].candidate_id for policy in selected_policies
             ]
-            reasons = {candidate_order[0]: ["required eager-auto control"]}
-            if non_auto_incumbents:
+            reasons = {candidate_order[0]: ["required eager-sdpa control"]}
+            if non_default_incumbents:
                 reasons[candidate_order[1]] = ["current calibrated incumbent"]
             for policy in challenger_policies:
                 reasons[by_policy[policy].candidate_id] = [
@@ -445,7 +453,7 @@ def deployable_candidate_id_for_policy(
         policy,
         deployable_only=True,
     )
-    return spec.candidate_id if spec is not None else None
+    return spec.candidate_id if spec is not None and spec.exact_route_eligible else None
 
 
 def select_candidates(
@@ -680,7 +688,9 @@ def _run_tuning_case(
 
     winner = min(eligible, key=observation_latency_key) if eligible else None
     deployable_candidate_ids = {
-        candidate.candidate_id for candidate in candidates if candidate.deployable
+        candidate.candidate_id
+        for candidate in candidates
+        if candidate.exact_route_eligible
     }
     deployable = [
         item for item in eligible if item["candidate_id"] in deployable_candidate_ids

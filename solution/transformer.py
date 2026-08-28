@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from policy_registry import get_policy_spec
+from policy_registry import ResidualNormBackend, get_policy_spec
 
 from .cuda_graph import CudaGraphReplay
 from .dispatch import OfflineDispatcher
@@ -21,11 +21,13 @@ from .execution_plan import (
 )
 from .kernels import (
     causal_sdpa,
+    mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
     split_qkv,
+    triton_residual_layer_norm,
 )
 
 
@@ -33,18 +35,39 @@ from .kernels import (
 class _ExecutionObservation:
     attention_backends: list[str] = field(default_factory=list)
     residual_norm_backends: list[str] = field(default_factory=list)
+    attention_compute_dtypes: list[str] = field(default_factory=list)
+    linear_backends: list[str] = field(default_factory=list)
+    linear_compute_dtypes: list[str] = field(default_factory=list)
 
     def describe(self, expected_layers: int) -> dict[str, Any]:
         complete = (
             len(self.attention_backends) == expected_layers
             and len(self.residual_norm_backends) == expected_layers
         )
-        return {
+        mixed_core_observed = bool(
+            self.attention_compute_dtypes
+            or self.linear_backends
+            or self.linear_compute_dtypes
+        )
+        if mixed_core_observed:
+            complete = complete and (
+                len(self.attention_compute_dtypes) == expected_layers
+                and len(self.linear_backends) == 4 * expected_layers
+                and len(self.linear_compute_dtypes) == 4 * expected_layers
+            )
+        result = {
             "attention_backends": list(self.attention_backends),
             "residual_norm_backends": list(self.residual_norm_backends),
             "expected_layers": expected_layers,
             "complete": complete,
         }
+        if mixed_core_observed:
+            result.update(
+                attention_compute_dtypes=list(self.attention_compute_dtypes),
+                linear_backends=list(self.linear_backends),
+                linear_compute_dtypes=list(self.linear_compute_dtypes),
+            )
+        return result
 
 
 class _SelfAttention(nn.Module):
@@ -70,48 +93,78 @@ class _SelfAttention(nn.Module):
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = value.shape
-        query, key, projected_value = split_qkv(
-            self.qkv_proj(value),
-            self.num_heads,
-        )
-        if plan.attention_backend == "mixed_fp16_efficient":
-            context, actual_attention_backend = mixed_fp16_efficient_attention(
-                query,
-                key,
-                projected_value,
-                valid_token_mask,
-                scale=self.scale,
-                causal=causal,
-                training=self.training,
+        mixed_core = plan.linear_backend == "autocast_fp16"
+        with torch.autocast(
+            device_type=value.device.type,
+            dtype=torch.float16,
+            enabled=mixed_core,
+        ):
+            packed_qkv = self.qkv_proj(value)
+            query, key, projected_value = split_qkv(
+                packed_qkv,
+                self.num_heads,
             )
-        elif plan.attention_backend == "causal_sdpa":
-            context = causal_sdpa(
-                query,
-                key,
-                projected_value,
-                valid_token_mask,
-                scale=self.scale,
-                causal=causal,
+            if plan.attention_backend == "mixed_fp16_cudnn":
+                context, actual_attention_backend = mixed_fp16_cudnn_attention(
+                    query,
+                    key,
+                    projected_value,
+                    valid_token_mask,
+                    scale=self.scale,
+                    causal=causal,
+                    training=self.training,
+                )
+            elif plan.attention_backend == "mixed_fp16_efficient":
+                context, actual_attention_backend = mixed_fp16_efficient_attention(
+                    query,
+                    key,
+                    projected_value,
+                    valid_token_mask,
+                    scale=self.scale,
+                    causal=causal,
+                    training=self.training,
+                )
+            elif plan.attention_backend == "causal_sdpa":
+                context = causal_sdpa(
+                    query,
+                    key,
+                    projected_value,
+                    valid_token_mask,
+                    scale=self.scale,
+                    causal=causal,
+                )
+                actual_attention_backend = "causal_sdpa"
+            else:
+                context = reference_causal_attention(
+                    query,
+                    key,
+                    projected_value,
+                    valid_token_mask,
+                    scale=self.scale,
+                    causal=causal,
+                )
+                actual_attention_backend = "safe_streaming"
+            context = (
+                context.transpose(1, 2)
+                .contiguous()
+                .view(batch_size, sequence_length, self.d_model)
             )
-            actual_attention_backend = "causal_sdpa"
-        else:
-            context = reference_causal_attention(
-                query,
-                key,
-                projected_value,
-                valid_token_mask,
-                scale=self.scale,
-                causal=causal,
-            )
-            actual_attention_backend = "safe_streaming"
+            output = self.out_proj(context)
         if observation is not None:
             observation.attention_backends.append(actual_attention_backend)
-        context = (
-            context.transpose(1, 2)
-            .contiguous()
-            .view(batch_size, sequence_length, self.d_model)
-        )
-        output = self.out_proj(context)
+            if mixed_core:
+                observation.attention_compute_dtypes.append(
+                    str(query.dtype).removeprefix("torch.")
+                )
+                observation.linear_backends.extend([plan.linear_backend] * 2)
+                observation.linear_compute_dtypes.extend(
+                    [
+                        str(packed_qkv.dtype).removeprefix("torch."),
+                        str(output.dtype).removeprefix("torch."),
+                    ]
+                )
+        if output.dtype != value.dtype:
+            output = output.to(value.dtype)
         if valid_token_mask is not None:
             output.masked_fill_(~valid_token_mask[..., None], 0)
         return output
@@ -141,20 +194,46 @@ class _TransformerBlock(nn.Module):
             plan,
             observation,
         )
-        if plan.residual_norm_backend == "compiled_residual_layer_norm":
+        if plan.residual_norm_backend == ResidualNormBackend.COMPILED:
             value, normalized, actual_residual_norm_backend = residual_layer_norm(
                 value,
                 attention_update,
                 self.norm2,
             )
+        elif plan.residual_norm_backend == ResidualNormBackend.TRITON:
+            value, normalized, actual_residual_norm_backend = (
+                triton_residual_layer_norm(
+                    value,
+                    attention_update,
+                    self.norm2,
+                )
+            )
         else:
             value = residual_add(value, attention_update, valid_token_mask)
             normalized = self.norm2(value)
             actual_residual_norm_backend = "torch"
-        hidden = F.gelu(self.ffn_in(normalized), approximate="none")
+        mixed_core = plan.linear_backend == "autocast_fp16"
+        with torch.autocast(
+            device_type=normalized.device.type,
+            dtype=torch.float16,
+            enabled=mixed_core,
+        ):
+            projected = self.ffn_in(normalized)
+            hidden = F.gelu(projected, approximate="none")
+            ffn_update = self.ffn_out(hidden)
         if observation is not None:
             observation.residual_norm_backends.append(actual_residual_norm_backend)
-        return residual_add(value, self.ffn_out(hidden), valid_token_mask)
+            if mixed_core:
+                observation.linear_backends.extend([plan.linear_backend] * 2)
+                observation.linear_compute_dtypes.extend(
+                    [
+                        str(projected.dtype).removeprefix("torch."),
+                        str(ffn_update.dtype).removeprefix("torch."),
+                    ]
+                )
+        if ffn_update.dtype != value.dtype:
+            ffn_update = ffn_update.to(value.dtype)
+        return residual_add(value, ffn_update, valid_token_mask)
 
 
 class UserOptimizedTransformer(nn.Module):
@@ -204,8 +283,8 @@ class UserOptimizedTransformer(nn.Module):
     def _enable_dispatch(self) -> None:
         self._dispatcher = OfflineDispatcher()
         self._dispatch_signature = None
-        self._select_named_policy("auto", requested_policy="dispatch")
-        self.dispatch_policy = "auto"
+        self._select_named_policy("eager-sdpa", requested_policy="dispatch")
+        self.dispatch_policy = "eager-sdpa"
         self.dispatch_route_origin = "fallback"
         self.dispatch_route_source = self._dispatcher.source
         self.dispatch_route_sha256 = self._dispatcher.table_sha256
@@ -325,6 +404,8 @@ class UserOptimizedTransformer(nn.Module):
             input_contiguous=input_contiguous,
             has_valid_token_mask=has_valid_token_mask,
             mask_compatible=mask_compatible,
+            ffn_dim=self.config.ffn_dim,
+            num_layers=self.config.num_layers,
         )
 
     def _execution_plan(
@@ -362,6 +443,7 @@ class UserOptimizedTransformer(nn.Module):
             self.training,
             torch.is_grad_enabled(),
             bool(torch.backends.cuda.mem_efficient_sdp_enabled()),
+            bool(torch.backends.cuda.cudnn_sdp_enabled()),
         )
         if signature != self._runtime_plan_signature:
             self._runtime_plan = self._execution_plan(value, valid_token_mask)

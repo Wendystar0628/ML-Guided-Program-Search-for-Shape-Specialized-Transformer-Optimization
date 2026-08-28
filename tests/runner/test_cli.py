@@ -26,6 +26,7 @@ def test_cli_defaults_to_the_official_workload_and_float32_variant() -> None:
             "graph",
         ]
     )
+    streamed = parser.parse_args(["benchmark-streamed"])
 
     assert benchmark.workload_set == WORKLOAD_SET_ID
     assert benchmark.dtype == "float32"
@@ -33,6 +34,9 @@ def test_cli_defaults_to_the_official_workload_and_float32_variant() -> None:
     assert profile.case_id == "official_13"
     assert tune.case_id == ["official_02"]
     assert tune.candidate == ["graph"]
+    assert streamed.case_id is None
+    assert streamed.solution_policy == "screen"
+    assert not hasattr(streamed, "target")
 
 
 def test_tune_requires_an_explicit_candidate() -> None:
@@ -53,6 +57,115 @@ def test_calibrate_rejects_official_14_as_a_configuration_error(
 
     assert exit_code == 2
     assert "configuration error" in capsys.readouterr().out
+
+
+def test_streamed_benchmark_rejects_a_resident_shape(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = runner_cli.main(["benchmark-streamed", "--case-id", "official_02"])
+
+    assert exit_code == 2
+    output = capsys.readouterr().out
+    assert "configuration error" in output
+    assert "resident=['official_02']" in output
+
+
+def test_regular_single_case_benchmark_directs_streamed_shapes_to_separate_cli(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exit_code = runner_cli.main(["benchmark", "--case-id", "official_14"])
+
+    assert exit_code == 2
+    output = capsys.readouterr().out
+    assert "configuration error" in output
+    assert "run benchmark-streamed instead" in output
+
+
+def test_streamed_benchmark_prints_target_only_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {}
+    shape = TransformerShape(
+        case_id="streamed_fixture",
+        batch_size=32,
+        seq_len=100_000,
+        d_model=1024,
+        num_heads=16,
+        ffn_dim=1024,
+        num_layers=2,
+        causal=True,
+    )
+    result = {
+        "outcome": "success",
+        "correctness": {"passed": True},
+        "performance": {
+            "comparison_mode": "target_only",
+            "target": {"median_ms": 600.0, "p90_ms": 610.0},
+            "achieved_tflops": 65.0,
+            "peak_device_allocated_bytes": 3 * 1024**3,
+        },
+    }
+
+    class FakeService:
+        def run(
+            self,
+            request: Any,
+            *,
+            on_case_started: Any,
+            on_case_completed: Any,
+        ) -> Any:
+            captured["request"] = request
+            result_path = tmp_path / "streamed.json"
+            on_case_started(1, 1, shape)
+            on_case_completed(1, 1, shape, result, result_path)
+            return SimpleNamespace(runs=(result,), result_paths=(result_path,))
+
+    monkeypatch.setattr(runner_cli, "StreamedBenchmarkService", FakeService)
+
+    exit_code = runner_cli.main(["benchmark-streamed", "--device", "cuda:0"])
+
+    assert exit_code == 0
+    assert captured["request"].case_ids == ()
+    output = capsys.readouterr().out
+    assert "[1/1] streamed streamed_fixture" in output
+    assert "target median: 600.000000 ms" in output
+    assert "useful matmul throughput: 65.000 TFLOP/s" in output
+    assert "peak device allocation: 3.000 GiB" in output
+    assert "baseline median" not in output
+    assert "observed speedup" not in output
+
+
+def test_tuning_summary_prints_target_only_winner_without_speedup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    observation = {
+        "candidate_id": "mixed-fp16-cudnn",
+        "outcome": "success",
+        "policy_applied": True,
+        "target_median_ms": 550.0,
+        "speedup": None,
+        "execution_path": None,
+        "correctness_passed": True,
+        "failed_elements": 0,
+        "max_abs_error": 0.0,
+        "result_path": "results/streamed/run.json",
+    }
+    runner_cli._print_tuning_summary(
+        {
+            "case_id": "official_14",
+            "tuning_id": "fixture-tuning",
+            "protocol": {"preset": "smoke"},
+            "observations": [observation],
+            "winner": observation,
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "mixed-fp16-cudnn: success | 550.000000 ms" in output
+    assert "winner: mixed-fp16-cudnn | 550.000000 ms" in output
+    assert "None" not in output
 
 
 def test_single_shape_benchmark_forwards_shape_and_variant(
@@ -137,7 +250,7 @@ def test_calibration_cli_renders_shape_based_formal_events(
             kind="formal_plans_ready",
             data={
                 "shapes": [shape],
-                "plans": [{"candidate_order": ["graph", "eager-auto"]}],
+                "plans": [{"candidate_order": ["graph", "eager-sdpa"]}],
             },
         )
     )
@@ -159,7 +272,7 @@ def test_calibration_cli_renders_shape_based_formal_events(
     )
 
     output = capsys.readouterr().out
-    assert "official_02: graph, eager-auto" in output
+    assert "official_02: graph, eager-sdpa" in output
     assert "official_02: deployed graph -> graph" in output
 
 
@@ -177,7 +290,7 @@ def test_routing_plan_renders_the_current_cost_model_signals(
                 "estimated_peak_to_device_memory": 0.125,
                 "estimated_blocks_per_sm": 2.0,
             },
-            "candidate_order": ["eager-auto", "graph"],
+            "candidate_order": ["eager-sdpa", "graph"],
             "selection_reasons": {},
             "capability_rejections": {},
         },
@@ -186,4 +299,4 @@ def test_routing_plan_renders_the_current_cost_model_signals(
     output = capsys.readouterr().out
     assert "attention/L2=1.250" in output
     assert "peak/device-memory=0.125" in output
-    assert "candidates: eager-auto, graph" in output
+    assert "candidates: eager-sdpa, graph" in output

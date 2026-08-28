@@ -27,9 +27,9 @@ def _candidate_ids(case_id: str) -> list[str]:
 
 def _execution_path(candidate_id: str) -> dict[str, Any]:
     paths = {
-        "eager-auto": {
-            "requested_policy": "auto",
-            "selected_policy": "auto",
+        "eager-sdpa": {
+            "requested_policy": "eager-sdpa",
+            "selected_policy": "eager-sdpa",
             "attention_backend": "causal_sdpa",
             "runtime_wrapper": "eager",
             "residual_norm_backend": "torch",
@@ -89,6 +89,60 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "residual_norm_backends": ["torch"],
             },
         },
+        "mixed-fp16-core-efficient": {
+            "requested_policy": "mixed-fp16-core-efficient",
+            "selected_policy": "mixed-fp16-core-efficient",
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "eager",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["torch"],
+            },
+        },
+        "mixed-fp16-core-efficient-triton-norm": {
+            "requested_policy": "mixed-fp16-core-efficient-triton-norm",
+            "selected_policy": "mixed-fp16-core-efficient-triton-norm",
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "eager",
+            "residual_norm_backend": "triton_residual_layer_norm",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["triton_residual_layer_norm"],
+            },
+        },
+        "mixed-fp16-core-cudnn": {
+            "requested_policy": "mixed-fp16-core-cudnn",
+            "selected_policy": "mixed-fp16-core-cudnn",
+            "attention_backend": "mixed_fp16_cudnn",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "eager",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_cudnn"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["torch"],
+            },
+        },
         "graph-mixed-fp16-efficient": {
             "requested_policy": "graph-mixed-fp16-efficient",
             "selected_policy": "graph-mixed-fp16-efficient",
@@ -102,33 +156,79 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "runtime_wrappers": ["cuda_graph"],
             },
         },
+        "graph-mixed-fp16-efficient-compiled-norm": {
+            "requested_policy": "graph-mixed-fp16-efficient-compiled-norm",
+            "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
+            "attention_backend": "mixed_fp16_efficient",
+            "runtime_wrapper": "cuda_graph",
+            "residual_norm_backend": "compiled_residual_layer_norm",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "residual_norm_backends": ["compiled_residual_layer_norm"],
+                "runtime_wrappers": ["cuda_graph"],
+            },
+        },
     }
     return paths[candidate_id]
 
 
 def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
     common = [
-        "eager-auto",
+        "eager-sdpa",
         "eager-safe",
         "graph",
     ]
     extras = {
-        "official_01": ["graph-mixed-fp16-efficient"],
+        "official_01": [
+            "graph-mixed-fp16-efficient",
+            "graph-mixed-fp16-efficient-compiled-norm",
+        ],
         "official_02": ["graph-fused-norm"],
         "official_03": ["graph-fused-norm"],
         "official_04": ["graph-fused-norm"],
-        "official_05": ["graph-mixed-fp16-efficient"],
-        "official_07": ["graph-mixed-fp16-efficient"],
-        "official_09": ["graph-mixed-fp16-efficient"],
-        "official_10": ["graph-mixed-fp16-efficient"],
-        "official_11": ["graph-mixed-fp16-efficient"],
+        "official_05": [
+            "graph-mixed-fp16-efficient",
+            "graph-mixed-fp16-efficient-compiled-norm",
+        ],
+        "official_06": [
+            "mixed-fp16-core-efficient",
+            "mixed-fp16-core-efficient-triton-norm",
+        ],
+        "official_07": [
+            "graph-mixed-fp16-efficient",
+            "graph-mixed-fp16-efficient-compiled-norm",
+        ],
+        "official_08": ["mixed-fp16-core-efficient"],
+        "official_09": [
+            "graph-mixed-fp16-efficient",
+            "graph-mixed-fp16-efficient-compiled-norm",
+        ],
+        "official_10": [
+            "graph-mixed-fp16-efficient",
+            "graph-mixed-fp16-efficient-compiled-norm",
+        ],
+        "official_11": [
+            "graph-mixed-fp16-efficient",
+            "graph-mixed-fp16-efficient-compiled-norm",
+        ],
         "official_12": ["graph-fused-norm"],
-        "official_13": ["mixed-fp16-efficient"],
+        "official_13": [
+            "mixed-fp16-efficient",
+            "mixed-fp16-core-efficient",
+        ],
     }
 
     for index in range(1, 14):
         case_id = f"official_{index:02d}"
         assert _candidate_ids(case_id) == [*common, *extras.get(case_id, [])]
+
+    assert _candidate_ids("official_14") == [
+        "mixed-fp16-efficient",
+        "mixed-fp16-cudnn",
+        "mixed-fp16-core-efficient",
+        "mixed-fp16-core-cudnn",
+    ]
 
 
 def test_runtime_variant_is_not_hidden_inside_the_shape() -> None:
@@ -150,11 +250,11 @@ def test_select_candidates_requires_explicit_valid_order() -> None:
     selected = tuning.select_candidates(
         shape,
         variant,
-        ["graph", "eager-auto"],
+        ["graph", "eager-sdpa"],
     )
     assert [item.candidate_id for item in selected] == [
         "graph",
-        "eager-auto",
+        "eager-sdpa",
     ]
     with pytest.raises(ContractError, match="at least one"):
         tuning.select_candidates(shape, variant, [])
@@ -167,9 +267,9 @@ def test_deployed_policy_maps_back_to_one_candidate() -> None:
 
     assert (
         tuning.deployable_candidate_id_for_policy(
-            official_shape("official_02"), variant, "auto"
+            official_shape("official_02"), variant, "eager-sdpa"
         )
-        == "eager-auto"
+        == "eager-sdpa"
     )
     assert (
         tuning.deployable_candidate_id_for_policy(
@@ -215,8 +315,8 @@ def test_smoke_finalist_uses_target_latency_not_worker_speedup() -> None:
     shape = official_shape("official_02")
     summary = formal_summary(
         challenger_policy="graph",
-        auto_speedup=4.0,
-        auto_target_median_ms=2.0,
+        control_speedup=4.0,
+        control_target_median_ms=2.0,
         challenger_speedup=1.1,
         challenger_target_median_ms=1.0,
     )
@@ -229,13 +329,13 @@ def test_smoke_finalist_uses_target_latency_not_worker_speedup() -> None:
         [None],
     )
 
-    assert plans[0]["candidate_order"] == ["eager-auto", "graph"]
+    assert plans[0]["candidate_order"] == ["eager-sdpa", "graph"]
 
 
 def test_deployable_winner_uses_p90_then_candidate_id_for_latency_ties() -> None:
     summary = formal_summary(
-        auto_target_median_ms=1.0,
-        auto_target_p90_ms=1.2,
+        control_target_median_ms=1.0,
+        control_target_p90_ms=1.2,
         challenger_target_median_ms=1.0,
         challenger_target_p90_ms=1.1,
     )
@@ -243,7 +343,20 @@ def test_deployable_winner_uses_p90_then_candidate_id_for_latency_ties() -> None
     assert select_deployable_winner(summary)["candidate_id"] == "graph"
 
     summary["observations"][1]["target_p90_ms"] = 1.2
-    assert select_deployable_winner(summary)["candidate_id"] == "eager-auto"
+    assert select_deployable_winner(summary)["candidate_id"] == "eager-sdpa"
+
+
+def test_streamed_only_candidate_cannot_be_selected_for_an_exact_route() -> None:
+    summary = formal_summary(
+        case_id="official_14",
+        challenger_policy="mixed-fp16-core-cudnn",
+        challenger_target_median_ms=0.5,
+        control_target_median_ms=1.0,
+    )
+    summary["observations"] = [summary["observations"][1]]
+
+    with pytest.raises(ContractError, match="no correct, applied dispatch candidate"):
+        select_deployable_winner(summary)
 
 
 def test_tuning_runs_serial_candidates_and_selects_the_measured_winner(
@@ -265,8 +378,8 @@ def test_tuning_runs_serial_candidates_and_selects_the_measured_winner(
         **_kwargs: Any,
     ) -> tuple[dict[str, Any], Path]:
         calls.append(candidate_id)
-        speedup = {"eager-auto": 2.0, "graph": 1.5}[candidate_id]
-        target = {"eager-auto": 2.0, "graph": 1.0}[candidate_id]
+        speedup = {"eager-sdpa": 2.0, "graph": 1.5}[candidate_id]
+        target = {"eager-sdpa": 2.0, "graph": 1.0}[candidate_id]
         baseline = target * speedup
         result = {
             "run_id": f"run-{candidate_id}",
@@ -299,10 +412,10 @@ def test_tuning_runs_serial_candidates_and_selects_the_measured_winner(
         variant=RunVariant(),
         base_protocol=tiny_protocol(),
         device="cpu",
-        requested_candidates=["eager-auto", "graph"],
+        requested_candidates=["eager-sdpa", "graph"],
     )
 
-    assert calls == ["eager-auto", "graph"]
+    assert calls == ["eager-sdpa", "graph"]
     assert summary["complete"] is True
     assert summary["winner"]["candidate_id"] == "graph"
     assert summary["deployable_winner"]["candidate_id"] == "graph"

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from runner.contracts import RunVariant, load_workload_set
+from runner.performance_metrics import LOGICAL_OPERATOR_TRAFFIC_SCOPE
 from runner.supervisor import CancellationToken
 from runner.sweep import (
     SWEEP_SUMMARY_SCHEMA_VERSION,
@@ -23,7 +24,7 @@ from tests.support.runner_fixtures import (
 )
 
 
-def test_complete_sweep_summarizes_official_01_through_13_without_weights() -> None:
+def test_complete_sweep_summarizes_resident_shapes_without_weights() -> None:
     workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
     runs = [successful_run(f"official_{index:02d}", 2.0) for index in range(1, 14)]
 
@@ -34,12 +35,44 @@ def test_complete_sweep_summarizes_official_01_through_13_without_weights() -> N
     assert [item["case_id"] for item in summary["case_results"]] == [
         f"official_{index:02d}" for index in range(1, 14)
     ]
-    assert summary["excluded_case_ids"] == ["official_14"]
+    assert summary["streamed_case_ids"] == ["official_14"]
+    assert "excluded_case_ids" not in summary
     assert summary["geomean_speedup"] == 2.0
-    assert all(item["selected_policy"] == "auto" for item in summary["case_results"])
+    assert all(
+        item["selected_policy"] == "eager-sdpa" for item in summary["case_results"]
+    )
     assert all(item["policy_applied"] is True for item in summary["case_results"])
+    assert summary["case_results"][0]["useful_matmul_flops"] == 1_000_000_000
+    assert summary["case_results"][0]["attention_flops_fraction"] == 0.25
+    assert summary["case_results"][0]["achieved_tflops"] == 1.0
+    assert summary["case_results"][0]["estimated_logical_operator_bytes"] == (
+        100_000_000
+    )
+    assert (
+        summary["case_results"][0][
+            "logical_operator_arithmetic_intensity_flops_per_byte"
+        ]
+        == 10.0
+    )
+    assert (
+        summary["case_results"][0]["estimated_logical_operator_traffic_gbps"] == 100.0
+    )
+    assert (
+        summary["case_results"][0]["logical_operator_traffic_scope"]
+        == LOGICAL_OPERATOR_TRAFFIC_SCOPE
+    )
     assert "groups" not in summary
     assert "weights" not in summary
+
+
+def test_sweep_keeps_solution_peak_memory_when_measured() -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [successful_run(f"official_{index:02d}", 2.0) for index in range(1, 14)]
+    runs[0]["performance"]["peak_device_allocated_bytes"] = 123456
+
+    summary = summarize_sweep(workload, runs, target="solution")
+
+    assert summary["case_results"][0]["peak_device_allocated_bytes"] == 123456
 
 
 def test_incomplete_sweep_never_reports_an_aggregate() -> None:
@@ -66,6 +99,55 @@ def test_invalid_compact_timing_is_rejected_before_aggregation() -> None:
     assert summary["failed_cases"][0]["outcome"] == "invalid_target_p90"
 
 
+def test_inconsistent_achieved_tflops_is_rejected_before_aggregation() -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [successful_run(f"official_{index:02d}", 1.1) for index in range(1, 14)]
+    runs[0]["performance"]["achieved_tflops"] = 123.0
+
+    summary = summarize_sweep(workload, runs, target="solution")
+
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["geomean_speedup"] is None
+    assert summary["failed_cases"][0] == {
+        "case_id": "official_01",
+        "outcome": "achieved_tflops_mismatch",
+    }
+    assert "achieved_tflops" not in summary["case_results"][0]
+
+
+def test_inconsistent_logical_traffic_is_rejected_before_aggregation() -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [successful_run(f"official_{index:02d}", 1.1) for index in range(1, 14)]
+    runs[0]["performance"]["estimated_logical_operator_traffic_gbps"] = 1.0
+
+    summary = summarize_sweep(workload, runs, target="solution")
+
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["failed_cases"][0] == {
+        "case_id": "official_01",
+        "outcome": "estimated_logical_operator_traffic_gbps_mismatch",
+    }
+    assert "estimated_logical_operator_traffic_gbps" not in (summary["case_results"][0])
+
+
+def test_resident_sweep_rejects_target_only_results() -> None:
+    workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
+    runs = [successful_run(f"official_{index:02d}", 1.1) for index in range(1, 14)]
+    runs[0]["comparison_mode"] = "target_only"
+    runs[0]["performance"]["comparison_mode"] = "target_only"
+    runs[0]["performance"].pop("baseline")
+    runs[0]["performance"].pop("speedup")
+
+    summary = summarize_sweep(workload, runs, target="solution")
+
+    assert summary["sweep_outcome"] == "incomplete"
+    assert summary["geomean_speedup"] is None
+    assert summary["failed_cases"][0] == {
+        "case_id": "official_01",
+        "outcome": "comparison_mode_mismatch",
+    }
+
+
 def test_unproven_policy_is_not_aggregated_or_reported_as_actual() -> None:
     workload = load_workload_set(PROJECT_ROOT, WORKLOAD_SET_ID)
     runs = [successful_run(f"official_{index:02d}", 1.1) for index in range(1, 14)]
@@ -80,11 +162,11 @@ def test_unproven_policy_is_not_aggregated_or_reported_as_actual() -> None:
         "case_id": "official_01",
         "outcome": "policy_not_applied",
     }
-    assert summary["case_results"][0]["selected_policy"] == "auto"
+    assert summary["case_results"][0]["selected_policy"] == "eager-sdpa"
     assert summary["case_results"][0]["actual_policy"] is None
 
 
-def test_sweep_service_runs_only_local_shapes_and_owns_one_directory(
+def test_sweep_service_runs_resident_shapes_and_owns_one_directory(
     tmp_path: Path,
 ) -> None:
     calls: list[str] = []

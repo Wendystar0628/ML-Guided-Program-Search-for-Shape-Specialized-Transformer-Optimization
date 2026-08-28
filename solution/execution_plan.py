@@ -7,7 +7,13 @@ from typing import Any
 
 import torch
 
-from policy_registry import ExecutionComponent, PolicySpec
+from policy_registry import ExecutionComponent, PolicySpec, ResidualNormBackend
+
+from .kernels import triton_residual_layer_norm_available
+from .shape_families import (
+    is_mixed_fp16_core_efficient_attention_family,
+    is_streamed_mixed_fp16_core_cudnn_slice,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +32,8 @@ class ExecutionContext:
     input_contiguous: bool
     has_valid_token_mask: bool
     mask_compatible: bool
+    ffn_dim: int | None = None
+    num_layers: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +43,9 @@ class ExecutionPlan:
     requested_policy: str
     selected_policy: str
     attention_backend: str
+    attention_compute_dtype: str
+    linear_backend: str
+    linear_compute_dtype: str
     runtime_wrapper: str
     residual_norm_backend: str
     has_valid_token_mask: bool
@@ -62,6 +73,7 @@ class ExecutionPlan:
             causal_mask = "none"
         elif self.attention_backend in {
             "causal_sdpa",
+            "mixed_fp16_cudnn",
             "mixed_fp16_efficient",
         }:
             causal_mask = "implicit_sdpa"
@@ -79,6 +91,9 @@ class ExecutionPlan:
             "route_origin": route_origin,
             "qkv_projection": "packed",
             "attention_backend": self.attention_backend,
+            "attention_compute_dtype": self.attention_compute_dtype,
+            "linear_backend": self.linear_backend,
+            "linear_compute_dtype": self.linear_compute_dtype,
             "runtime_wrapper": self.runtime_wrapper,
             "residual_norm_backend": self.residual_norm_backend,
             "causal_mask": causal_mask,
@@ -94,7 +109,10 @@ class _Capabilities:
     causal_sdpa: bool
     cuda_graph: bool
     compiled_residual_layer_norm: bool
+    triton_residual_layer_norm: bool
+    mixed_fp16_cudnn_attention: bool
     mixed_fp16_efficient_attention: bool
+    mixed_fp16_core: bool
 
 
 def _capabilities(context: ExecutionContext) -> _Capabilities:
@@ -109,17 +127,44 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and context.device.type in {"cpu", "cuda"}
     )
     head_dim = context.d_model // context.num_heads
-    mixed_shape = (context.seq_len >= 1024 and head_dim == 32) or (
-        context.batch_size in {64, 128}
-        and context.seq_len == 128
-        and context.d_model in {32, 128}
+    efficient_core_shape = is_mixed_fp16_core_efficient_attention_family(
+        batch_size=context.batch_size,
+        seq_len=context.seq_len,
+        num_heads=context.num_heads,
+        head_dim=head_dim,
     )
+    cudnn_core_shape = is_streamed_mixed_fp16_core_cudnn_slice(
+        batch_size=context.batch_size,
+        seq_len=context.seq_len,
+        num_heads=context.num_heads,
+        head_dim=head_dim,
+        ffn_dim=context.ffn_dim or 0,
+        num_layers=context.num_layers or 0,
+    )
+    mixed_fp16_core_shape = efficient_core_shape or cudnn_core_shape
+    mixed_shape = (
+        (context.seq_len >= 1024 and head_dim in {32, 64})
+        or (
+            context.batch_size in {64, 128}
+            and context.seq_len == 128
+            and context.d_model in {32, 128}
+        )
+        or efficient_core_shape
+    )
+    cudnn_mixed_shape = context.seq_len >= 1024 and head_dim == 64
     compiler = getattr(torch, "compile", None)
     mixed_runtime_available = False
+    cudnn_runtime_available = False
     if context.device.type == "cuda":
+        compute_capability = torch.cuda.get_device_capability(context.device)
         mixed_runtime_available = bool(
             torch.backends.cuda.mem_efficient_sdp_enabled()
-            and torch.cuda.get_device_capability(context.device) >= (8, 0)
+            and compute_capability >= (8, 0)
+        )
+        cudnn_runtime_available = bool(
+            torch.backends.cuda.cudnn_sdp_enabled()
+            and torch.backends.cudnn.is_available()
+            and compute_capability >= (8, 0)
         )
     compiled_residual_base = (
         causal_sdpa
@@ -131,6 +176,17 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and callable(compiler)
         and not torch.compiler.is_compiling()
     )
+    triton_residual_base = (
+        inference
+        and context.device.type == "cuda"
+        and context.dtype == torch.float32
+        and context.input_contiguous
+        and not context.has_valid_token_mask
+        and context.d_model == 128
+        and context.batch_size * context.seq_len >= 1_000_000
+        and not torch.compiler.is_compiling()
+        and triton_residual_layer_norm_available()
+    )
     return _Capabilities(
         causal_sdpa=causal_sdpa,
         cuda_graph=(
@@ -140,6 +196,18 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             and context.input_contiguous
         ),
         compiled_residual_layer_norm=compiled_residual_base,
+        triton_residual_layer_norm=triton_residual_base,
+        mixed_fp16_cudnn_attention=(
+            inference
+            and context.causal
+            and context.device.type == "cuda"
+            and context.dtype == torch.float32
+            and context.input_contiguous
+            and not context.has_valid_token_mask
+            and context.mask_compatible
+            and cudnn_mixed_shape
+            and cudnn_runtime_available
+        ),
         mixed_fp16_efficient_attention=(
             inference
             and context.causal
@@ -150,6 +218,16 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             and context.mask_compatible
             and mixed_shape
             and mixed_runtime_available
+        ),
+        mixed_fp16_core=(
+            inference
+            and context.causal
+            and context.device.type == "cuda"
+            and context.dtype == torch.float32
+            and context.input_contiguous
+            and not context.has_valid_token_mask
+            and context.mask_compatible
+            and mixed_fp16_core_shape
         ),
     )
 
@@ -164,15 +242,24 @@ def _resolved_components(
     if spec.use_cuda_graph and capabilities.cuda_graph:
         resolved.add(ExecutionComponent.CUDA_GRAPH)
     if (
-        spec.use_compiled_residual_layer_norm
+        spec.residual_norm is ResidualNormBackend.COMPILED
         and capabilities.compiled_residual_layer_norm
     ):
         resolved.add(ExecutionComponent.COMPILED_RESIDUAL_LAYER_NORM)
+    if (
+        spec.residual_norm is ResidualNormBackend.TRITON
+        and capabilities.triton_residual_layer_norm
+    ):
+        resolved.add(ExecutionComponent.TRITON_RESIDUAL_LAYER_NORM)
+    if spec.attention == "mixed_fp16_cudnn" and capabilities.mixed_fp16_cudnn_attention:
+        resolved.add(ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION)
     if (
         spec.attention == "mixed_fp16_efficient"
         and capabilities.mixed_fp16_efficient_attention
     ):
         resolved.add(ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION)
+    if spec.linear_compute == "float16" and capabilities.mixed_fp16_core:
+        resolved.add(ExecutionComponent.MIXED_FP16_CORE)
     return frozenset(resolved)
 
 
@@ -195,24 +282,40 @@ def resolve_execution_plan(
     if fully_applied:
         attention_backend = spec.attention
         selected_policy = spec.policy_id
+        linear_backend = (
+            "autocast_fp16" if spec.linear_compute == "float16" else "torch"
+        )
+        linear_compute_dtype = (
+            "float16"
+            if spec.linear_compute == "float16"
+            else str(context.dtype).removeprefix("torch.")
+        )
+        attention_compute_dtype = (
+            "float16"
+            if spec.attention in {"mixed_fp16_cudnn", "mixed_fp16_efficient"}
+            else str(context.dtype).removeprefix("torch.")
+        )
     else:
         attention_backend = "safe_streaming"
         selected_policy = "safe"
+        attention_compute_dtype = str(context.dtype).removeprefix("torch.")
+        linear_backend = "torch"
+        linear_compute_dtype = str(context.dtype).removeprefix("torch.")
         resolved = frozenset()
 
     use_cuda_graph = fully_applied and spec.use_cuda_graph
-    use_compiled_residual_layer_norm = (
-        fully_applied and spec.use_compiled_residual_layer_norm
-    )
     return ExecutionPlan(
         requested_policy=requested_policy,
         selected_policy=selected_policy,
         attention_backend=attention_backend,
+        attention_compute_dtype=attention_compute_dtype,
+        linear_backend=linear_backend,
+        linear_compute_dtype=linear_compute_dtype,
         runtime_wrapper="cuda_graph" if use_cuda_graph else "eager",
         residual_norm_backend=(
-            "compiled_residual_layer_norm"
-            if use_compiled_residual_layer_norm
-            else "torch"
+            spec.residual_norm.value
+            if fully_applied
+            else ResidualNormBackend.TORCH.value
         ),
         has_valid_token_mask=context.has_valid_token_mask,
         required_components=tuple(

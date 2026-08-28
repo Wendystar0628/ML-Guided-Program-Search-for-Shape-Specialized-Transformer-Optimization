@@ -144,6 +144,35 @@ def test_each_cuda_anchor_failure_is_isolated(
     )
 
 
+def test_gemm_anchor_persists_only_the_best_saturation_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    measured_dimensions: list[int] = []
+
+    def measure(
+        _device: torch.device,
+        _dtype: torch.dtype,
+        dimension: int,
+    ) -> dict[str, float | int]:
+        measured_dimensions.append(dimension)
+        return {
+            "dimension": dimension,
+            "latency_ms": 2.0 if dimension == 2048 else 3.0,
+            "tflops": 40.0 if dimension == 2048 else 80.0,
+        }
+
+    monkeypatch.setattr(probe, "_measure_square_gemm", measure)
+
+    anchor = probe._gemm_anchor(torch.device("cuda:0"), torch.float32)
+
+    assert measured_dimensions == [2048, 4096]
+    assert anchor["method"] == "saturated_square_torch_mm"
+    assert anchor["dimension"] == 4096
+    assert anchor["latency_ms"] == 3.0
+    assert anchor["tflops"] == 80.0
+    assert "measurements" not in anchor
+
+
 def test_execute_probe_cpu_includes_new_sections_without_gpu_work() -> None:
     result = probe.execute_probe({"device": "cpu"})
 

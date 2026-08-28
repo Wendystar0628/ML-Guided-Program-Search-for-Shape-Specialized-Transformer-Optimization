@@ -12,7 +12,7 @@ def test_exact_official_shape_route_resolves() -> None:
     table = validate_route_table(exact_route_document("graph"))
 
     assert resolve_route(table, exact_match()) == "graph"
-    assert resolve_route(table, exact_match(case_id="official_03")) == "auto"
+    assert resolve_route(table, exact_match(case_id="official_03")) == "eager-sdpa"
 
 
 def test_route_table_rejects_removed_policy() -> None:

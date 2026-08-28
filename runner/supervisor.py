@@ -27,8 +27,10 @@ from runner.contracts import (
     validate_official_snapshot,
 )
 from runner.locking import device_measurement_lease
+from runner.performance_metrics import derive_performance_metrics
 from runner.result_contracts import (
     RUN_RESULT_SCHEMA_VERSION,
+    ComparisonMode,
     compact_correctness,
     compact_performance,
     parse_worker_response,
@@ -36,6 +38,7 @@ from runner.result_contracts import (
     validate_correctness,
     validate_execution_path,
 )
+from runner.workload_execution import effective_protocol, plan_workload_execution
 
 
 class CancellationToken:
@@ -378,6 +381,9 @@ def _success_contract_error(result: dict[str, Any]) -> str | None:
     if run_kind == "benchmark":
         performance = result.get("performance")
         protocol = result["protocol"]
+        comparison_mode = result.get("comparison_mode")
+        if comparison_mode not in {"baseline_only", "paired", "target_only"}:
+            return "missing comparison mode"
         repeats = protocol.get("repeats")
         rounds = protocol.get("rounds")
         expected_timer = (
@@ -388,6 +394,7 @@ def _success_contract_error(result: dict[str, Any]) -> str | None:
         _parsed_performance, performance_error = validate_benchmark_performance(
             performance,
             target=str(result.get("target")),
+            comparison_mode=comparison_mode,
             repeats=repeats,
             rounds=rounds,
             expected_timer=expected_timer,
@@ -540,6 +547,15 @@ def _run_managed_benchmark(
     cancellation_token: CancellationToken | None = None,
 ) -> tuple[dict[str, Any], Path]:
     project_root = project_root.resolve()
+    workload_execution_plan = plan_workload_execution(shape, variant)
+    protocol = effective_protocol(protocol, workload_execution_plan)
+    comparison_mode: ComparisonMode
+    if target == "baseline":
+        comparison_mode = "baseline_only"
+    elif workload_execution_plan.is_streamed:
+        comparison_mode = "target_only"
+    else:
+        comparison_mode = "paired"
     run_id = new_run_id()
     created_at = utc_now()
     snapshot = validate_official_snapshot(project_root)
@@ -551,6 +567,7 @@ def _run_managed_benchmark(
         "protocol": protocol.as_dict(),
         "device": device,
         "target": target,
+        "comparison_mode": comparison_mode,
     }
     if solution_policy is not None and target == "solution":
         request["solution_policy"] = solution_policy
@@ -581,6 +598,7 @@ def _run_managed_benchmark(
             "created_at": created_at,
             "run_kind": "benchmark",
             "target": target,
+            "comparison_mode": comparison_mode,
             "requested_device": device,
             "outcome": response["outcome"],
             "workload": _workload_record(
@@ -596,8 +614,21 @@ def _run_managed_benchmark(
     if target == "solution" and correctness is not None:
         result["correctness"] = correctness
     if response["outcome"] == "success":
-        performance = compact_performance(response.get("performance"), target)
+        performance = compact_performance(
+            response.get("performance"),
+            target,
+            comparison_mode,
+        )
         if performance is not None:
+            measured_side = (
+                performance.get("baseline")
+                if comparison_mode == "baseline_only"
+                else performance.get("target")
+            )
+            if isinstance(measured_side, dict):
+                performance.update(
+                    derive_performance_metrics(shape, variant, measured_side)
+                )
             result["performance"] = performance
     execution_path = response.get("execution_path")
     if isinstance(execution_path, dict):
@@ -614,6 +645,9 @@ def _run_managed_benchmark(
     environment = response.get("environment")
     if isinstance(environment, dict):
         result["environment"] = environment
+    workload_execution = response.get("workload_execution")
+    if isinstance(workload_execution, dict):
+        result["workload_execution"] = workload_execution
     result["protocol"] = protocol.as_dict()
     failure = _compact_failure(response.get("failure"))
     if failure is not None:

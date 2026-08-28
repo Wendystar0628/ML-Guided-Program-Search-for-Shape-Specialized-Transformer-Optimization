@@ -77,7 +77,7 @@ def exact_route_document(
 ) -> dict[str, object]:
     return {
         "schema_version": SCHEMA_VERSION,
-        "default_policy": "auto",
+        "default_policy": "eager-sdpa",
         "routes": [
             {
                 "match": exact_match(
@@ -149,20 +149,20 @@ def formal_summary(
     case_id: str = "official_02",
     challenger_policy: str = "graph",
     challenger_speedup: float = 1.20,
-    auto_speedup: float = 1.0,
+    control_speedup: float = 1.0,
     challenger_target_median_ms: float | None = None,
     challenger_target_p90_ms: float | None = None,
-    auto_target_median_ms: float | None = None,
-    auto_target_p90_ms: float | None = None,
+    control_target_median_ms: float | None = None,
+    control_target_p90_ms: float | None = None,
     implementation_hash: str = "fixture-implementation-hash",
     official_hash: str = "0" * 64,
 ) -> dict[str, Any]:
     observations = [
         candidate_observation(
-            "auto",
-            auto_speedup,
-            target_median_ms=auto_target_median_ms,
-            target_p90_ms=auto_target_p90_ms,
+            "eager-sdpa",
+            control_speedup,
+            target_median_ms=control_target_median_ms,
+            target_p90_ms=control_target_p90_ms,
             implementation_hash=implementation_hash,
             official_hash=official_hash,
         ),
@@ -248,6 +248,7 @@ def routing_probe_result() -> dict[str, object]:
                     "cuda_runtime": str(torch.version.cuda),
                     "driver": "fixture-driver",
                     "efficient_sdpa_enabled": True,
+                    "cudnn_sdpa_enabled": True,
                 },
                 "gpu": {
                     "available": True,

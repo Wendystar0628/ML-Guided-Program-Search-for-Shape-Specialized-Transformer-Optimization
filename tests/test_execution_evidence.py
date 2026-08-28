@@ -25,7 +25,7 @@ def _config() -> official.TransformerConfig:
 
 def test_eager_observation_covers_every_execution_dimension() -> None:
     model = transformer_module.UserOptimizedTransformer(_config()).eval()
-    model.configure_runtime_policy(policy="auto")
+    model.configure_runtime_policy(policy="eager-sdpa")
     model.set_execution_observation(True)
 
     with torch.inference_mode():
@@ -75,3 +75,77 @@ def test_mixed_attention_evidence_rejects_a_native_sdpa_fallback() -> None:
     candidate = CANDIDATE_SPECS["mixed-fp16-efficient"]
     assert candidate.evidence_matches(path)
     assert not candidate.evidence_matches(fallback)
+
+
+def test_mixed_core_evidence_rejects_linear_or_dtype_fallback() -> None:
+    path = {
+        "requested_policy": "mixed-fp16-core-efficient",
+        "selected_policy": "mixed-fp16-core-efficient",
+        "attention_backend": "mixed_fp16_efficient",
+        "attention_compute_dtype": "float16",
+        "linear_backend": "autocast_fp16",
+        "linear_compute_dtype": "float16",
+        "runtime_wrapper": "eager",
+        "residual_norm_backend": "torch",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["mixed_fp16_efficient"],
+            "attention_compute_dtypes": ["float16"],
+            "linear_backends": ["autocast_fp16"],
+            "linear_compute_dtypes": ["float16"],
+            "residual_norm_backends": ["torch"],
+        },
+    }
+    linear_fallback = deepcopy(path)
+    linear_fallback["observed_execution"]["linear_backends"] = ["torch"]
+    dtype_fallback = deepcopy(path)
+    dtype_fallback["observed_execution"]["linear_compute_dtypes"] = ["float32"]
+
+    candidate = CANDIDATE_SPECS["mixed-fp16-core-efficient"]
+    assert candidate.evidence_matches(path)
+    assert not candidate.evidence_matches(linear_fallback)
+    assert not candidate.evidence_matches(dtype_fallback)
+
+
+def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
+    triton_path = {
+        "requested_policy": "mixed-fp16-core-efficient-triton-norm",
+        "selected_policy": "mixed-fp16-core-efficient-triton-norm",
+        "attention_backend": "mixed_fp16_efficient",
+        "attention_compute_dtype": "float16",
+        "linear_backend": "autocast_fp16",
+        "linear_compute_dtype": "float16",
+        "runtime_wrapper": "eager",
+        "residual_norm_backend": "triton_residual_layer_norm",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["mixed_fp16_efficient"],
+            "attention_compute_dtypes": ["float16"],
+            "linear_backends": ["autocast_fp16"],
+            "linear_compute_dtypes": ["float16"],
+            "residual_norm_backends": ["triton_residual_layer_norm"],
+        },
+    }
+    compiled_graph_path = {
+        "requested_policy": "graph-mixed-fp16-efficient-compiled-norm",
+        "selected_policy": "graph-mixed-fp16-efficient-compiled-norm",
+        "attention_backend": "mixed_fp16_efficient",
+        "runtime_wrapper": "cuda_graph",
+        "residual_norm_backend": "compiled_residual_layer_norm",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["mixed_fp16_efficient"],
+            "residual_norm_backends": ["compiled_residual_layer_norm"],
+            "runtime_wrappers": ["cuda_graph"],
+        },
+    }
+
+    for candidate_id, path in (
+        ("mixed-fp16-core-efficient-triton-norm", triton_path),
+        ("graph-mixed-fp16-efficient-compiled-norm", compiled_graph_path),
+    ):
+        candidate = CANDIDATE_SPECS[candidate_id]
+        assert candidate.evidence_matches(path)
+        fallback = deepcopy(path)
+        fallback["observed_execution"]["residual_norm_backends"] = ["torch"]
+        assert not candidate.evidence_matches(fallback)

@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "verified_streamed_reference",
+  "created_at": "2026-08-28T14:58:29.431449+00:00",
+  "validation_level": "provisional",
+  "comparison_mode": "target_only",
+  "workload_set_id": "official_transformer_v1",
+  "workload_sha256": "621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9",
+  "variant": {
+    "dtype": "float32",
+    "padding_ratio": 0.0,
+    "input_scale": 1.0
+  },
+  "source": {
+    "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
+    "solution_sha256": "07882d07b4d1f682ebaa1fc2d8bc1a7a2ff65ab2d9a3740481e4c9499ae34d9a"
+  },
+  "protocol": {
+    "preset": "formal",
+    "seed": 1234,
+    "accuracy_trials": 1,
+    "rtol": 0.02,
+    "atol": 0.002,
+    "warmup": 2,
+    "repeats": 1,
+    "rounds": 3,
+    "compile_baseline": false,
+    "compile_solution": false,
+    "compile_mode": "default",
+    "matmul_precision": "high",
+    "allow_tf32": true,
+    "timeout_seconds": 1200.0
+  },
+  "environment": {
+    "device": "cuda:0",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "torch": "2.12.1+cu132",
+    "cuda_runtime": "13.2",
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "compute_capability": "8.9",
+    "total_memory_bytes": 17170956288,
+    "driver": "610.88"
+  },
+  "bundle_identity": {
+    "manifest_sha256": "caa0d0b11be03dd345d4b4423f3a8f6e2919d50be7fbb12676dbc0bfd2c36f2b",
+    "profile_sha256": "2dba6067101dcddcd33489f5865d7bde968654b11571ba3674dfea91767cdb2e",
+    "source_probe_run_id": "20260828T142405.786979Z-053f1d66"
+  },
+  "case_results": [
+    {
+      "case_id": "official_14",
+      "outcome": "success",
+      "solution": {
+        "median_ms": 15987.853881835938,
+        "p90_ms": 15988.451147460937
+      },
+      "end_to_end_ms": 19333.0952000033,
+      "peak_device_allocated_bytes": 7437577728,
+      "useful_matmul_flops": 1391263744000000,
+      "attention_flops_fraction": 0.942117,
+      "achieved_tflops": 87.0200437333642,
+      "accuracy": {
+        "passed": true,
+        "trial_count": 1,
+        "failed_elements": 0,
+        "max_abs_error": 0.0008338689804077148,
+        "max_relative_error": 10659.994140625,
+        "compared_elements": 102400000
+      },
+      "selected_policy": "mixed-fp16-core-cudnn",
+      "policy_applied": true,
+      "actual_policy": "mixed-fp16-core-cudnn",
+      "execution": {
+        "attention_backend": "mixed_fp16_cudnn",
+        "linear_backend": "autocast_fp16",
+        "attention_compute_dtype": "float16",
+        "linear_compute_dtype": "float16",
+        "residual_norm_backend": "torch"
+      },
+      "schedule": {
+        "timing_microbatch_size": 2,
+        "microbatch_count": 16,
+        "reference_kind": "internal_query_block",
+        "reference_scope": "validation_microbatch",
+        "selection_method": "runtime_policy_and_microbatch_screen",
+        "selection_evidence_sha256": "4faac8d3f0dffa227eeba31a56e5b31ea9d68879e13441f16f8a8535bca74d6c"
+      },
+      "measured_compute_roof_tflops": 93.73155816657429,
+      "project_estimated_mfu": 0.9283964273667278
+    }
+  ],
+  "metric_definition": {
+    "id": "project_estimated_mfu_v1",
+    "measured_compute_roof_tflops": "FLOP-weighted harmonic roof from saturated GEMM anchors matched to observed linear and attention compute dtypes",
+    "project_estimated_mfu": "segmented ideal compute time divided by measured Transformer target time; project estimate, not an official score",
+    "publication_rule": "omit instead of clamp when inputs or anchors are unavailable or the estimate exceeds 1.05"
+  }
+}

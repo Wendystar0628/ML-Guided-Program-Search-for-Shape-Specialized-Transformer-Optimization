@@ -16,8 +16,8 @@ from project_identity import (
     solution_implementation_hash,
 )
 
-SCHEMA_VERSION = 5
-MANIFEST_SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
+MANIFEST_SCHEMA_VERSION = 5
 ALLOWED_POLICIES = ROUTABLE_POLICY_IDS
 
 HARDWARE_ROUTE_FIELDS = frozenset(
@@ -66,7 +66,13 @@ _MANIFEST_FIELDS = frozenset(
     {"schema_version", "workload_set", "official", "solution", "route_table", "formal"}
 )
 _FORMAL_FIELDS = frozenset(
-    {"protocol", "variant", "covered_case_ids", "excluded_case_ids"}
+    {
+        "protocol",
+        "variant",
+        "covered_case_ids",
+        "provisional_case_ids",
+        "excluded_case_ids",
+    }
 )
 _VARIANT_FIELDS = frozenset({"dtype", "padding_ratio", "input_scale"})
 
@@ -101,6 +107,7 @@ class VerifiedBundleManifest:
     formal_protocol: dict[str, object]
     formal_variant: dict[str, object]
     covered_case_ids: tuple[str, ...]
+    provisional_case_ids: tuple[str, ...]
     excluded_case_ids: tuple[str, ...]
 
 
@@ -219,8 +226,8 @@ def validate_verified_route_table(
     """Validate routes published inside a verified hardware bundle."""
 
     table = validate_route_table(payload)
-    if table.default_policy != "auto":
-        raise ValueError("verified route table must use default_policy=auto")
+    if table.default_policy != "eager-sdpa":
+        raise ValueError("verified route table must use default_policy=eager-sdpa")
     if expected_identity is not None and (
         not expected_identity or not set(expected_identity) <= HARDWARE_ROUTE_FIELDS
     ):
@@ -315,7 +322,7 @@ def _validated_variant(value: object) -> dict[str, object]:
 
 
 def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
-    """Validate the strict v4 verified-bundle identity document."""
+    """Validate the strict v5 verified-bundle identity document."""
 
     if not isinstance(payload, dict):
         raise TypeError("verified bundle manifest must be a JSON object")
@@ -352,15 +359,27 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
         field="formal.covered_case_ids",
         allow_empty=False,
     )
+    provisional = _case_ids(
+        formal.get("provisional_case_ids"),
+        field="formal.provisional_case_ids",
+        allow_empty=True,
+    )
     excluded = _case_ids(
         formal.get("excluded_case_ids"),
         field="formal.excluded_case_ids",
         allow_empty=True,
     )
-    overlap = set(covered) & set(excluded)
+    covered_set = set(covered)
+    provisional_set = set(provisional)
+    excluded_set = set(excluded)
+    overlap = (
+        (covered_set & provisional_set)
+        | (covered_set & excluded_set)
+        | (provisional_set & excluded_set)
+    )
     if overlap:
         raise ValueError(
-            "formal covered and excluded case ids overlap: "
+            "formal covered, provisional, and excluded case ids overlap: "
             + ", ".join(sorted(overlap))
         )
 
@@ -382,6 +401,7 @@ def validate_bundle_manifest(payload: object) -> VerifiedBundleManifest:
         formal_protocol=dict(protocol),
         formal_variant=variant,
         covered_case_ids=covered,
+        provisional_case_ids=provisional,
         excluded_case_ids=excluded,
     )
 
@@ -577,13 +597,15 @@ def _validate_manifest_coverage(
         shapes_by_id[case_id] = shape
 
     covered = set(manifest.covered_case_ids)
+    provisional = set(manifest.provisional_case_ids)
     excluded = set(manifest.excluded_case_ids)
     expected = set(shapes_by_id)
-    if covered & excluded:
-        raise ValueError("verified bundle covered and excluded cases overlap")
-    if covered | excluded != expected:
-        missing = ", ".join(sorted(expected - covered - excluded))
-        unknown = ", ".join(sorted((covered | excluded) - expected))
+    partition = covered | provisional | excluded
+    if (covered & provisional) or (covered & excluded) or (provisional & excluded):
+        raise ValueError("verified bundle case partitions overlap")
+    if partition != expected:
+        missing = ", ".join(sorted(expected - partition))
+        unknown = ", ".join(sorted(partition - expected))
         raise ValueError(
             "verified bundle case partition is incomplete; "
             f"missing={missing}; unknown={unknown}"

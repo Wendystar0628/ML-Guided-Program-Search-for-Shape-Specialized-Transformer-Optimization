@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from route_contracts import validate_route_table
+from route_contracts import MANIFEST_SCHEMA_VERSION, validate_route_table
 from runner import route_promotion
 from runner.contracts import ContractError
 from runner.route_promotion import build_promoted_route_document
@@ -63,18 +63,18 @@ def test_candidate_fallback_cannot_be_promoted_as_applied() -> None:
 
     document, winner = build_promoted_route_document(None, summary)
 
-    assert winner["solution_policy"] == "auto"
-    assert document["routes"][0]["policy"] == "auto"
+    assert winner["solution_policy"] == "eager-sdpa"
+    assert document["routes"][0]["policy"] == "eager-sdpa"
 
 
-def test_challenger_below_gain_margin_keeps_auto() -> None:
+def test_challenger_below_gain_margin_keeps_eager_sdpa() -> None:
     document, winner = build_promoted_route_document(
         None,
         formal_summary(challenger_speedup=1.01),
     )
 
-    assert winner["solution_policy"] == "auto"
-    assert document["routes"][0]["policy"] == "auto"
+    assert winner["solution_policy"] == "eager-sdpa"
+    assert document["routes"][0]["policy"] == "eager-sdpa"
 
 
 def test_promotion_ranks_target_latency_not_worker_baseline_speedup() -> None:
@@ -82,8 +82,8 @@ def test_promotion_ranks_target_latency_not_worker_baseline_speedup() -> None:
         None,
         formal_summary(
             challenger_policy="graph",
-            auto_speedup=4.0,
-            auto_target_median_ms=2.0,
+            control_speedup=4.0,
+            control_target_median_ms=2.0,
             challenger_speedup=1.1,
             challenger_target_median_ms=1.0,
         ),
@@ -100,8 +100,8 @@ def test_removed_candidate_identity_is_never_accepted() -> None:
 
     document, winner = build_promoted_route_document(None, summary)
 
-    assert winner["solution_policy"] == "auto"
-    assert document["routes"][0]["policy"] == "auto"
+    assert winner["solution_policy"] == "eager-sdpa"
+    assert document["routes"][0]["policy"] == "eager-sdpa"
 
 
 def _manifest_inputs(
@@ -144,7 +144,7 @@ def _manifest_inputs(
     return route_document, summaries
 
 
-def test_manifest_v4_records_complete_local_coverage_and_shape_14_exclusion(
+def test_manifest_v5_records_verified_and_shape_14_provisional_scopes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -161,11 +161,12 @@ def test_manifest_v4_records_complete_local_coverage_and_shape_14_exclusion(
         "protocol": summaries[0]["protocol"],
         "variant": summaries[0]["workload"]["variant"],
         "covered_case_ids": [f"official_{index:02d}" for index in range(1, 14)],
-        "excluded_case_ids": ["official_14"],
+        "provisional_case_ids": ["official_14"],
+        "excluded_case_ids": [],
     }
 
 
-def test_manifest_v4_incremental_update_merges_covered_cases(
+def test_manifest_v5_incremental_update_merges_covered_cases(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,7 +190,7 @@ def test_manifest_v4_incremental_update_merges_covered_cases(
     )
 
 
-def test_manifest_v4_rejects_old_manifest_on_incremental_update(
+def test_manifest_v5_rejects_old_manifest_on_incremental_update(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -200,7 +201,7 @@ def test_manifest_v4_rejects_old_manifest_on_incremental_update(
         summaries,
         previous_manifest=None,
     )
-    previous["schema_version"] = 3
+    previous["schema_version"] = MANIFEST_SCHEMA_VERSION - 1
 
     with pytest.raises(ContractError, match="complete calibration"):
         route_promotion._build_verified_bundle_manifest(

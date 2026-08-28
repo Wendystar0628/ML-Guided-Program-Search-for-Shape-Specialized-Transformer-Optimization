@@ -30,10 +30,6 @@ from runner.contracts import (
 )
 from runner.hardware_router import build_routing_plan
 from runner.locking import device_measurement_lease
-from runner.resource_guard import (
-    ensure_local_benchmark_allowed,
-    local_benchmark_shapes,
-)
 from runner.route_promotion import (
     auto_promote_calibration,
     find_matching_verified_route,
@@ -53,6 +49,10 @@ from runner.tuning import (
     is_deployable_candidate,
     run_tuning_case,
     select_candidates,
+)
+from runner.workload_execution import (
+    plan_workload_execution,
+    route_eligible_shapes,
 )
 
 ProgressCallback = Callable[["CalibrationEvent"], None]
@@ -323,6 +323,7 @@ def hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
             "cuda_runtime",
             "triton_available",
             "efficient_sdpa_enabled",
+            "cudnn_sdpa_enabled",
         ):
             value = software.get(name)
             if value is not None:
@@ -426,16 +427,29 @@ class CalibrationService:
             request.project_root,
             request.workload_set_id,
         )
+        formal_shapes = route_eligible_shapes(workload_set.shapes, request.variant)
         shapes = (
             tuple(
                 select_transformer_shape(workload_set, case_id)
                 for case_id in request.case_ids
             )
             if request.case_ids
-            else local_benchmark_shapes(workload_set.shapes)
+            else formal_shapes
         )
+        provisional: list[tuple[str, str]] = []
         for shape in shapes:
-            ensure_local_benchmark_allowed(shape)
+            execution_plan = plan_workload_execution(shape, request.variant)
+            if not execution_plan.formal_eligible:
+                provisional.append((shape.case_id, execution_plan.execution_mode))
+        if provisional:
+            details = ", ".join(
+                f"{case_id} ({execution_mode})"
+                for case_id, execution_mode in provisional
+            )
+            raise ContractError(
+                "calibrate accepts only resident shapes with a formal reference; "
+                "use the streamed benchmark/tune workflow for: " + details
+            )
         session_id = request.session_id or new_run_id()
         token = cancellation_token or CancellationToken()
         solution_root = request.project_root / "solution"
@@ -500,8 +514,8 @@ class CalibrationService:
         checkpoint: _CalibrationCheckpoint,
     ) -> CalibrationResult:
         case_ids = tuple(shape.case_id for shape in shapes)
-        local_shapes = local_benchmark_shapes(workload_set.shapes)
-        full_case_ids = [shape.case_id for shape in local_shapes]
+        formal_shapes = route_eligible_shapes(workload_set.shapes, request.variant)
+        full_case_ids = [shape.case_id for shape in formal_shapes]
         checkpoint.configure(
             workload_sha256=workload_set.sha256,
             case_ids=case_ids,
@@ -648,7 +662,7 @@ class CalibrationService:
             try:
                 validate_selected_route_groups(
                     list(case_ids),
-                    local_shapes,
+                    formal_shapes,
                     request.variant,
                 )
             except ValueError as exc:
@@ -1032,21 +1046,21 @@ class CalibrationService:
             plan["decision_scope"] = "unsupported"
             plan["requires_full_workload_measurement"] = False
             return plan
-        if (
-            isinstance(feasibility, Mapping)
-            and feasibility.get("baseline_executable") is False
-        ):
-            raise ContractError(
-                f"routing plan for {shape.case_id} ranks candidates for an "
-                "unsupported workload"
-            )
         if len(candidate_order) > candidate_limit:
             raise ContractError(
                 f"routing plan for {shape.case_id} exceeds candidate-limit"
             )
-        if "eager-auto" in applicable and "eager-auto" not in candidate_order:
+        baseline_executable = not (
+            isinstance(feasibility, Mapping)
+            and feasibility.get("baseline_executable") is False
+        )
+        if (
+            baseline_executable
+            and "eager-sdpa" in applicable
+            and "eager-sdpa" not in candidate_order
+        ):
             raise ContractError(
-                f"routing plan for {shape.case_id} must retain eager-auto"
+                f"routing plan for {shape.case_id} must retain eager-sdpa"
             )
         if (
             incumbent_candidate_id is not None
