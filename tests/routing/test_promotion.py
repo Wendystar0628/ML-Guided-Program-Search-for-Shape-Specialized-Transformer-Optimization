@@ -22,9 +22,9 @@ def test_formal_winner_writes_one_exact_official_shape_route() -> None:
     document, winner = build_promoted_route_document(None, formal_summary())
 
     table = validate_route_table(document)
-    assert winner["solution_policy"] == "inplace-block"
+    assert winner["solution_policy"] == "graph"
     assert len(table.routes) == 1
-    assert table.routes[0][1] == "inplace-block"
+    assert table.routes[0][1] == "graph"
 
 
 def test_smoke_summary_cannot_be_promoted() -> None:
@@ -57,7 +57,7 @@ def test_candidate_fallback_cannot_be_promoted_as_applied() -> None:
     summary = formal_summary()
     challenger = summary["observations"][1]
     challenger["execution_path"] = {
-        "requested_policy": "inplace-block",
+        "requested_policy": "graph",
         "selected_policy": "safe",
     }
 
@@ -137,7 +137,7 @@ def _manifest_inputs(
     route_document["routes"] = [
         {
             "match": exact_match(case_id=f"official_{index:02d}"),
-            "policy": "inplace-block",
+            "policy": "graph",
         }
         for index in range(1, 14)
     ]

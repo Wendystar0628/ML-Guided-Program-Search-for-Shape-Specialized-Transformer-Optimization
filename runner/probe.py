@@ -19,7 +19,8 @@ _ANCHOR_ROUNDS = 3
 _LAUNCH_REPEATS = 128
 _GRAPH_KERNEL_NODES = 8
 _GRAPH_REPEATS = 64
-_COPY_BYTES = 32 * 1024 * 1024
+_MIN_COPY_BYTES = 64 * 1024 * 1024
+_MAX_COPY_BYTES = 256 * 1024 * 1024
 _COPY_REPEATS = 16
 _GEMM_DIMENSION = 1024
 _GEMM_REPEATS = 32
@@ -166,6 +167,9 @@ def _hardware_profile(device: torch.device) -> dict[str, Any]:
             "cudnn": torch.backends.cudnn.version(),
             "triton_available": triton_available,
             "triton": triton_version,
+            "efficient_sdpa_enabled": bool(
+                torch.backends.cuda.mem_efficient_sdp_enabled()
+            ),
         },
     }
     if device.type != "cuda":
@@ -176,6 +180,7 @@ def _hardware_profile(device: torch.device) -> dict[str, Any]:
     if index is None:
         index = torch.cuda.current_device()
     properties = torch.cuda.get_device_properties(index)
+    free_memory_bytes, _total_memory_bytes = torch.cuda.mem_get_info(index)
     memory_clock_rate_khz = _optional_int(
         getattr(properties, "memory_clock_rate", None)
     )
@@ -222,6 +227,7 @@ def _hardware_profile(device: torch.device) -> dict[str, Any]:
         "compute_capability": f"{properties.major}.{properties.minor}",
         "architecture_family": _architecture_family(properties.major, properties.minor),
         "total_memory_bytes": int(properties.total_memory),
+        "free_memory_bytes": int(free_memory_bytes),
         "bf16_supported": bool(torch.cuda.is_bf16_supported()),
         "cuda_graph_available": hasattr(torch.cuda, "CUDAGraph"),
         "sm_count": _optional_int(getattr(properties, "multi_processor_count", None)),
@@ -349,8 +355,28 @@ def _cuda_graph_anchor(device: torch.device) -> dict[str, Any]:
     }
 
 
+def _device_copy_payload_bytes(device: torch.device) -> int:
+    """Choose a bounded working set that is larger than the device L2 cache."""
+
+    index = device.index
+    if index is None:
+        index = torch.cuda.current_device()
+    properties = torch.cuda.get_device_properties(index)
+    l2_bytes = _optional_int(getattr(properties, "L2_cache_size", None)) or 0
+    free_bytes, _total_bytes = torch.cuda.mem_get_info(index)
+    allocation_limit = max(int(free_bytes) // 8, 1024 * 1024)
+    desired = max(_MIN_COPY_BYTES, 3 * l2_bytes)
+    return min(desired, _MAX_COPY_BYTES, allocation_limit)
+
+
 def _device_copy_anchor(device: torch.device) -> dict[str, Any]:
-    source = torch.empty(_COPY_BYTES, device=device, dtype=torch.uint8)
+    payload_bytes = _device_copy_payload_bytes(device)
+    index = device.index
+    if index is None:
+        index = torch.cuda.current_device()
+    properties = torch.cuda.get_device_properties(index)
+    l2_cache_bytes = _optional_int(getattr(properties, "L2_cache_size", None))
+    source = torch.empty(payload_bytes, device=device, dtype=torch.uint8)
     destination = torch.empty_like(source)
     source.fill_(1)
     latency_ms = _cuda_event_latency_ms(
@@ -361,12 +387,16 @@ def _device_copy_anchor(device: torch.device) -> dict[str, Any]:
     )
     return {
         "available": True,
-        "method": "device_to_device_copy",
-        "payload_bytes": _COPY_BYTES,
+        "method": "bounded_device_to_device_copy",
+        "payload_bytes": payload_bytes,
+        "l2_cache_bytes": l2_cache_bytes,
+        "working_set_exceeds_l2": (
+            l2_cache_bytes is not None and payload_bytes > l2_cache_bytes
+        ),
         "repeats_per_round": _COPY_REPEATS,
         "rounds": _ANCHOR_ROUNDS,
         "latency_ms": latency_ms,
-        "effective_bandwidth_gbps": _COPY_BYTES / (latency_ms * 1_000_000.0),
+        "effective_bandwidth_gbps": payload_bytes / (latency_ms * 1_000_000.0),
     }
 
 

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import torch
-import torch.nn.functional as F
 
 from official import torch_transformer_benchmark as official
 from runner.candidates import CANDIDATE_SPECS
 from solution import transformer as transformer_module
-from solution.kernels import ffn
 
 
 def _config() -> official.TransformerConfig:
@@ -23,28 +23,9 @@ def _config() -> official.TransformerConfig:
     )
 
 
-def test_linear_exact_gelu_reports_guard_fallback(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(ffn, "_ATEN_GELU_INPLACE", None)
-    value = torch.randn(3, 5)
-    weight = torch.randn(7, 5)
-    bias = torch.randn(7)
-
-    with torch.inference_mode():
-        actual, backend = ffn.linear_exact_gelu(value, weight, bias)
-
-    expected = F.gelu(F.linear(value, weight, bias), approximate="none")
-    assert backend == "torch"
-    torch.testing.assert_close(actual, expected)
-
-
-def test_inplace_plan_and_helper_share_one_runtime_support_guard(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(ffn, "_ATEN_GELU_INPLACE", None)
+def test_eager_observation_covers_every_execution_dimension() -> None:
     model = transformer_module.UserOptimizedTransformer(_config()).eval()
-    model.configure_runtime_policy(policy="inplace-block")
+    model.configure_runtime_policy(policy="auto")
     model.set_execution_observation(True)
 
     with torch.inference_mode():
@@ -52,46 +33,45 @@ def test_inplace_plan_and_helper_share_one_runtime_support_guard(
 
     path = model.describe_execution_path()
     observed = path["observed_execution"]
-    assert path["selected_policy"] == "safe"
-    assert path["block_backend"] == "torch"
-    assert path["missing_components"] == ["inplace_exact_gelu"]
     assert observed["complete"] is True
-    assert observed["block_backends"] == ["torch", "torch"]
-    assert not CANDIDATE_SPECS["inplace-block"].evidence.matches(
-        solution_policy="inplace-block",
-        execution_path=path,
-    )
+    assert observed["attention_backends"] == ["causal_sdpa", "causal_sdpa"]
+    assert observed["residual_norm_backends"] == ["torch", "torch"]
 
 
-def test_inplace_policy_evidence_rejects_an_unexpected_torch_fallback(
-    monkeypatch,
-) -> None:
-    def fallback_linear_exact_gelu(
-        value: torch.Tensor,
-        weight: torch.Tensor,
-        bias: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, str]:
-        hidden = F.linear(value, weight, bias)
-        return F.gelu(hidden, approximate="none"), "torch"
+def test_graph_fused_norm_evidence_rejects_an_observed_fallback() -> None:
+    path = {
+        "requested_policy": "graph-fused-norm",
+        "selected_policy": "graph-fused-norm",
+        "attention_backend": "causal_sdpa",
+        "runtime_wrapper": "cuda_graph",
+        "residual_norm_backend": "compiled_residual_layer_norm",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["causal_sdpa"],
+            "residual_norm_backends": ["torch"],
+            "runtime_wrappers": ["cuda_graph"],
+        },
+    }
 
-    monkeypatch.setattr(
-        transformer_module,
-        "linear_exact_gelu",
-        fallback_linear_exact_gelu,
-    )
-    model = transformer_module.UserOptimizedTransformer(_config()).eval()
-    model.configure_runtime_policy(policy="inplace-block")
-    model.set_execution_observation(True)
+    assert not CANDIDATE_SPECS["graph-fused-norm"].evidence_matches(path)
 
-    with torch.inference_mode():
-        model(torch.randn(1, 4, 8), torch.ones(1, 4, dtype=torch.bool))
 
-    path = model.describe_execution_path()
-    observed = path["observed_execution"]
-    assert path["block_backend"] == "inplace_exact_gelu"
-    assert observed["complete"] is True
-    assert observed["block_backends"] == ["torch", "torch"]
-    assert not CANDIDATE_SPECS["inplace-block"].evidence.matches(
-        solution_policy="inplace-block",
-        execution_path=path,
-    )
+def test_mixed_attention_evidence_rejects_a_native_sdpa_fallback() -> None:
+    path = {
+        "requested_policy": "mixed-fp16-efficient",
+        "selected_policy": "mixed-fp16-efficient",
+        "attention_backend": "mixed_fp16_efficient",
+        "runtime_wrapper": "eager",
+        "residual_norm_backend": "torch",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["mixed_fp16_efficient"],
+            "residual_norm_backends": ["torch"],
+        },
+    }
+    fallback = deepcopy(path)
+    fallback["observed_execution"]["attention_backends"] = ["causal_sdpa"]
+
+    candidate = CANDIDATE_SPECS["mixed-fp16-efficient"]
+    assert candidate.evidence_matches(path)
+    assert not candidate.evidence_matches(fallback)

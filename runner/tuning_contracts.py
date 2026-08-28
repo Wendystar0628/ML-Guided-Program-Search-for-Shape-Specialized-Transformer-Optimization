@@ -10,7 +10,7 @@ from typing import Any
 from runner.candidates import candidate_spec, deployable_policy_ids
 from runner.contracts import ContractError
 
-TUNING_SCHEMA_VERSION = 4
+TUNING_SCHEMA_VERSION = 5
 
 
 def _positive_latency(value: Any) -> float | None:

@@ -302,6 +302,7 @@ def hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
             "bf16_supported": "bf16_supported",
             "cuda_graph_available": "cuda_graph_available",
             "total_memory_bytes": "total_memory_bytes",
+            "free_memory_bytes": "free_memory_bytes",
             "sm_count": "sm_count",
             "l2_cache_bytes": "l2_cache_bytes",
             "shared_memory_per_sm_bytes": "shared_memory_per_sm_bytes",
@@ -316,7 +317,13 @@ def hardware_profile_from_probe(result: Mapping[str, Any]) -> dict[str, Any]:
                 profile[profile_name] = value
     software = hardware_profile.get("software")
     if isinstance(software, Mapping):
-        for name in ("driver", "torch", "cuda_runtime"):
+        for name in (
+            "driver",
+            "torch",
+            "cuda_runtime",
+            "triton_available",
+            "efficient_sdpa_enabled",
+        ):
             value = software.get(name)
             if value is not None:
                 profile[name] = value

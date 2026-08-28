@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 
 from policy_registry import get_policy_spec
-from solution import execution_plan as execution_plan_module
 from solution.execution_plan import ExecutionContext, resolve_execution_plan
 
 
@@ -16,10 +15,16 @@ def _context(
     grad_enabled: bool = False,
     has_valid_token_mask: bool = False,
     mask_compatible: bool = True,
+    batch_size: int = 64,
+    seq_len: int = 128,
+    d_model: int = 128,
+    num_heads: int = 4,
 ) -> ExecutionContext:
     return ExecutionContext(
-        d_model=128,
-        num_heads=4,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        d_model=d_model,
+        num_heads=num_heads,
         causal=causal,
         device=torch.device(device),
         dtype=dtype,
@@ -45,7 +50,7 @@ def test_auto_plan_selects_the_shape_independent_native_path() -> None:
     assert plan.selected_policy == "auto"
     assert plan.attention_backend == "causal_sdpa"
     assert plan.runtime_wrapper == "eager"
-    assert plan.block_backend == "torch"
+    assert plan.residual_norm_backend == "torch"
     assert plan.resolved_components == ("causal_sdpa",)
     assert plan.missing_components == ()
     assert plan.fallback_reasons == ()
@@ -62,42 +67,75 @@ def test_explicit_graph_policy_falls_back_atomically_without_cuda() -> None:
     assert plan.fallback_reasons == ("cuda_graph_not_eligible",)
 
 
-def test_inplace_block_uses_the_same_support_guard_as_the_helper(
+def test_graph_fused_norm_plan_enforces_runtime_safety_not_performance_shapes() -> None:
+    small = _resolve(
+        "graph-fused-norm",
+        _context(device="cuda", batch_size=1),
+    )
+    graph_fused_on_large = _resolve(
+        "graph-fused-norm",
+        _context(device="cuda", batch_size=10_000),
+    )
+    training = _resolve(
+        "graph-fused-norm",
+        _context(
+            device="cuda",
+            batch_size=1,
+            training=True,
+            grad_enabled=True,
+        ),
+    )
+
+    assert small.selected_policy == "graph-fused-norm"
+    assert small.runtime_wrapper == "cuda_graph"
+    assert small.residual_norm_backend == "compiled_residual_layer_norm"
+    assert graph_fused_on_large.selected_policy == "graph-fused-norm"
+    assert graph_fused_on_large.runtime_wrapper == "cuda_graph"
+    assert training.selected_policy == "safe"
+    assert training.residual_norm_backend == "torch"
+    assert training.resolved_components == ()
+    assert training.missing_components == (
+        "compiled_residual_layer_norm",
+        "cuda_graph",
+    )
+
+
+def test_mixed_attention_supports_only_measured_shape_families(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        execution_plan_module,
-        "supports_inplace_exact_gelu",
+        torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
         lambda: True,
     )
-    inference = _resolve("inplace-block", _context())
-    training = _resolve(
-        "inplace-block",
-        _context(training=True, grad_enabled=True),
-    )
-
-    assert inference.selected_policy == "inplace-block"
-    assert inference.block_backend == "inplace_exact_gelu"
-    assert training.selected_policy == "safe"
-    assert training.block_backend == "torch"
-    assert training.resolved_components == ()
-    assert training.missing_components == ("inplace_exact_gelu",)
-
-
-def test_inplace_block_falls_back_when_the_runtime_has_no_exact_gelu(
-    monkeypatch,
-) -> None:
     monkeypatch.setattr(
-        execution_plan_module,
-        "supports_inplace_exact_gelu",
-        lambda: False,
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+    long_plan = _resolve(
+        "mixed-fp16-efficient",
+        _context(device="cuda", seq_len=1024),
+    )
+    graph_mixed_plan = _resolve(
+        "graph-mixed-fp16-efficient",
+        _context(device="cuda", batch_size=128, d_model=128, num_heads=16),
+    )
+    unsupported_long = _resolve(
+        "mixed-fp16-efficient",
+        _context(device="cuda", seq_len=512),
+    )
+    unsupported_graph = _resolve(
+        "graph-mixed-fp16-efficient",
+        _context(device="cuda", batch_size=16, d_model=128),
     )
 
-    plan = _resolve("inplace-block", _context())
-
-    assert plan.selected_policy == "safe"
-    assert plan.resolved_components == ()
-    assert plan.missing_components == ("inplace_exact_gelu",)
+    assert long_plan.attention_backend == "mixed_fp16_efficient"
+    assert graph_mixed_plan.attention_backend == "mixed_fp16_efficient"
+    assert graph_mixed_plan.runtime_wrapper == "cuda_graph"
+    assert unsupported_long.selected_policy == "safe"
+    assert unsupported_graph.selected_policy == "safe"
+    assert unsupported_long.missing_components == ("mixed_fp16_efficient_attention",)
 
 
 def test_bfloat16_auto_uses_the_comparator_safe_streaming_path() -> None:

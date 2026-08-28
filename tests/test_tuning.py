@@ -32,12 +32,11 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
             "selected_policy": "auto",
             "attention_backend": "causal_sdpa",
             "runtime_wrapper": "eager",
-            "batch_strategy": "full",
-            "block_backend": "torch",
+            "residual_norm_backend": "torch",
             "observed_execution": {
                 "complete": True,
                 "attention_backends": ["causal_sdpa"],
-                "block_backends": ["torch"],
+                "residual_norm_backends": ["torch"],
             },
         },
         "eager-safe": {
@@ -45,34 +44,62 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
             "selected_policy": "safe",
             "attention_backend": "safe_streaming",
             "runtime_wrapper": "eager",
-            "batch_strategy": "full",
-            "block_backend": "torch",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["safe_streaming"],
+                "residual_norm_backends": ["torch"],
+            },
         },
         "graph": {
             "requested_policy": "graph",
             "selected_policy": "graph",
             "attention_backend": "causal_sdpa",
             "runtime_wrapper": "cuda_graph",
-            "batch_strategy": "full",
-            "block_backend": "torch",
+            "residual_norm_backend": "torch",
             "observed_execution": {
                 "complete": True,
                 "attention_backends": ["causal_sdpa"],
-                "block_backends": ["torch"],
+                "residual_norm_backends": ["torch"],
                 "runtime_wrappers": ["cuda_graph"],
             },
         },
-        "inplace-block": {
-            "requested_policy": "inplace-block",
-            "selected_policy": "inplace-block",
+        "graph-fused-norm": {
+            "requested_policy": "graph-fused-norm",
+            "selected_policy": "graph-fused-norm",
             "attention_backend": "causal_sdpa",
-            "runtime_wrapper": "eager",
-            "batch_strategy": "full",
-            "block_backend": "inplace_exact_gelu",
+            "runtime_wrapper": "cuda_graph",
+            "residual_norm_backend": "compiled_residual_layer_norm",
             "observed_execution": {
                 "complete": True,
                 "attention_backends": ["causal_sdpa"],
-                "block_backends": ["inplace_exact_gelu"],
+                "residual_norm_backends": ["compiled_residual_layer_norm"],
+                "runtime_wrappers": ["cuda_graph"],
+            },
+        },
+        "mixed-fp16-efficient": {
+            "requested_policy": "mixed-fp16-efficient",
+            "selected_policy": "mixed-fp16-efficient",
+            "attention_backend": "mixed_fp16_efficient",
+            "runtime_wrapper": "eager",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "residual_norm_backends": ["torch"],
+            },
+        },
+        "graph-mixed-fp16-efficient": {
+            "requested_policy": "graph-mixed-fp16-efficient",
+            "selected_policy": "graph-mixed-fp16-efficient",
+            "attention_backend": "mixed_fp16_efficient",
+            "runtime_wrapper": "cuda_graph",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "residual_norm_backends": ["torch"],
+                "runtime_wrappers": ["cuda_graph"],
             },
         },
     }
@@ -80,18 +107,28 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
 
 
 def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
-    launch = _candidate_ids("official_02")
-    extreme_batch = _candidate_ids("official_06")
-    long_sequence = _candidate_ids("official_13")
-
-    assert launch == [
+    common = [
         "eager-auto",
         "eager-safe",
         "graph",
-        "inplace-block",
     ]
-    assert extreme_batch == launch
-    assert long_sequence == launch
+    extras = {
+        "official_01": ["graph-mixed-fp16-efficient"],
+        "official_02": ["graph-fused-norm"],
+        "official_03": ["graph-fused-norm"],
+        "official_04": ["graph-fused-norm"],
+        "official_05": ["graph-mixed-fp16-efficient"],
+        "official_07": ["graph-mixed-fp16-efficient"],
+        "official_09": ["graph-mixed-fp16-efficient"],
+        "official_10": ["graph-mixed-fp16-efficient"],
+        "official_11": ["graph-mixed-fp16-efficient"],
+        "official_12": ["graph-fused-norm"],
+        "official_13": ["mixed-fp16-efficient"],
+    }
+
+    for index in range(1, 14):
+        case_id = f"official_{index:02d}"
+        assert _candidate_ids(case_id) == [*common, *extras.get(case_id, [])]
 
 
 def test_runtime_variant_is_not_hidden_inside_the_shape() -> None:
@@ -126,14 +163,52 @@ def test_select_candidates_requires_explicit_valid_order() -> None:
 
 
 def test_deployed_policy_maps_back_to_one_candidate() -> None:
-    shape = official_shape("official_06")
     variant = RunVariant()
 
     assert (
-        tuning.deployable_candidate_id_for_policy(shape, variant, "inplace-block")
-        == "inplace-block"
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_02"), variant, "auto"
+        )
+        == "eager-auto"
     )
-    assert tuning.deployable_candidate_id_for_policy(shape, variant, "graph") == "graph"
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_02"), variant, "safe"
+        )
+        is None
+    )
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_02"), variant, "graph"
+        )
+        == "graph"
+    )
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_02"), variant, "graph-fused-norm"
+        )
+        == "graph-fused-norm"
+    )
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_12"), variant, "graph-fused-norm"
+        )
+        == "graph-fused-norm"
+    )
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_13"), variant, "mixed-fp16-efficient"
+        )
+        == "mixed-fp16-efficient"
+    )
+    assert (
+        tuning.deployable_candidate_id_for_policy(
+            official_shape("official_07"),
+            variant,
+            "graph-mixed-fp16-efficient",
+        )
+        == "graph-mixed-fp16-efficient"
+    )
 
 
 def test_smoke_finalist_uses_target_latency_not_worker_speedup() -> None:
@@ -165,7 +240,7 @@ def test_deployable_winner_uses_p90_then_candidate_id_for_latency_ties() -> None
         challenger_target_p90_ms=1.1,
     )
 
-    assert select_deployable_winner(summary)["candidate_id"] == "inplace-block"
+    assert select_deployable_winner(summary)["candidate_id"] == "graph"
 
     summary["observations"][1]["target_p90_ms"] = 1.2
     assert select_deployable_winner(summary)["candidate_id"] == "eager-auto"
@@ -274,12 +349,11 @@ def test_graph_candidate_requires_replay_and_underlying_backend_evidence() -> No
         "selected_policy": "graph",
         "attention_backend": "causal_sdpa",
         "runtime_wrapper": "cuda_graph",
-        "batch_strategy": "full",
-        "block_backend": "torch",
+        "residual_norm_backend": "torch",
         "observed_execution": {
             "complete": True,
             "attention_backends": ["causal_sdpa"],
-            "block_backends": ["torch"],
+            "residual_norm_backends": ["torch"],
             "runtime_wrappers": ["cuda_graph"],
         },
     }

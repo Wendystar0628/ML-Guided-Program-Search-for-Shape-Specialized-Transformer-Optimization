@@ -144,7 +144,7 @@ def test_execution_path_contract_uses_one_common_truth_shape() -> None:
         "qkv_projection": "packed",
         "attention_backend": "causal_sdpa",
         "runtime_wrapper": "eager",
-        "block_backend": "torch",
+        "residual_norm_backend": "torch",
         "causal_mask": "native",
         "valid_token_mask": "none",
         "fallback_reasons": [],

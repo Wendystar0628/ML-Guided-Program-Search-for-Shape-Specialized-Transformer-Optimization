@@ -25,12 +25,13 @@ def test_checked_rtx4080_bundle_matches_current_sources() -> None:
         PROJECT_ROOT / "verified_hardware" / "nvidia_geforce_rtx_4080" / "routes.json"
     )
 
-    table, _digest, manifest = load_verified_bundle(
+    table, route_digest, manifest = load_verified_bundle(
         route_path,
         project_root=PROJECT_ROOT,
     )
 
     assert len(table.routes) == len(_COVERED_CASE_IDS)
+    assert route_digest == manifest.route_table_sha256
     assert manifest.covered_case_ids == _COVERED_CASE_IDS
     assert manifest.excluded_case_ids == ("official_14",)
 

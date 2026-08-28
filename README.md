@@ -34,7 +34,10 @@ official shape contract but is excluded from the current default GPU sweep.
 
 The appendix does not define a dtype. Dtype, warm-up, repeat count, timing
 rounds, TF32, and random seeds therefore belong to the measurement protocol,
-not to duplicated shape definitions.
+not to duplicated shape definitions. Every isolated CUDA worker also performs
+the same unmeasured 0.5-second device-conditioning step before the published
+model warm-up; this removes candidate-order bias without entering Transformer
+latency or changing the official model calculation.
 
 ## Optimization policies
 
@@ -46,16 +49,15 @@ policies:
 | `safe` | Conservative official-equivalent path used for diagnosis and fallback comparison |
 | `auto` | Hardware-neutral default: causal SDPA when eligible, otherwise safe streaming |
 | `graph` | Full-forward CUDA Graph capture and replay for fixed, launch-bound shapes |
-| `inplace-block` | Apply exact GELU in-place at the FFN boundary to remove one allocation |
+| `graph-fused-norm` | Combine compiled residual/LayerNorm with full-forward CUDA Graph for FP32 `D=FFN=128` shapes with at most 2048 tokens |
+| `mixed-fp16-efficient` | Use FP16 memory-efficient attention inside long FP32 shapes with `S>=1024` and `head_dim=32` |
+| `graph-mixed-fp16-efficient` | Combine mixed attention with CUDA Graph for `S=128`, `B=64/128`, `D=32/128` shapes |
 
-`auto` is the eager optimized control. `graph` and `inplace-block` are the only
-specialized deployable challengers; `safe` remains available for diagnosis but
-is not written as a calibrated route.
-
-These names describe implemented execution behavior. `inplace-block` is not
-presented as a fully fused Transformer block. A custom online/streaming
-attention kernel is a possible future long-sequence candidate, not a current
-policy.
+`auto` is the eager optimized control. The four specialized policies are
+deployable only where their explicit shape and hardware guards pass. `safe`
+remains available for diagnosis but is not written as a calibrated route.
+Mixed-attention policies are implemented execution paths; a custom
+online/streaming attention kernel remains a separate possible future candidate.
 
 [`solution/execution_plan.py`](solution/execution_plan.py) resolves one
 immutable execution plan from the requested policy, input shape, dtype, device,
@@ -171,11 +173,11 @@ Run the complete calibration and publish validated exact routes:
 .\.venv\Scripts\python.exe -m runner calibrate --preset formal --device cuda:0
 ```
 
-The formal command performs one probe, a bounded smoke screen, dynamic finalist
-selection, formal remeasurement, correctness and observed-execution checks,
-and an atomic verified-hardware bundle update. Formal finalists are the
-necessary distinct members of `auto`, the best new smoke challenger, and an
-existing specialized incumbent; they are not a second fixed Top-N list.
+The formal command performs one probe, a bounded smoke screen, formal
+remeasurement, correctness and observed-execution checks, and an atomic
+verified-hardware bundle update. Smoke only rejects candidates that fail
+correctness or do not execute the requested path. Every remaining candidate is
+formally measured, and Formal performance decides the route winner.
 
 At runtime the dispatcher matches the exact GPU, software stack, dtype, and
 published Transformer shape. It never benchmarks inside `forward`, scans old
@@ -239,10 +241,10 @@ Use its checked entry after a formal package has been generated:
 The formal FP32 sweep completed all 13 default shapes on the RTX 4080:
 
 - `13/13` successful cases;
-- `4.0589x` internal unweighted geometric-mean speedup across the 13 shapes;
+- `5.2548x` internal unweighted geometric-mean speedup across the 13 shapes;
 - zero failed output elements across five accuracy trials per case;
-- maximum observed absolute error `0.00134444`, below `atol=0.002`;
-- per-case speedups from `1.1192x` to `10.7866x`.
+- maximum observed absolute error `0.00155115`, below `atol=0.002`;
+- per-case speedups from `1.1186x` to `16.5925x`.
 
 The geometric mean is a project-side, equally weighted summary for comparing
 iterations; it is not a claim about any separate official score weighting.
@@ -288,8 +290,9 @@ same runner rather than entering the model hot path.
   policy, official snapshot, or solution source requires new calibration.
 - Hardware probing provides an explainable candidate ordering, not a learned
   latency predictor; full-workload measurement remains authoritative.
-- A custom online/streaming causal attention kernel is the main future option
-  when native SDPA leaves significant long-sequence headroom.
+- The current mixed-FP16 efficient-attention path covers eligible long-sequence
+  shapes; a custom online/streaming kernel remains a future option if measured
+  headroom justifies the added implementation cost.
 - Further work can explore library epilogues, local compiler boundaries, and
   additional buffer reuse without replacing efficient library GEMMs blindly.
 

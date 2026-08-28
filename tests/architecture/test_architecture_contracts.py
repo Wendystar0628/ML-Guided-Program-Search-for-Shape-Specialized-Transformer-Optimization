@@ -16,8 +16,17 @@ from runner.candidates import CANDIDATE_SPECS, deployable_policy_ids
 pytestmark = pytest.mark.architecture
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_EXPLICIT_POLICIES = frozenset({"auto", "safe", "graph", "inplace-block"})
-EXPECTED_ROUTABLE_POLICIES = frozenset({"auto", "graph", "inplace-block"})
+EXPECTED_EXPLICIT_POLICIES = frozenset(
+    {
+        "auto",
+        "safe",
+        "graph",
+        "graph-fused-norm",
+        "mixed-fp16-efficient",
+        "graph-mixed-fp16-efficient",
+    }
+)
+EXPECTED_ROUTABLE_POLICIES = EXPECTED_EXPLICIT_POLICIES - {"safe"}
 
 
 def _imports(path: Path) -> set[str]:
@@ -60,13 +69,17 @@ def test_candidates_derive_capabilities_from_policy_specs() -> None:
             == POLICY_SPECS[candidate.solution_policy].required_components
         )
 
+    assert POLICY_SPECS["graph-fused-norm"].use_compiled_residual_layer_norm
+
 
 def test_candidate_registry_contains_only_distinct_strategies() -> None:
     assert set(CANDIDATE_SPECS) == {
         "eager-auto",
         "eager-safe",
         "graph",
-        "inplace-block",
+        "graph-fused-norm",
+        "mixed-fp16-efficient",
+        "graph-mixed-fp16-efficient",
     }
 
 

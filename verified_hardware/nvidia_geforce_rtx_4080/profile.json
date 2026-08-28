@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source_probe": {
-    "run_id": "20260828T052339.106160Z-07820935",
-    "created_at": "2026-08-28T05:23:39.106160+00:00",
+    "run_id": "20260828T083344.198198Z-be3f0a7f",
+    "created_at": "2026-08-28T08:33:44.198198+00:00",
     "requested_device": "cuda:0",
     "mode": "routing"
   },
@@ -31,6 +31,7 @@
       "cudnn": 92000,
       "triton_available": true,
       "triton": "3.7.1",
+      "efficient_sdpa_enabled": true,
       "driver": "610.88"
     },
     "gpu": {
@@ -40,6 +41,7 @@
       "compute_capability": "8.9",
       "architecture_family": "ada",
       "total_memory_bytes": 17170956288,
+      "free_memory_bytes": 15764291584,
       "bf16_supported": true,
       "cuda_graph_available": true,
       "sm_count": 76,
@@ -62,7 +64,7 @@
       "method": "single_element_inplace_add",
       "repeats_per_round": 128,
       "rounds": 3,
-      "effective_latency_us": 6.000000052154064
+      "effective_latency_us": 6.215250119566917
     },
     "cuda_graph_replay": {
       "available": true,
@@ -70,17 +72,19 @@
       "kernel_nodes": 8,
       "repeats_per_round": 64,
       "rounds": 3,
-      "replay_latency_us": 7.728000171482563,
-      "effective_latency_per_node_us": 0.9660000214353204
+      "replay_latency_us": 8.00000037997961,
+      "effective_latency_per_node_us": 1.0000000474974513
     },
     "device_copy": {
       "available": true,
-      "method": "device_to_device_copy",
-      "payload_bytes": 33554432,
+      "method": "bounded_device_to_device_copy",
+      "payload_bytes": 201326592,
+      "l2_cache_bytes": 67108864,
+      "working_set_exceeds_l2": true,
       "repeats_per_round": 16,
       "rounds": 3,
-      "latency_ms": 0.026683999225497246,
-      "effective_bandwidth_gbps": 1257.4738785008612
+      "latency_ms": 0.7415040135383606,
+      "effective_bandwidth_gbps": 271.51112917015206
     },
     "gemm_float16": {
       "available": true,
@@ -90,8 +94,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.03058999963104725,
-      "tflops": 70.20214690752779
+      "latency_ms": 0.031072000041604042,
+      "tflops": 69.11314511858309
     },
     "gemm_bfloat16": {
       "available": true,
@@ -101,8 +105,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.030518999323248863,
-      "tflops": 70.36546727022215
+      "latency_ms": 0.03152000159025192,
+      "tflops": 68.13082295859225
     },
     "gemm_float32": {
       "available": true,
@@ -112,8 +116,8 @@
       "repeats_per_round": 32,
       "rounds": 3,
       "matmul_precision": "high",
-      "latency_ms": 0.05782400071620941,
-      "tflops": 37.138275134913144,
+      "latency_ms": 0.058361999690532684,
+      "tflops": 36.79592302160885,
       "tf32_allowed": true
     },
     "softmax_fp32": {
@@ -123,8 +127,8 @@
       "columns": 1024,
       "repeats_per_round": 16,
       "rounds": 3,
-      "latency_ms": 0.009837999939918518,
-      "throughput_gigaelements_per_second": 213.16853149090073
+      "latency_ms": 0.009983999654650688,
+      "throughput_gigaelements_per_second": 210.05128931701404
     }
   }
 }

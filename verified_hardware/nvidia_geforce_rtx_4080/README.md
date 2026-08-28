@@ -18,8 +18,11 @@ kernel, workload, and runner code remains at the repository root.
 The exact GPU name, driver, CUDA runtime, PyTorch, operating system, runtime
 matmul policy, official snapshot, solution source, and protocol are
 machine-checked in the package files rather than approximated in this page.
-Triton remains a diagnostic profile field but is not part of the route identity
-because the current Solution does not execute Triton kernels.
+Triton remains a diagnostic profile field rather than a route-identity field.
+The compiled residual/LayerNorm policy is published only after its actual
+compiled backend is observed during Formal measurement; if that backend later
+cannot execute, the policy fails explicitly instead of being reported as a
+fused route while silently running native operators.
 
 ## Files
 
@@ -72,14 +75,15 @@ To recalibrate after a code or runtime change, use the shared entry:
 
 ## Results
 
-The formal FP32 sweep used five accuracy trials, 20 warm-up iterations, 100
-timed repeats, three alternating timing rounds, high matmul precision, and TF32
+The formal FP32 sweep used five accuracy trials, a fixed unmeasured 0.5-second
+CUDA conditioning step per fresh worker, 20 model warm-up iterations, 100 timed
+repeats, three alternating timing rounds, high matmul precision, and TF32
 enabled. All 13 default shapes completed successfully. Across the complete
 sweep:
 
-- geometric-mean speedup: **4.0589x**;
+- geometric-mean speedup: **5.2548x**;
 - failed output elements: **0**;
-- maximum absolute error: **0.00134444**, below `atol=0.002`;
+- maximum absolute error: **0.00155115**, below `atol=0.002`;
 - `official_14`: excluded from the default sweep.
 
 The table below is a rounded presentation of
@@ -88,27 +92,27 @@ is the authoritative result if displayed rounding differs.
 
 | Shape | Baseline median | Baseline P90 | Solution median | Solution P90 | Speedup | Policy |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| `official_01` | 1.5328 ms | 1.8752 ms | 0.6738 ms | 0.6769 ms | 2.275x | `graph` |
-| `official_02` | 1.7341 ms | 2.0271 ms | 0.1608 ms | 0.1608 ms | 10.787x | `graph` |
-| `official_03` | 1.7512 ms | 2.0470 ms | 0.1690 ms | 0.1700 ms | 10.364x | `graph` |
-| `official_04` | 1.6450 ms | 1.9231 ms | 0.2734 ms | 0.2744 ms | 6.017x | `graph` |
-| `official_05` | 2.5298 ms | 4.4271 ms | 1.2334 ms | 1.2390 ms | 2.051x | `graph` |
-| `official_06` | 446.7671 ms | 447.4194 ms | 131.2671 ms | 131.7090 ms | 3.403x | `auto` |
-| `official_07` | 1.6263 ms | 1.8267 ms | 0.5478 ms | 0.5499 ms | 2.968x | `graph` |
-| `official_08` | 13.1917 ms | 13.4147 ms | 11.7862 ms | 11.9974 ms | 1.119x | `auto` |
-| `official_09` | 1.4653 ms | 1.6487 ms | 0.6042 ms | 0.6584 ms | 2.425x | `graph` |
-| `official_10` | 1.6199 ms | 4.3451 ms | 0.6113 ms | 0.6144 ms | 2.650x | `graph` |
-| `official_11` | 7.1168 ms | 7.3145 ms | 1.2339 ms | 1.2380 ms | 5.768x | `graph` |
-| `official_12` | 1.7808 ms | 4.4553 ms | 0.2478 ms | 0.2488 ms | 7.186x | `graph` |
-| `official_13` | 119.6908 ms | 121.5832 ms | 13.9418 ms | 14.5985 ms | 8.585x | `auto` |
+| `official_01` | 1.5697 ms | 2.0112 ms | 0.5407 ms | 0.7678 ms | 2.903x | `graph-mixed-fp16-efficient` |
+| `official_02` | 1.7820 ms | 2.1952 ms | 0.1403 ms | 0.1413 ms | 12.703x | `graph-fused-norm` |
+| `official_03` | 1.7905 ms | 2.1340 ms | 0.1475 ms | 0.1485 ms | 12.142x | `graph-fused-norm` |
+| `official_04` | 1.7875 ms | 2.1365 ms | 0.2365 ms | 0.2376 ms | 7.557x | `graph-fused-norm` |
+| `official_05` | 2.3777 ms | 2.8938 ms | 0.9984 ms | 1.4043 ms | 2.382x | `graph-mixed-fp16-efficient` |
+| `official_06` | 483.2210 ms | 486.2453 ms | 141.2731 ms | 142.8365 ms | 3.420x | `auto` |
+| `official_07` | 1.7025 ms | 2.0548 ms | 0.3533 ms | 0.3564 ms | 4.819x | `graph-mixed-fp16-efficient` |
+| `official_08` | 14.1148 ms | 14.5408 ms | 12.6177 ms | 12.9252 ms | 1.119x | `auto` |
+| `official_09` | 1.5321 ms | 1.8905 ms | 0.5294 ms | 0.6108 ms | 2.894x | `graph-mixed-fp16-efficient` |
+| `official_10` | 1.7209 ms | 2.1107 ms | 0.5192 ms | 0.7134 ms | 3.315x | `graph-mixed-fp16-efficient` |
+| `official_11` | 7.5361 ms | 8.0348 ms | 0.6584 ms | 1.0502 ms | 11.446x | `graph-mixed-fp16-efficient` |
+| `official_12` | 1.8411 ms | 2.1542 ms | 0.2140 ms | 0.2150 ms | 8.603x | `graph-fused-norm` |
+| `official_13` | 116.7857 ms | 117.8454 ms | 7.0385 ms | 7.5213 ms | 16.592x | `mixed-fp16-efficient` |
 
-CUDA Graph is the measured winner for the launch-sensitive fixed shapes;
-`auto` remains the stable choice for the extreme-batch, wide-GEMM, and
-long-sequence cases. `inplace-block` remains an experimental candidate, but its
-latest Formal gains on `official_06` and `official_13` were below the 2% route
-promotion margin. The comparatively small `1.119x` improvement on
-`official_08` identifies the wide `D=1024` GEMM/FFN
-path as the clearest remaining optimization target.
+CUDA Graph remains the launch-overhead solution for fixed small shapes. The
+mixed FP16 Efficient Attention policies now cover the measured short-sequence
+families and `official_13`; compiled residual/LayerNorm is combined with Graph
+for `official_02/03/04/12`. `official_06` retains `auto` because the tested
+mixed-attention alternative was slower, while `official_08` remains close to
+its library-GEMM throughput limit and is not a good target for a new
+Transformer algorithm.
 
 ## Interpretation
 

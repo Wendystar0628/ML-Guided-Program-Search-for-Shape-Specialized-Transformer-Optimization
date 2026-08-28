@@ -7,6 +7,7 @@ import math
 import statistics
 import sys
 import tempfile
+import time
 import types
 import uuid
 from collections.abc import Mapping
@@ -29,6 +30,10 @@ from runner.contracts import (
 from runner.probe import collect_environment
 from runner.resource_guard import ResourceGuardError, ensure_local_benchmark_allowed
 from runner.result_contracts import WorkerRequest
+
+_CUDA_CONDITIONING_SECONDS = 0.5
+_CUDA_CONDITIONING_MATRIX_SIZE = 2048
+_CUDA_CONDITIONING_BATCH = 32
 
 
 def load_solution_module(project_root: Path) -> ModuleType:
@@ -218,6 +223,32 @@ def _measurement_stats(
     }
 
 
+def _condition_cuda_device(device: torch.device) -> None:
+    """Put every isolated worker into a comparable sustained GPU state.
+
+    The official count-based warmup is kept unchanged. Small Transformer cases
+    complete those iterations too quickly to remove Windows GPU boost/order
+    bias, so an unmeasured fixed-duration GEMM precedes all CUDA timing paths.
+    """
+
+    if device.type != "cuda":
+        return
+    size = _CUDA_CONDITIONING_MATRIX_SIZE
+    left = torch.randn((size, size), device=device, dtype=torch.float16)
+    right = torch.randn((size, size), device=device, dtype=torch.float16)
+    output = torch.empty_like(left)
+    deadline = time.perf_counter() + _CUDA_CONDITIONING_SECONDS
+    with torch.inference_mode():
+        while True:
+            for _ in range(_CUDA_CONDITIONING_BATCH):
+                torch.mm(left, right, out=output)
+            torch.cuda.synchronize(device)
+            if time.perf_counter() >= deadline:
+                break
+    del left, right, output
+    torch.cuda.empty_cache()
+
+
 def run_performance(
     baseline: nn.Module,
     solution: nn.Module,
@@ -227,6 +258,7 @@ def run_performance(
     device: torch.device,
     dtype: torch.dtype,
 ) -> dict[str, Any]:
+    _condition_cuda_device(device)
     inputs, valid_mask = official.generate_random_case(
         config=config,
         device=device,
@@ -297,6 +329,7 @@ def run_baseline_performance(
     device: torch.device,
     dtype: torch.dtype,
 ) -> dict[str, Any]:
+    _condition_cuda_device(device)
     inputs, valid_mask = official.generate_random_case(
         config=config,
         device=device,
@@ -804,7 +837,7 @@ def _describe_execution_path(
             "qkv_projection": "separate",
             "attention_backend": "official_explicit",
             "runtime_wrapper": "eager",
-            "block_backend": "torch",
+            "residual_norm_backend": "torch",
             "causal_mask": "per_forward" if shape.causal else "none",
             "valid_token_mask": "direct_key_mask",
             "fallback_reasons": [],

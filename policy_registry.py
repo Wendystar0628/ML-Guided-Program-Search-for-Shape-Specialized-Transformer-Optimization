@@ -13,7 +13,8 @@ class ExecutionComponent(StrEnum):
 
     CAUSAL_SDPA = "causal_sdpa"
     CUDA_GRAPH = "cuda_graph"
-    INPLACE_EXACT_GELU = "inplace_exact_gelu"
+    COMPILED_RESIDUAL_LAYER_NORM = "compiled_residual_layer_norm"
+    MIXED_FP16_EFFICIENT_ATTENTION = "mixed_fp16_efficient_attention"
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,46 +22,62 @@ class PolicySpec:
     """One execution composition, independent of workload shape and hardware."""
 
     policy_id: str
-    attention: str = "safe"
+    attention: str = "safe_streaming"
     use_cuda_graph: bool = False
-    use_inplace_exact_gelu: bool = False
-    required_components: frozenset[ExecutionComponent] = frozenset()
+    use_compiled_residual_layer_norm: bool = False
     routable: bool = True
 
     def __post_init__(self) -> None:
         if not self.policy_id:
             raise ValueError("policy_id must not be empty")
-        if self.attention not in {"safe", "causal_sdpa"}:
+        if self.attention not in {
+            "safe_streaming",
+            "causal_sdpa",
+            "mixed_fp16_efficient",
+        }:
             raise ValueError(f"unsupported attention backend: {self.attention}")
 
+    @property
+    def required_components(self) -> frozenset[ExecutionComponent]:
+        """Derive capabilities from behavior instead of duplicating policy state."""
 
-_CAUSAL_SDPA = frozenset({ExecutionComponent.CAUSAL_SDPA})
+        components: set[ExecutionComponent] = set()
+        if self.attention == "causal_sdpa":
+            components.add(ExecutionComponent.CAUSAL_SDPA)
+        elif self.attention == "mixed_fp16_efficient":
+            components.add(ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION)
+        if self.use_cuda_graph:
+            components.add(ExecutionComponent.CUDA_GRAPH)
+        if self.use_compiled_residual_layer_norm:
+            components.add(ExecutionComponent.COMPILED_RESIDUAL_LAYER_NORM)
+        return frozenset(components)
+
 
 _POLICY_SPECS = {
     "auto": PolicySpec(
         "auto",
         attention="causal_sdpa",
-        required_components=_CAUSAL_SDPA,
     ),
     "safe": PolicySpec("safe", routable=False),
     "graph": PolicySpec(
         "graph",
         attention="causal_sdpa",
         use_cuda_graph=True,
-        required_components=frozenset(
-            {ExecutionComponent.CAUSAL_SDPA, ExecutionComponent.CUDA_GRAPH}
-        ),
     ),
-    "inplace-block": PolicySpec(
-        "inplace-block",
+    "graph-fused-norm": PolicySpec(
+        "graph-fused-norm",
         attention="causal_sdpa",
-        use_inplace_exact_gelu=True,
-        required_components=frozenset(
-            {
-                ExecutionComponent.CAUSAL_SDPA,
-                ExecutionComponent.INPLACE_EXACT_GELU,
-            }
-        ),
+        use_cuda_graph=True,
+        use_compiled_residual_layer_norm=True,
+    ),
+    "mixed-fp16-efficient": PolicySpec(
+        "mixed-fp16-efficient",
+        attention="mixed_fp16_efficient",
+    ),
+    "graph-mixed-fp16-efficient": PolicySpec(
+        "graph-mixed-fp16-efficient",
+        attention="mixed_fp16_efficient",
+        use_cuda_graph=True,
     ),
 }
 

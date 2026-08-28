@@ -37,7 +37,7 @@ def test_explicit_exact_route_table_is_loaded_and_attributed(tmp_path: Path) -> 
 
     resolution = _resolve(OfflineDispatcher(route_path))
 
-    assert resolution.policy == "inplace-block"
+    assert resolution.policy == "graph"
     assert resolution.origin == "calibrated"
     assert resolution.source is not None
     assert resolution.table_sha256 is not None

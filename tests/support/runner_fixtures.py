@@ -74,7 +74,7 @@ def successful_run(
     variant = official_variant()
     target_median = 2.0 / speedup
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "run_id": f"fixture-{case_id}",
         "run_kind": "benchmark",
         "target": "solution",
@@ -115,13 +115,13 @@ def successful_run(
             "selected_policy": policy,
             "attention_backend": "causal_sdpa",
             "runtime_wrapper": "eager",
-            "block_backend": "torch",
+            "residual_norm_backend": "torch",
             "execution_mode": "eager",
-            "fallback_reasons": None,
+            "fallback_reasons": [],
             "observed_execution": {
                 "complete": True,
                 "attention_backends": ["causal_sdpa"],
-                "block_backends": ["torch"],
+                "residual_norm_backends": ["torch"],
             },
         },
     }

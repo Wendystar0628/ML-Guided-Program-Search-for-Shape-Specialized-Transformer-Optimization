@@ -93,7 +93,7 @@ def test_prepare_execution_returns_one_frozen_shared_context() -> None:
         "qkv_projection": "separate",
         "attention_backend": "official_explicit",
         "runtime_wrapper": "eager",
-        "block_backend": "torch",
+        "residual_norm_backend": "torch",
         "causal_mask": "per_forward",
         "valid_token_mask": "direct_key_mask",
         "fallback_reasons": [],

@@ -4,19 +4,15 @@ import math
 
 import pytest
 import torch
-import torch.nn.functional as F
 
 from solution.kernels import (
     can_split_qkv,
     can_use_causal_sdpa,
-    can_use_linear_exact_gelu,
     can_use_residual_add,
     causal_sdpa,
-    linear_exact_gelu,
     reference_causal_attention,
     residual_add,
     split_qkv,
-    supports_inplace_exact_gelu,
 )
 
 
@@ -85,23 +81,6 @@ def test_query_block_reference_matches_full_official_operation_order() -> None:
     expected = torch.matmul(torch.softmax(scores.float(), dim=-1), value)
 
     torch.testing.assert_close(actual, expected)
-
-
-def test_linear_exact_gelu_preserves_exact_gelu_semantics() -> None:
-    value = torch.randn(3, 5)
-    weight = torch.randn(7, 5)
-    bias = torch.randn(7)
-    original = value.clone()
-
-    with torch.inference_mode():
-        actual, backend = linear_exact_gelu(value, weight, bias)
-        assert can_use_linear_exact_gelu(value, weight, bias)
-        assert supports_inplace_exact_gelu()
-    expected = F.gelu(F.linear(value, weight, bias), approximate="none")
-
-    assert backend == "inplace_exact_gelu"
-    torch.testing.assert_close(actual, expected)
-    torch.testing.assert_close(value, original)
 
 
 def test_residual_add_masks_only_invalid_query_tokens() -> None:

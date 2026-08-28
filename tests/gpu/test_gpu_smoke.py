@@ -67,18 +67,20 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "policy",
-    ["auto", "safe", "graph", "inplace-block"],
+    ("case_id", "policy"),
+    [
+        ("official_02", "auto"),
+        ("official_02", "safe"),
+        ("official_02", "graph"),
+        ("official_02", "graph-fused-norm"),
+        ("official_13", "mixed-fp16-efficient"),
+        ("official_07", "graph-mixed-fp16-efficient"),
+    ],
 )
-def test_official_02_policy_executes_and_passes_the_official_comparator(
+def test_representative_policy_executes_and_passes_the_official_comparator(
+    case_id: str,
     policy: str,
 ) -> None:
-    result = _run_policy(policy)
+    result = _run_policy(policy, case_id=case_id)
 
     _assert_policy_executed(result, policy)
-
-
-def test_official_13_inplace_path_executes_with_observed_evidence() -> None:
-    result = _run_policy("inplace-block", case_id="official_13")
-
-    _assert_policy_executed(result, "inplace-block")

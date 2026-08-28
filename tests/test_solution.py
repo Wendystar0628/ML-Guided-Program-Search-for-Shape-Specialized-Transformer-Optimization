@@ -198,18 +198,26 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
 
 
 @pytest.mark.parametrize(
-    ("policy", "selected", "attention", "wrapper", "block"),
+    ("policy", "selected", "attention", "wrapper", "residual_norm"),
     [
         ("auto", "auto", "causal_sdpa", "eager", "torch"),
         ("safe", "safe", "safe_streaming", "eager", "torch"),
-        (
-            "inplace-block",
-            "inplace-block",
-            "causal_sdpa",
-            "eager",
-            "inplace_exact_gelu",
-        ),
         ("graph", "safe", "safe_streaming", "eager", "torch"),
+        ("graph-fused-norm", "safe", "safe_streaming", "eager", "torch"),
+        (
+            "mixed-fp16-efficient",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "graph-mixed-fp16-efficient",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
     ],
 )
 def test_explicit_policy_reports_one_honest_execution_plan(
@@ -217,7 +225,7 @@ def test_explicit_policy_reports_one_honest_execution_plan(
     selected: str,
     attention: str,
     wrapper: str,
-    block: str,
+    residual_norm: str,
 ) -> None:
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
@@ -229,7 +237,7 @@ def test_explicit_policy_reports_one_honest_execution_plan(
     assert path["selected_policy"] == selected
     assert path["attention_backend"] == attention
     assert path["runtime_wrapper"] == wrapper
-    assert path["block_backend"] == block
+    assert path["residual_norm_backend"] == residual_norm
     assert "batch_strategy" not in path
     assert "batch_tile_size" not in path
     assert "layer_backends" not in path
@@ -273,7 +281,7 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
     def fake_forward_eager(value, _valid_mask, _plan):  # type: ignore[no-untyped-def]
         solution._last_execution_observation = {
             "attention_backends": ["causal_sdpa"],
-            "block_backends": ["torch"],
+            "residual_norm_backends": ["torch"],
             "expected_layers": 1,
             "complete": True,
         }
@@ -340,7 +348,7 @@ def test_execution_observation_reports_complete_layer_coverage() -> None:
     observation = solution.describe_execution_path()["observed_execution"]
     assert observation == {
         "attention_backends": ["safe_streaming", "safe_streaming"],
-        "block_backends": ["torch", "torch"],
+        "residual_norm_backends": ["torch", "torch"],
         "expected_layers": 2,
         "complete": True,
     }

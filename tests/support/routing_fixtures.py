@@ -70,7 +70,7 @@ def exact_match(
 
 
 def exact_route_document(
-    policy: str = "inplace-block",
+    policy: str = "graph",
     *,
     case_id: str = "official_02",
     device_name: str = "Fixture GPU",
@@ -147,7 +147,7 @@ def candidate_observation(
 def formal_summary(
     *,
     case_id: str = "official_02",
-    challenger_policy: str = "inplace-block",
+    challenger_policy: str = "graph",
     challenger_speedup: float = 1.20,
     auto_speedup: float = 1.0,
     challenger_target_median_ms: float | None = None,
@@ -247,11 +247,13 @@ def routing_probe_result() -> dict[str, object]:
                     "torch": str(torch.__version__),
                     "cuda_runtime": str(torch.version.cuda),
                     "driver": "fixture-driver",
+                    "efficient_sdpa_enabled": True,
                 },
                 "gpu": {
                     "available": True,
                     "name": "Fixture GPU",
                     "compute_capability": "8.9",
+                    "free_memory_bytes": 12 * 1024**3,
                 },
             },
             "performance_anchors": {

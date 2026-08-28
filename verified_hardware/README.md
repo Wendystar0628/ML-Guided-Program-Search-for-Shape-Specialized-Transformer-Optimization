@@ -28,7 +28,7 @@ runtime identity. Unmatched inputs use `auto`.
 - `official/test_shapes.json` and `official_transformer_v1`;
 - the current `solution/` implementation;
 - the formal measurement protocol;
-- the route table and compact formal summary.
+- the route table and formal workload scope.
 
 The loader skips a stale or incomplete package instead of applying old
 evidence to changed code. Package updates are written under a package lock and
@@ -43,9 +43,9 @@ python -m runner calibrate --preset formal --device cuda:0
 ```
 
 The service probes the device, analyzes `official_01` through `official_13`,
-runs a bounded smoke screen, formally remeasures the dynamic finalists, and
-creates or updates the matching package after correctness, observed-execution,
-and conservative-gain checks pass.
+runs a bounded smoke screen, formally remeasures every candidate that passed
+Smoke correctness and observed-execution checks, and creates or updates the
+matching package after conservative-gain checks pass.
 
 Run a known package through its thin launcher:
 

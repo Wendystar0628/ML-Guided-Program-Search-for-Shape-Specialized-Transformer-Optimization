@@ -8,8 +8,14 @@ from runner.contracts import RunVariant
 from runner.hardware_router import analyze_workload, build_routing_plan
 from tests.support.runner_fixtures import official_shape
 
-DEPLOYABLE_CANDIDATES = ("eager-auto", "graph", "inplace-block")
-ALL_CANDIDATES = ("eager-auto", "eager-safe", "graph", "inplace-block")
+DEPLOYABLE_CANDIDATES = (
+    "eager-auto",
+    "graph",
+    "graph-fused-norm",
+    "mixed-fp16-efficient",
+    "graph-mixed-fp16-efficient",
+)
+ALL_CANDIDATES = ("eager-auto", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
 
 
 def _ada_profile() -> dict[str, object]:
@@ -20,7 +26,10 @@ def _ada_profile() -> dict[str, object]:
         "architecture_family": "ada",
         "cuda_runtime": "13.2",
         "cuda_graph_available": True,
+        "triton_available": True,
+        "efficient_sdpa_enabled": True,
         "total_memory_bytes": 16 * 1024**3,
+        "free_memory_bytes": 16 * 1024**3,
         "sm_count": 76,
         "l2_cache_bytes": 64 * 1024**2,
         "theoretical_memory_bandwidth_gbps": 716.8,
@@ -46,27 +55,82 @@ def test_analysis_uses_shape_and_variant_as_separate_inputs() -> None:
     assert analysis.dense_attention_peak_bytes > 0
     assert analysis.estimated_peak_bytes > analysis.dense_attention_peak_bytes
     assert analysis.input_output_bytes > 0
-    assert analysis.exact_gelu_temporary_bytes > 0
+    assert analysis.residual_norm_fusible_bytes > 0
     assert analysis.dense_gemm_fraction + analysis.attention_fraction == pytest.approx(
         1.0,
         abs=2e-6,
     )
 
 
-def test_small_shape_ranks_incremental_challengers_and_retains_auto() -> None:
+@pytest.mark.parametrize("case_id", ["official_02", "official_03"])
+def test_small_width128_shapes_prioritize_graph_fused_norm(case_id: str) -> None:
     plan = build_routing_plan(
-        official_shape("official_02"),
+        official_shape(case_id),
         RunVariant(),
         _ada_profile(),
         DEPLOYABLE_CANDIDATES,
         limit=3,
     )
 
-    assert plan["candidate_order"][0] == "graph"
-    assert set(plan["candidate_order"]) == set(DEPLOYABLE_CANDIDATES)
+    assert plan["candidate_order"] == [
+        "graph-fused-norm",
+        "graph",
+        "eager-auto",
+    ]
     assert plan["feasibility"]["baseline_executable"] is True
     assert plan["routing_signals"]["launch_dominant"] is True
-    assert "relative lower-bound gain" in plan["selection_reasons"]["graph"][1]
+    assert plan["routing_signals"]["effective_operator_bandwidth_gbps"] == 716.8
+    assert plan["routing_signals"]["device_copy_bandwidth_gbps"] == 620.0
+    assert plan["routing_signals"]["eager_node_timing_estimate_seconds"] > 0
+    assert "relative cost gain" in plan["selection_reasons"]["graph"][1]
+    graph_fused_reasons = " ".join(plan["selection_reasons"]["graph-fused-norm"])
+    assert "residual-plus-LayerNorm fusion" in graph_fused_reasons
+    assert "combined relative opportunity" in graph_fused_reasons
+
+
+def test_operator_bandwidth_converts_copy_payload_when_theoretical_is_unknown() -> None:
+    profile = _ada_profile()
+    del profile["theoretical_memory_bandwidth_gbps"]
+
+    plan = build_routing_plan(
+        official_shape("official_02"),
+        RunVariant(),
+        profile,
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["routing_signals"]["device_copy_bandwidth_gbps"] == 620.0
+    assert plan["routing_signals"]["effective_operator_bandwidth_gbps"] == 1240.0
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "official_01",
+        "official_05",
+        "official_07",
+        "official_09",
+        "official_10",
+        "official_11",
+    ],
+)
+def test_measured_s128_family_prioritizes_graph_mixed_attention(
+    case_id: str,
+) -> None:
+    plan = build_routing_plan(
+        official_shape(case_id),
+        RunVariant(),
+        _ada_profile(),
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["candidate_order"] == [
+        "graph-mixed-fp16-efficient",
+        "graph",
+        "eager-auto",
+    ]
 
 
 def test_extreme_batch_does_not_receive_a_negative_graph_prior() -> None:
@@ -79,7 +143,7 @@ def test_extreme_batch_does_not_receive_a_negative_graph_prior() -> None:
     )
 
     assert plan["feasibility"]["baseline_executable"] is True
-    assert plan["candidate_order"] == ["inplace-block", "eager-auto"]
+    assert plan["candidate_order"] == ["eager-auto"]
     assert "graph" in plan["capability_rejections"]
 
 
@@ -96,22 +160,6 @@ def test_negative_prior_still_retains_the_current_incumbent() -> None:
     assert "eager-auto" in plan["candidate_order"]
     assert "graph" in plan["candidate_order"]
     assert "current calibrated incumbent" in plan["selection_reasons"]["graph"][-1]
-
-
-def test_wide_shape_uses_removable_traffic_not_compute_bound_bonus() -> None:
-    plan = build_routing_plan(
-        official_shape("official_08"),
-        RunVariant(),
-        _ada_profile(),
-        DEPLOYABLE_CANDIDATES,
-        limit=3,
-    )
-
-    assert "inplace-block" in plan["candidate_order"]
-    assert plan["workload_analysis"]["d_model"] == 1024
-    reasons = " ".join(plan["selection_reasons"]["inplace-block"])
-    assert "removable exact-GELU temporary traffic" in reasons
-    assert "compute" not in reasons
 
 
 def test_unknown_graph_capability_fails_closed() -> None:
@@ -174,7 +222,7 @@ def test_cpu_profile_rejects_cuda_candidates_before_measurement() -> None:
 
 def test_router_never_selects_more_than_two_challengers() -> None:
     plan = build_routing_plan(
-        official_shape("official_02"),
+        official_shape("official_07"),
         RunVariant(),
         _ada_profile(),
         DEPLOYABLE_CANDIDATES,

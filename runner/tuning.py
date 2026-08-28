@@ -32,7 +32,6 @@ from runner.tuning_contracts import (
     TUNING_SCHEMA_VERSION,
     observation_latency_key,
     select_deployable_winner,
-    target_latency_gain,
 )
 
 _DEVICE_PROFILE_FIELDS = (
@@ -309,7 +308,7 @@ def build_formal_candidate_plans(
     smoke_summaries: Sequence[Mapping[str, Any]],
     incumbent_candidate_ids: Sequence[str | None],
 ) -> list[dict[str, Any]]:
-    """Build measured Formal controls and one shared deployable challenger."""
+    """Retain every shared candidate that passed Smoke for Formal measurement."""
 
     if len(shapes) != len(smoke_summaries) or len(shapes) != len(
         incumbent_candidate_ids
@@ -390,39 +389,14 @@ def build_formal_candidate_plans(
         common_policies = set(eligible_by_case[indices[0]])
         for index in indices[1:]:
             common_policies.intersection_update(eligible_by_case[index])
-        challenger_policies = common_policies - set(control_policies)
-
-        def challenger_rank(
-            policy: str,
-            group_indices: tuple[int, ...] = tuple(indices),
-            controls: tuple[str, ...] = tuple(control_policies),
-        ) -> tuple[float, float, float, str]:
-            relative_gains: list[float] = []
-            p90_values: list[float] = []
-            for index in group_indices:
-                observations = eligible_by_case[index]
-                control = min(
-                    (observations[control_policy] for control_policy in controls),
-                    key=observation_latency_key,
-                )
-                challenger = observations[policy]
-                relative_gains.append(target_latency_gain(control, challenger))
-                p90_values.append(float(challenger["target_p90_ms"]))
-            return (
-                -min(relative_gains),
-                -(sum(relative_gains) / len(relative_gains)),
-                max(p90_values),
-                policy,
-            )
-
-        challenger_policy = (
-            min(challenger_policies, key=challenger_rank)
-            if challenger_policies
-            else None
-        )
+        challenger_policies = [
+            policy
+            for policy in candidate_maps[0]
+            if policy in common_policies and policy not in control_policies
+        ]
         selected_policies = [
             *control_policies,
-            *([challenger_policy] if challenger_policy is not None else []),
+            *challenger_policies,
         ]
         screening_ids: list[str] = []
         for index in indices:
@@ -440,9 +414,9 @@ def build_formal_candidate_plans(
             reasons = {candidate_order[0]: ["required eager-auto control"]}
             if non_auto_incumbents:
                 reasons[candidate_order[1]] = ["current calibrated incumbent"]
-            if challenger_policy is not None:
-                reasons[candidate_order[-1]] = [
-                    "best common deployable challenger from Smoke measurements"
+            for policy in challenger_policies:
+                reasons[by_policy[policy].candidate_id] = [
+                    "passed Smoke and retained for Formal measurement"
                 ]
             plans[index] = {
                 "source": "smoke_measured_finalists",

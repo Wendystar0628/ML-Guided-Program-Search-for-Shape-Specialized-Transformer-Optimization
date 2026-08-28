@@ -74,6 +74,16 @@ def test_gpu_hardware_profile_reports_properties_and_theoretical_bandwidth(
     )
     monkeypatch.setattr(probe, "_triton_runtime", lambda: (True, "fixture-triton"))
     monkeypatch.setattr(probe.torch.cuda, "is_bf16_supported", lambda: True)
+    monkeypatch.setattr(
+        probe.torch.cuda,
+        "mem_get_info",
+        lambda _index: (12 * 1024**3, 16 * 1024**3),
+    )
+    monkeypatch.setattr(
+        probe.torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
+        lambda: True,
+    )
 
     profile = probe._hardware_profile(torch.device("cuda:0"))
     gpu = profile["gpu"]
@@ -81,6 +91,7 @@ def test_gpu_hardware_profile_reports_properties_and_theoretical_bandwidth(
     assert profile["platform"]["driver_model"] == "WDDM"
     assert profile["software"]["driver"] == "600.00"
     assert profile["software"]["triton"] == "fixture-triton"
+    assert profile["software"]["efficient_sdpa_enabled"] is True
     assert gpu["sm_count"] == 80
     assert gpu["architecture_family"] == "ada"
     assert gpu["bf16_supported"] is True
@@ -90,6 +101,7 @@ def test_gpu_hardware_profile_reports_properties_and_theoretical_bandwidth(
     assert gpu["memory_bus_width_bits"] == 256
     assert gpu["pci_bus_id"] == "00000000:01:00.0"
     assert gpu["theoretical_memory_bandwidth_gbps"] == pytest.approx(640.0)
+    assert gpu["free_memory_bytes"] == 12 * 1024**3
 
 
 @pytest.mark.parametrize(

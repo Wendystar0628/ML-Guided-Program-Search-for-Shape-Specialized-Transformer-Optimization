@@ -24,7 +24,7 @@ _MAX_CHALLENGERS = 2
 
 @dataclass(frozen=True)
 class WorkloadAnalysis:
-    """Hardware-independent shape and lower-bound cost features."""
+    """Hardware-independent shape and separate-operator cost features."""
 
     case_id: str
     dtype: str
@@ -40,17 +40,17 @@ class WorkloadAnalysis:
     projection_ffn_flops: int
     attention_flops: int
     total_flops: int
-    estimated_bytes: int
-    arithmetic_intensity_flops_per_byte: float
+    separate_operator_bytes: int
+    separate_operator_arithmetic_intensity_flops_per_byte: float
     attention_matrix_elements: int
     dense_attention_peak_bytes: int
     estimated_peak_bytes: int
     estimated_parallel_blocks: int
-    estimated_kernel_launches: int
+    estimated_kernel_nodes: int
     dense_gemm_fraction: float
     attention_fraction: float
     input_output_bytes: int
-    exact_gelu_temporary_bytes: int
+    residual_norm_fusible_bytes: int
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -63,6 +63,7 @@ class FeasibilityReport:
     baseline_executable: bool
     estimated_peak_bytes: int
     device_memory_bytes: int | None
+    free_memory_bytes: int | None
     safety_limit_bytes: int | None
     estimated_peak_to_device_memory: float | None
     memory_safety_fraction: float
@@ -101,7 +102,10 @@ def analyze_workload(
     dense_flops_per_layer = (
         8 * tokens * model_dim * model_dim + 4 * tokens * model_dim * ffn_dim
     )
-    attention_flops_per_layer = 4 * batch * sequence * sequence * model_dim
+    if shape.causal:
+        attention_flops_per_layer = 2 * batch * sequence * (sequence + 1) * model_dim
+    else:
+        attention_flops_per_layer = 4 * batch * sequence * sequence * model_dim
     projection_ffn_flops = dense_flops_per_layer * layers
     attention_flops = attention_flops_per_layer * layers
     total_flops = projection_ffn_flops + attention_flops
@@ -114,23 +118,32 @@ def analyze_workload(
 
     weight_elements_per_layer = 4 * model_dim * model_dim + 2 * model_dim * ffn_dim
     weight_bytes = layers * weight_elements_per_layer * dtype_bytes
-    activation_bytes_per_layer = (
-        12 * tokens * model_dim + 2 * tokens * ffn_dim
-    ) * dtype_bytes
-    attention_traffic_per_layer = attention_elements * (4 + 2 * dtype_bytes)
-    estimated_bytes = layers * (
-        weight_elements_per_layer * dtype_bytes
-        + activation_bytes_per_layer
-        + attention_traffic_per_layer
+    model_tensor_bytes = tokens * model_dim * dtype_bytes
+    ffn_tensor_bytes = tokens * ffn_dim * dtype_bytes
+    # Logical traffic at the current 41-node operator boundary. This is a
+    # routing cost estimate, not compulsory DRAM traffic or a theoretical
+    # lower bound: cache residency and future fusion can reduce it.
+    separate_operator_bytes = dtype_bytes * (
+        layers
+        * (
+            22 * tokens * model_dim
+            + 4 * tokens * ffn_dim
+            + 4 * model_dim * model_dim
+            + 2 * model_dim * ffn_dim
+        )
+        + 2 * tokens * model_dim
     )
     input_output_bytes = 2 * tokens * model_dim * dtype_bytes
-    # The benchmark keeps the official baseline and optimized model resident
-    # together while executing them sequentially.
+    # The benchmark keeps both model weights and one reference output resident,
+    # but baseline and solution forwards run sequentially. Model the maximum
+    # simultaneous baseline working set instead of summing every intermediate
+    # produced across a whole layer.
+    baseline_attention_working_set = 6 * model_tensor_bytes + dense_attention_peak_bytes
+    baseline_ffn_working_set = 4 * model_tensor_bytes + 2 * ffn_tensor_bytes
     estimated_peak_bytes = (
         2 * weight_bytes
-        + input_output_bytes
-        + activation_bytes_per_layer
-        + dense_attention_peak_bytes
+        + model_tensor_bytes
+        + max(baseline_attention_working_set, baseline_ffn_working_set)
     )
 
     dense_blocks = math.ceil(tokens / 128) * math.ceil(max(model_dim, ffn_dim) / 128)
@@ -138,8 +151,8 @@ def analyze_workload(
         batch * heads * math.ceil(sequence / 128) * math.ceil(sequence / 128)
     )
     parallel_blocks = max(dense_blocks, attention_blocks)
-    estimated_launches = 2 + 18 * layers
-    intensity = total_flops / max(estimated_bytes, 1)
+    estimated_kernel_nodes = 10 * layers + 1
+    intensity = total_flops / max(separate_operator_bytes, 1)
     return WorkloadAnalysis(
         case_id=shape.case_id,
         dtype=variant.dtype,
@@ -155,17 +168,20 @@ def analyze_workload(
         projection_ffn_flops=projection_ffn_flops,
         attention_flops=attention_flops,
         total_flops=total_flops,
-        estimated_bytes=estimated_bytes,
-        arithmetic_intensity_flops_per_byte=round(intensity, 6),
+        separate_operator_bytes=separate_operator_bytes,
+        separate_operator_arithmetic_intensity_flops_per_byte=round(
+            intensity,
+            6,
+        ),
         attention_matrix_elements=attention_elements,
         dense_attention_peak_bytes=dense_attention_peak_bytes,
         estimated_peak_bytes=estimated_peak_bytes,
         estimated_parallel_blocks=parallel_blocks,
-        estimated_kernel_launches=estimated_launches,
+        estimated_kernel_nodes=estimated_kernel_nodes,
         dense_gemm_fraction=round(projection_ffn_flops / total_flops, 6),
         attention_fraction=round(attention_flops / total_flops, 6),
         input_output_bytes=input_output_bytes,
-        exact_gelu_temporary_bytes=tokens * ffn_dim * dtype_bytes * layers,
+        residual_norm_fusible_bytes=(tokens * model_dim * dtype_bytes * layers),
     )
 
 
@@ -213,7 +229,12 @@ def _effective_bandwidth_gbps(
     profile: Mapping[str, Any],
     anchors: Mapping[str, Any],
 ) -> float | None:
-    measured = _positive_float(anchors.get("memory_bandwidth_gbps"))
+    copy_payload_bandwidth = _positive_float(anchors.get("memory_bandwidth_gbps"))
+    # The copy anchor reports payload/time, while separate_operator_bytes
+    # counts both reads and writes. Convert to the same traffic-byte basis.
+    measured = (
+        2.0 * copy_payload_bandwidth if copy_payload_bandwidth is not None else None
+    )
     theoretical = _positive_float(profile.get("theoretical_memory_bandwidth_gbps"))
     if measured is not None and theoretical is not None:
         return min(measured, theoretical)
@@ -230,13 +251,21 @@ def _feasibility_report(
             baseline_executable=False,
             estimated_peak_bytes=analysis.estimated_peak_bytes,
             device_memory_bytes=None,
+            free_memory_bytes=None,
             safety_limit_bytes=None,
             estimated_peak_to_device_memory=None,
             memory_safety_fraction=_MEMORY_SAFETY_FRACTION,
             rejection_reason="device memory capacity was not established",
         )
 
-    safety_limit = int(total_memory * _MEMORY_SAFETY_FRACTION)
+    free_memory = _positive_int(profile.get("free_memory_bytes"))
+    capacity_limit = int(total_memory * _MEMORY_SAFETY_FRACTION)
+    availability_limit = (
+        int(free_memory * _MEMORY_SAFETY_FRACTION)
+        if free_memory is not None
+        else capacity_limit
+    )
+    safety_limit = min(capacity_limit, availability_limit)
     ratio = analysis.estimated_peak_bytes / total_memory
     executable = analysis.estimated_peak_bytes <= safety_limit
     reason = None
@@ -249,6 +278,7 @@ def _feasibility_report(
         baseline_executable=executable,
         estimated_peak_bytes=analysis.estimated_peak_bytes,
         device_memory_bytes=total_memory,
+        free_memory_bytes=free_memory,
         safety_limit_bytes=safety_limit,
         estimated_peak_to_device_memory=ratio,
         memory_safety_fraction=_MEMORY_SAFETY_FRACTION,
@@ -279,6 +309,17 @@ def _capability_rejection(
         and profile.get("cuda_graph_available") is not True
     ):
         return "CUDA Graph runtime capability was not positively established"
+    if (
+        ExecutionComponent.COMPILED_RESIDUAL_LAYER_NORM in spec.required_components
+        and profile.get("triton_available") is not True
+    ):
+        return "local compiler fusion requires a positively established Triton runtime"
+    if ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION in spec.required_components:
+        capability = _version_pair(profile.get("compute_capability"))
+        if capability is None or capability < (8, 0):
+            return "mixed FP16 Efficient Attention requires SM80 or newer"
+        if profile.get("efficient_sdpa_enabled") is not True:
+            return "Efficient SDPA runtime capability was not positively established"
     return None
 
 
@@ -286,7 +327,8 @@ def _capability_rejection(
 class _HardwareSignals:
     bottleneck_class: str
     effective_gemm_tflops: float | None
-    effective_bandwidth_gbps: float | None
+    operator_bandwidth_gbps: float | None
+    copy_bandwidth_gbps: float | None
     machine_ridge_flops_per_byte: float | None
     intensity_to_ridge: float | None
     dense_attention_to_memory: float | None
@@ -295,8 +337,8 @@ class _HardwareSignals:
     blocks_per_sm: float | None
     launch_dominant: bool
     graph_replay_is_cheaper: bool
-    eager_launch_seconds: float | None
-    eager_lower_bound_seconds: float | None
+    eager_node_timing_seconds: float | None
+    eager_cost_estimate_seconds: float | None
 
 
 def _hardware_signals(
@@ -306,13 +348,16 @@ def _hardware_signals(
     anchors = _mapping(profile.get("performance_anchors"))
     gemm_tflops = _lookup_gemm_tflops(anchors, analysis.dtype)
     bandwidth = _effective_bandwidth_gbps(profile, anchors)
+    copy_bandwidth = _positive_float(anchors.get("memory_bandwidth_gbps"))
     ridge = (
         gemm_tflops * 1000.0 / bandwidth
         if gemm_tflops is not None and bandwidth is not None
         else None
     )
     intensity_to_ridge = (
-        analysis.arithmetic_intensity_flops_per_byte / ridge if ridge else None
+        analysis.separate_operator_arithmetic_intensity_flops_per_byte / ridge
+        if ridge
+        else None
     )
 
     total_memory = _positive_float(profile.get("total_memory_bytes"))
@@ -339,15 +384,19 @@ def _hardware_signals(
     compute_seconds = (
         analysis.total_flops / (gemm_tflops * 1e12) if gemm_tflops else None
     )
-    memory_seconds = analysis.estimated_bytes / (bandwidth * 1e9) if bandwidth else None
+    memory_seconds = (
+        analysis.separate_operator_bytes / (bandwidth * 1e9) if bandwidth else None
+    )
     launch_seconds = (
-        analysis.estimated_kernel_launches * launch_latency_us * 1e-6
+        analysis.estimated_kernel_nodes * launch_latency_us * 1e-6
         if launch_latency_us
         else None
     )
-    kernel_lower_bound = max(compute_seconds or 0.0, memory_seconds or 0.0)
-    eager_lower_bound = kernel_lower_bound + (launch_seconds or 0.0)
-    launch_dominant = launch_seconds is not None and launch_seconds > kernel_lower_bound
+    kernel_cost_estimate = max(compute_seconds or 0.0, memory_seconds or 0.0)
+    eager_cost_estimate = max(kernel_cost_estimate, launch_seconds or 0.0)
+    launch_dominant = (
+        launch_seconds is not None and launch_seconds > kernel_cost_estimate
+    )
     if launch_seconds is None:
         launch_dominant = analysis.tokens <= 512
         if blocks_per_sm is not None and blocks_per_sm < 1.0:
@@ -358,7 +407,7 @@ def _hardware_signals(
     elif analysis.attention_fraction >= 0.5 and (
         analysis.seq_len >= 1024 or attention_to_l2 is None or attention_to_l2 >= 1.0
     ):
-        bottleneck = "attention_memory"
+        bottleneck = "attention_dominant"
     elif (
         intensity_to_ridge is not None
         and intensity_to_ridge >= 1.2
@@ -366,14 +415,15 @@ def _hardware_signals(
     ):
         bottleneck = "tensor_compute"
     elif intensity_to_ridge is not None and intensity_to_ridge <= 0.8:
-        bottleneck = "memory_bandwidth"
+        bottleneck = "separate_operator_traffic"
     else:
         bottleneck = "balanced"
 
     return _HardwareSignals(
         bottleneck_class=bottleneck,
         effective_gemm_tflops=gemm_tflops,
-        effective_bandwidth_gbps=bandwidth,
+        operator_bandwidth_gbps=bandwidth,
+        copy_bandwidth_gbps=copy_bandwidth,
         machine_ridge_flops_per_byte=ridge,
         intensity_to_ridge=intensity_to_ridge,
         dense_attention_to_memory=attention_to_memory,
@@ -382,8 +432,8 @@ def _hardware_signals(
         blocks_per_sm=blocks_per_sm,
         launch_dominant=launch_dominant,
         graph_replay_is_cheaper=graph_cheaper,
-        eager_launch_seconds=launch_seconds,
-        eager_lower_bound_seconds=eager_lower_bound or None,
+        eager_node_timing_seconds=launch_seconds,
+        eager_cost_estimate_seconds=eager_cost_estimate or None,
     )
 
 
@@ -399,40 +449,68 @@ def _incremental_prior(
         return 0.0, ["retained as the measured eager SDPA control"]
 
     anchors = _mapping(profile.get("performance_anchors"))
-    bandwidth = signals.effective_bandwidth_gbps
-    eager_lower_bound = signals.eager_lower_bound_seconds
-    if candidate_id == "graph":
+    eager_cost_estimate = signals.eager_cost_estimate_seconds
+    if candidate_id in {"graph", "graph-fused-norm"}:
         launch_latency_us = _positive_float(anchors.get("launch_latency_us"))
         replay_node_us = _positive_float(anchors.get("graph_replay_per_node_us"))
-        if launch_latency_us is None or replay_node_us is None or bandwidth is None:
+        copy_bandwidth = signals.copy_bandwidth_gbps
+        if (
+            launch_latency_us is None
+            or replay_node_us is None
+            or copy_bandwidth is None
+        ):
             return float("-inf"), ["graph cost anchors are incomplete"]
-        saved_submission = (
-            analysis.estimated_kernel_launches
+        saved_node_timing = (
+            analysis.estimated_kernel_nodes
             * max(launch_latency_us - replay_node_us, 0.0)
             * 1e-6
         )
-        copy_seconds = analysis.input_output_bytes / (bandwidth * 1e9)
-        net_seconds = saved_submission - copy_seconds
-        relative = net_seconds / eager_lower_bound if eager_lower_bound else net_seconds
-        return relative, [
-            (
-                "estimated graph benefit is launch submission saved minus static "
-                "input/output copy and replay cost"
-            ),
-            f"estimated relative lower-bound gain={relative:.6f}",
-        ]
-
-    if candidate_id == "inplace-block":
-        saved_fraction = analysis.exact_gelu_temporary_bytes / max(
-            analysis.estimated_bytes,
-            1,
+        copy_seconds = analysis.input_output_bytes / (copy_bandwidth * 1e9)
+        net_seconds = saved_node_timing - copy_seconds
+        relative = (
+            net_seconds / eager_cost_estimate if eager_cost_estimate else net_seconds
         )
-        return saved_fraction, [
+        reasons = [
             (
-                "estimated benefit is the removable exact-GELU temporary traffic "
-                "relative to total modeled traffic"
+                "estimated graph benefit is measured eager-versus-replay node "
+                "timing saved minus static input/output copy cost"
             ),
-            f"estimated removable traffic fraction={saved_fraction:.6f}",
+            f"estimated relative cost gain={relative:.6f}",
+        ]
+        if candidate_id == "graph-fused-norm":
+            fused_fraction = analysis.residual_norm_fusible_bytes / max(
+                analysis.separate_operator_bytes,
+                1,
+            )
+            relative += fused_fraction
+            reasons.extend(
+                [
+                    "adds the measured residual-plus-LayerNorm fusion opportunity",
+                    f"estimated combined relative opportunity={relative:.6f}",
+                ]
+            )
+        return relative, reasons
+
+    if candidate_id in {
+        "mixed-fp16-efficient",
+        "graph-mixed-fp16-efficient",
+    }:
+        # The candidate halves Q/K/V element width around the measured
+        # Attention family. Attention share is a transparent ordering signal;
+        # Formal measurement, not this prior, decides whether conversion pays.
+        relative = analysis.attention_fraction * 0.5
+        if candidate_id == "graph-mixed-fp16-efficient":
+            graph_benefit, _reasons = _incremental_prior(
+                "graph",
+                analysis,
+                signals,
+                profile,
+            )
+            if math.isfinite(graph_benefit):
+                relative += max(graph_benefit, 0.0)
+        return relative, [
+            "heuristic opportunity follows Attention share and FP16 execution width",
+            f"heuristic relative opportunity={relative:.6f}",
         ]
 
     return float("-inf"), ["candidate has no distinct incremental cost model"]
@@ -561,7 +639,8 @@ def build_routing_plan(
     routing_signals = {
         "architecture_family": hardware_profile.get("architecture_family"),
         "effective_gemm_tflops": signals.effective_gemm_tflops,
-        "effective_bandwidth_gbps": signals.effective_bandwidth_gbps,
+        "effective_operator_bandwidth_gbps": signals.operator_bandwidth_gbps,
+        "device_copy_bandwidth_gbps": signals.copy_bandwidth_gbps,
         "machine_ridge_flops_per_byte": signals.machine_ridge_flops_per_byte,
         "workload_intensity_to_ridge": signals.intensity_to_ridge,
         "dense_attention_to_device_memory": signals.dense_attention_to_memory,
@@ -570,8 +649,8 @@ def build_routing_plan(
         "estimated_blocks_per_sm": signals.blocks_per_sm,
         "launch_dominant": signals.launch_dominant,
         "graph_replay_is_cheaper": signals.graph_replay_is_cheaper,
-        "eager_launch_lower_bound_seconds": signals.eager_launch_seconds,
-        "eager_total_lower_bound_seconds": signals.eager_lower_bound_seconds,
+        "eager_node_timing_estimate_seconds": signals.eager_node_timing_seconds,
+        "eager_cost_estimate_seconds": signals.eager_cost_estimate_seconds,
     }
     return {
         "source": "hardware_cost_prior",

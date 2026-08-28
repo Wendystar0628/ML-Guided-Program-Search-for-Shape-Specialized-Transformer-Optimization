@@ -143,6 +143,44 @@ def _native_sdpa_candidate(
     )
 
 
+def _compact_graph_fused_norm_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
+    return bool(
+        _native_sdpa_candidate(shape, variant)
+        and variant.dtype == "float32"
+        and shape.batch_size * shape.seq_len <= 2048
+        and shape.d_model == 128
+        and shape.ffn_dim == 128
+    )
+
+
+def _long_mixed_attention_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
+    return bool(
+        _native_sdpa_candidate(shape, variant)
+        and variant.dtype == "float32"
+        and shape.seq_len >= 1024
+        and shape.d_model // shape.num_heads == 32
+    )
+
+
+def _graph_mixed_attention_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
+    return bool(
+        _native_sdpa_candidate(shape, variant)
+        and variant.dtype == "float32"
+        and shape.batch_size in {64, 128}
+        and shape.seq_len == 128
+        and shape.d_model in {32, 128}
+    )
+
+
 def _expect(field: str, *values: object) -> PathExpectation:
     return PathExpectation(field, frozenset(values))
 
@@ -158,21 +196,22 @@ def _observe(field: str, value: str) -> ObservedPathExpectation:
 def _native_evidence(
     *,
     policy: str,
+    attention_backend: str = "causal_sdpa",
     runtime_wrapper: str = "eager",
-    block_backend: str = "torch",
+    residual_norm_backend: str = "torch",
 ) -> ExecutionEvidence:
     observed = [
-        _observe("attention_backends", "causal_sdpa"),
-        _observe("block_backends", block_backend),
+        _observe("attention_backends", attention_backend),
+        _observe("residual_norm_backends", residual_norm_backend),
     ]
     if runtime_wrapper == "cuda_graph":
         observed.append(_observe("runtime_wrappers", "cuda_graph"))
     return ExecutionEvidence(
         selected_policies=frozenset({policy}),
         path_expectations=(
-            _expect("attention_backend", "causal_sdpa"),
+            _expect("attention_backend", attention_backend),
             _expect("runtime_wrapper", runtime_wrapper),
-            _expect("block_backend", block_backend),
+            _expect("residual_norm_backend", residual_norm_backend),
         ),
         observed_expectations=tuple(observed),
     )
@@ -196,11 +235,11 @@ _CANDIDATE_SPECS = (
             path_expectations=(
                 _expect("attention_backend", "safe_streaming"),
                 _expect("runtime_wrapper", "eager"),
-                _expect("block_backend", "torch"),
+                _expect("residual_norm_backend", "torch"),
             ),
             observed_expectations=(
                 _observe("attention_backends", "safe_streaming"),
-                _observe("block_backends", "torch"),
+                _observe("residual_norm_backends", "torch"),
             ),
         ),
     ),
@@ -212,13 +251,35 @@ _CANDIDATE_SPECS = (
         _native_evidence(policy="graph", runtime_wrapper="cuda_graph"),
     ),
     CandidateSpec(
-        "inplace-block",
-        "inplace-block",
-        _native_sdpa_candidate,
-        "causal FP16/FP32 shapes without padding",
+        "graph-fused-norm",
+        "graph-fused-norm",
+        _compact_graph_fused_norm_candidate,
+        "up to 2048 FP32 width-128 tokens with full-forward Graph replay",
         _native_evidence(
-            policy="inplace-block",
-            block_backend="inplace_exact_gelu",
+            policy="graph-fused-norm",
+            runtime_wrapper="cuda_graph",
+            residual_norm_backend="compiled_residual_layer_norm",
+        ),
+    ),
+    CandidateSpec(
+        "mixed-fp16-efficient",
+        "mixed-fp16-efficient",
+        _long_mixed_attention_candidate,
+        "long causal FP32 shapes with head dimension 32",
+        _native_evidence(
+            policy="mixed-fp16-efficient",
+            attention_backend="mixed_fp16_efficient",
+        ),
+    ),
+    CandidateSpec(
+        "graph-mixed-fp16-efficient",
+        "graph-mixed-fp16-efficient",
+        _graph_mixed_attention_candidate,
+        "B64/B128 S128 causal FP32 shapes with model width 32 or 128",
+        _native_evidence(
+            policy="graph-mixed-fp16-efficient",
+            attention_backend="mixed_fp16_efficient",
+            runtime_wrapper="cuda_graph",
         ),
     ),
 )

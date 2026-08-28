@@ -5,23 +5,26 @@ from .causal_attention import (
     causal_sdpa,
     reference_causal_attention,
 )
-from .ffn import (
-    can_use_linear_exact_gelu,
-    linear_exact_gelu,
-    supports_inplace_exact_gelu,
+from .mixed_attention import (
+    MIXED_FP16_EFFICIENT_BACKEND,
+    can_use_mixed_fp16_efficient_attention,
+    mixed_fp16_efficient_attention,
 )
 from .norm_residual import can_use_residual_add, residual_add
 from .qkv import can_split_qkv, split_qkv
+from .residual_norm import can_use_residual_layer_norm, residual_layer_norm
 
 __all__ = [
+    "MIXED_FP16_EFFICIENT_BACKEND",
     "can_split_qkv",
     "can_use_causal_sdpa",
-    "can_use_linear_exact_gelu",
+    "can_use_mixed_fp16_efficient_attention",
     "can_use_residual_add",
+    "can_use_residual_layer_norm",
     "causal_sdpa",
-    "linear_exact_gelu",
+    "mixed_fp16_efficient_attention",
     "reference_causal_attention",
     "residual_add",
+    "residual_layer_norm",
     "split_qkv",
-    "supports_inplace_exact_gelu",
 ]

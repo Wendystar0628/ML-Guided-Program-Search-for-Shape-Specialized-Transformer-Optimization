@@ -472,7 +472,7 @@ def _print_tuning_summary(summary: dict[str, Any]) -> None:
                     execution_path.get("selected_policy"),
                     execution_path.get("attention_backend"),
                     execution_path.get("runtime_wrapper"),
-                    execution_path.get("block_backend"),
+                    execution_path.get("residual_norm_backend"),
                 )
                 if value not in (None, "none")
             )

@@ -22,14 +22,14 @@ from runner.contracts import (
 
 RunKind = Literal["benchmark", "profile", "probe"]
 RunTarget = Literal["baseline", "solution"]
-RUN_RESULT_SCHEMA_VERSION = 4
+RUN_RESULT_SCHEMA_VERSION = 5
 EXECUTION_PATH_STRING_FIELDS = (
     "requested_policy",
     "selected_policy",
     "qkv_projection",
     "attention_backend",
     "runtime_wrapper",
-    "block_backend",
+    "residual_norm_backend",
     "causal_mask",
     "valid_token_mask",
 )
@@ -96,7 +96,7 @@ class ExecutionPathDocument(TypedDict, total=False):
     qkv_projection: str
     attention_backend: str
     runtime_wrapper: str
-    block_backend: str
+    residual_norm_backend: str
     causal_mask: str
     valid_token_mask: str
     fallback_reasons: list[str]

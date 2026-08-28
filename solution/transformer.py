@@ -21,9 +21,10 @@ from .execution_plan import (
 )
 from .kernels import (
     causal_sdpa,
-    linear_exact_gelu,
+    mixed_fp16_efficient_attention,
     reference_causal_attention,
     residual_add,
+    residual_layer_norm,
     split_qkv,
 )
 
@@ -31,16 +32,16 @@ from .kernels import (
 @dataclass(slots=True)
 class _ExecutionObservation:
     attention_backends: list[str] = field(default_factory=list)
-    block_backends: list[str] = field(default_factory=list)
+    residual_norm_backends: list[str] = field(default_factory=list)
 
     def describe(self, expected_layers: int) -> dict[str, Any]:
         complete = (
             len(self.attention_backends) == expected_layers
-            and len(self.block_backends) == expected_layers
+            and len(self.residual_norm_backends) == expected_layers
         )
         return {
             "attention_backends": list(self.attention_backends),
-            "block_backends": list(self.block_backends),
+            "residual_norm_backends": list(self.residual_norm_backends),
             "expected_layers": expected_layers,
             "complete": complete,
         }
@@ -73,7 +74,17 @@ class _SelfAttention(nn.Module):
             self.qkv_proj(value),
             self.num_heads,
         )
-        if plan.attention_backend == "causal_sdpa":
+        if plan.attention_backend == "mixed_fp16_efficient":
+            context, actual_attention_backend = mixed_fp16_efficient_attention(
+                query,
+                key,
+                projected_value,
+                valid_token_mask,
+                scale=self.scale,
+                causal=causal,
+                training=self.training,
+            )
+        elif plan.attention_backend == "causal_sdpa":
             context = causal_sdpa(
                 query,
                 key,
@@ -82,6 +93,7 @@ class _SelfAttention(nn.Module):
                 scale=self.scale,
                 causal=causal,
             )
+            actual_attention_backend = "causal_sdpa"
         else:
             context = reference_causal_attention(
                 query,
@@ -91,8 +103,9 @@ class _SelfAttention(nn.Module):
                 scale=self.scale,
                 causal=causal,
             )
+            actual_attention_backend = "safe_streaming"
         if observation is not None:
-            observation.attention_backends.append(plan.attention_backend)
+            observation.attention_backends.append(actual_attention_backend)
         context = (
             context.transpose(1, 2)
             .contiguous()
@@ -128,20 +141,19 @@ class _TransformerBlock(nn.Module):
             plan,
             observation,
         )
-        value = residual_add(value, attention_update, valid_token_mask)
-
-        normalized = self.norm2(value)
-        if plan.block_backend == "inplace_exact_gelu":
-            hidden, actual_block_backend = linear_exact_gelu(
-                normalized,
-                self.ffn_in.weight,
-                self.ffn_in.bias,
+        if plan.residual_norm_backend == "compiled_residual_layer_norm":
+            value, normalized, actual_residual_norm_backend = residual_layer_norm(
+                value,
+                attention_update,
+                self.norm2,
             )
         else:
-            hidden = F.gelu(self.ffn_in(normalized), approximate="none")
-            actual_block_backend = "torch"
+            value = residual_add(value, attention_update, valid_token_mask)
+            normalized = self.norm2(value)
+            actual_residual_norm_backend = "torch"
+        hidden = F.gelu(self.ffn_in(normalized), approximate="none")
         if observation is not None:
-            observation.block_backends.append(actual_block_backend)
+            observation.residual_norm_backends.append(actual_residual_norm_backend)
         return residual_add(value, self.ffn_out(hidden), valid_token_mask)
 
 
@@ -219,7 +231,16 @@ class UserOptimizedTransformer(nn.Module):
             if value is None
             else tuple(value.shape)
         )
-        signature = (device.type, device.index, dtype, shape)
+        matmul_precision = torch.get_float32_matmul_precision()
+        allow_tf32 = bool(torch.backends.cuda.matmul.allow_tf32)
+        signature = (
+            device.type,
+            device.index,
+            dtype,
+            shape,
+            matmul_precision,
+            allow_tf32,
+        )
         if signature == self._dispatch_signature:
             return
         resolution = self._dispatcher.resolve_result(
@@ -227,6 +248,8 @@ class UserOptimizedTransformer(nn.Module):
             device=device,
             dtype=dtype,
             shape=shape,
+            matmul_precision=matmul_precision,
+            allow_tf32=allow_tf32,
         )
         self._select_named_policy(resolution.policy, requested_policy="dispatch")
         self.dispatch_policy = resolution.policy
@@ -290,6 +313,8 @@ class UserOptimizedTransformer(nn.Module):
             grad_enabled = torch.is_grad_enabled()
         d_model = shape[-1]
         return ExecutionContext(
+            batch_size=shape[0],
+            seq_len=shape[1],
             d_model=d_model,
             num_heads=self.config.num_heads,
             causal=bool(self.config.causal),
@@ -336,6 +361,7 @@ class UserOptimizedTransformer(nn.Module):
             mask_signature,
             self.training,
             torch.is_grad_enabled(),
+            bool(torch.backends.cuda.mem_efficient_sdp_enabled()),
         )
         if signature != self._runtime_plan_signature:
             self._runtime_plan = self._execution_plan(value, valid_token_mask)
@@ -427,7 +453,7 @@ class UserOptimizedTransformer(nn.Module):
         valid_token_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if torch.compiler.is_compiling():
-            if self._active_policy_id == "graph" or self.dispatch_policy == "graph":
+            if get_policy_spec(self._active_policy_id).use_cuda_graph:
                 raise RuntimeError("CUDA Graph policy cannot run under torch.compile")
             valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._execution_plan(x, valid_token_mask)

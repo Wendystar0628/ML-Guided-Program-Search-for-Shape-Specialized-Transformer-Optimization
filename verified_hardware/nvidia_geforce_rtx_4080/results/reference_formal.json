@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "sweep_id": "20260828T053607.420447Z-e9b6b006",
-  "created_at": "2026-08-28T05:36:07.420950+00:00",
+  "sweep_id": "20260828T084343.169945Z-110f92c1",
+  "created_at": "2026-08-28T08:43:43.170945+00:00",
   "workload_set_id": "official_transformer_v1",
   "workload_sha256": "621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9",
   "variant": {
@@ -12,7 +12,7 @@
   "target": "solution",
   "source": {
     "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
-    "solution_sha256": "d895f1c82756e66be5d1ff3f7fbc7e02963592fc70567903bb1b1caf942beb29"
+    "solution_sha256": "3a5fdd7533b2897f9cfa614cbdb2447d395362d9a1bd26d976f875a9867c870b"
   },
   "protocol": {
     "preset": "formal",
@@ -42,7 +42,7 @@
   },
   "dispatch": {
     "source": "verified_hardware/nvidia_geforce_rtx_4080/routes.json",
-    "sha256": "74945e8fd6a3f7580dfe11aa33bfa4b2acc08df10e13e04a743ea7c8479c7387"
+    "sha256": "a73028d8e0d371e511dd1915d847e8990896abd98ca51755a552baa5196e65b1"
   },
   "sweep_outcome": "complete",
   "case_results": [
@@ -50,38 +50,38 @@
       "case_id": "official_01",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.5328319668769836,
-        "p90_ms": 1.8752352118492133
+        "median_ms": 1.5697439908981323,
+        "p90_ms": 2.011222410202026
       },
       "solution": {
-        "median_ms": 0.6737920045852661,
-        "p90_ms": 0.6768640279769897
+        "median_ms": 0.5406720042228699,
+        "p90_ms": 0.7677951991558077
       },
-      "speedup": 2.2749334459978874,
+      "speedup": 2.903320272989518,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.001018613576889038,
-        "max_relative_error": 349.0494384765625
+        "max_abs_error": 0.0011050701141357422,
+        "max_relative_error": 296.2870788574219
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-mixed-fp16-efficient",
       "failure": null
     },
     {
       "case_id": "official_02",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7341439723968506,
-        "p90_ms": 2.027065515518189
+        "median_ms": 1.782047986984253,
+        "p90_ms": 2.1951550960540773
       },
       "solution": {
-        "median_ms": 0.16076800227165222,
-        "p90_ms": 0.16076800227165222
+        "median_ms": 0.14028799533843994,
+        "p90_ms": 0.14131200313568115
       },
-      "speedup": 10.78662387971109,
+      "speedup": 12.70278317603102,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -89,47 +89,47 @@
         "max_abs_error": 0.0006857216358184814,
         "max_relative_error": 9.548253059387207
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-fused-norm",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-fused-norm",
       "failure": null
     },
     {
       "case_id": "official_03",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7511520385742188,
-        "p90_ms": 2.0470399856567387
+        "median_ms": 1.7904640436172485,
+        "p90_ms": 2.134016036987305
       },
       "solution": {
-        "median_ms": 0.16896000504493713,
-        "p90_ms": 0.16998399794101715
+        "median_ms": 0.14745600521564484,
+        "p90_ms": 0.14847999811172485
       },
-      "speedup": 10.364299161262908,
+      "speedup": 12.142360977423817,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0009073615074157715,
-        "max_relative_error": 35.539493560791016
+        "max_relative_error": 33.559226989746094
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-fused-norm",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-fused-norm",
       "failure": null
     },
     {
       "case_id": "official_04",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.645039975643158,
-        "p90_ms": 1.9231456279754637
+        "median_ms": 1.7875360250473022,
+        "p90_ms": 2.1364927530288695
       },
       "solution": {
-        "median_ms": 0.2734079957008362,
-        "p90_ms": 0.2744320034980774
+        "median_ms": 0.23654399812221527,
+        "p90_ms": 0.23756800591945648
       },
-      "speedup": 6.01679541750917,
+      "speedup": 7.556885988389084,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -137,47 +137,47 @@
         "max_abs_error": 0.0009307265281677246,
         "max_relative_error": 349.0494384765625
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-fused-norm",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-fused-norm",
       "failure": null
     },
     {
       "case_id": "official_05",
       "outcome": "success",
       "baseline": {
-        "median_ms": 2.5297919511795044,
-        "p90_ms": 4.427135801315308
+        "median_ms": 2.37772798538208,
+        "p90_ms": 2.8938241004943848
       },
       "solution": {
-        "median_ms": 1.233407974243164,
-        "p90_ms": 1.2390400171279907
+        "median_ms": 0.9983999729156494,
+        "p90_ms": 1.404313564300537
       },
-      "speedup": 2.0510585337603473,
+      "speedup": 2.381538511502909,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0011766254901885986,
-        "max_relative_error": 349.0494384765625
+        "max_abs_error": 0.0011050701141357422,
+        "max_relative_error": 296.2870788574219
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-mixed-fp16-efficient",
       "failure": null
     },
     {
       "case_id": "official_06",
       "outcome": "success",
       "baseline": {
-        "median_ms": 446.76710510253906,
-        "p90_ms": 447.4194030761719
+        "median_ms": 483.2209930419922,
+        "p90_ms": 486.2452789306641
       },
       "solution": {
-        "median_ms": 131.26707458496094,
-        "p90_ms": 131.7090301513672
+        "median_ms": 141.27308654785156,
+        "p90_ms": 142.83652954101564
       },
-      "speedup": 3.4034970803998132,
+      "speedup": 3.4204745210144263,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -194,38 +194,38 @@
       "case_id": "official_07",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.626255989074707,
-        "p90_ms": 1.8267263650894165
+        "median_ms": 1.7024799585342407,
+        "p90_ms": 2.0547583580017093
       },
       "solution": {
-        "median_ms": 0.5478399991989136,
-        "p90_ms": 0.549888014793396
+        "median_ms": 0.3532800078392029,
+        "p90_ms": 0.3563520014286041
       },
-      "speedup": 2.9684871339309318,
+      "speedup": 4.819066804677871,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.001344442367553711,
-        "max_relative_error": 1193.36181640625
+        "max_abs_error": 0.0015511512756347656,
+        "max_relative_error": 965.2197265625
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-mixed-fp16-efficient",
       "failure": null
     },
     {
       "case_id": "official_08",
       "outcome": "success",
       "baseline": {
-        "median_ms": 13.191679954528809,
-        "p90_ms": 13.414707279205324
+        "median_ms": 14.114815711975098,
+        "p90_ms": 14.54079990386963
       },
       "solution": {
-        "median_ms": 11.786239624023438,
-        "p90_ms": 11.997388648986817
+        "median_ms": 12.617727756500244,
+        "p90_ms": 12.925234985351564
       },
-      "speedup": 1.1192441673797906,
+      "speedup": 1.1186495686359694,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -242,86 +242,86 @@
       "case_id": "official_09",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.4652639627456665,
-        "p90_ms": 1.6486592292785645
+        "median_ms": 1.5320959687232971,
+        "p90_ms": 1.8904831767082215
       },
       "solution": {
-        "median_ms": 0.6041600108146667,
-        "p90_ms": 0.6584320068359375
+        "median_ms": 0.5294079780578613,
+        "p90_ms": 0.6108351767063145
       },
-      "speedup": 2.42529120848277,
+      "speedup": 2.893979751389103,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.001196831464767456,
-        "max_relative_error": 200.35043334960938
+        "max_abs_error": 0.00125199556350708,
+        "max_relative_error": 376.62847900390625
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-mixed-fp16-efficient",
       "failure": null
     },
     {
       "case_id": "official_10",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.619871973991394,
-        "p90_ms": 4.345107316970825
+        "median_ms": 1.7209280133247375,
+        "p90_ms": 2.110729694366455
       },
       "solution": {
-        "median_ms": 0.6113280057907104,
-        "p90_ms": 0.6144000291824341
+        "median_ms": 0.5191680192947388,
+        "p90_ms": 0.7134207963943485
       },
-      "speedup": 2.6497591450864446,
+      "speedup": 3.3147804744647478,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0010130703449249268,
-        "max_relative_error": 168.7611846923828
+        "max_abs_error": 0.0010663270950317383,
+        "max_relative_error": 613.007568359375
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-mixed-fp16-efficient",
       "failure": null
     },
     {
       "case_id": "official_11",
       "outcome": "success",
       "baseline": {
-        "median_ms": 7.116799831390381,
-        "p90_ms": 7.314451313018799
+        "median_ms": 7.536128044128418,
+        "p90_ms": 8.034815692901612
       },
       "solution": {
-        "median_ms": 1.2339199781417847,
-        "p90_ms": 1.2380160093307495
+        "median_ms": 0.6584320068359375,
+        "p90_ms": 1.0502144098281863
       },
-      "speedup": 5.767634820296766,
+      "speedup": 11.445567599823875,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0011588335037231445,
-        "max_relative_error": 117.79923248291016
+        "max_abs_error": 0.0009748935699462891,
+        "max_relative_error": 102.97013092041016
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-mixed-fp16-efficient",
       "failure": null
     },
     {
       "case_id": "official_12",
       "outcome": "success",
       "baseline": {
-        "median_ms": 1.7807520031929016,
-        "p90_ms": 4.455321645736694
+        "median_ms": 1.8411359786987305,
+        "p90_ms": 2.154201602935791
       },
       "solution": {
-        "median_ms": 0.24780799448490143,
-        "p90_ms": 0.24883200228214264
+        "median_ms": 0.21401600539684296,
+        "p90_ms": 0.21503999829292297
       },
-      "speedup": 7.186015152152002,
+      "speedup": 8.602795736163618,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
@@ -329,33 +329,33 @@
         "max_abs_error": 0.0010500550270080566,
         "max_relative_error": 349.0494384765625
       },
-      "selected_policy": "graph",
+      "selected_policy": "graph-fused-norm",
       "policy_applied": true,
-      "actual_policy": "graph",
+      "actual_policy": "graph-fused-norm",
       "failure": null
     },
     {
       "case_id": "official_13",
       "outcome": "success",
       "baseline": {
-        "median_ms": 119.69075393676758,
-        "p90_ms": 121.58320617675781
+        "median_ms": 116.7856674194336,
+        "p90_ms": 117.84540328979493
       },
       "solution": {
-        "median_ms": 13.941760063171387,
-        "p90_ms": 14.59845085144043
+        "median_ms": 7.038464069366455,
+        "p90_ms": 7.521279811859131
       },
-      "speedup": 8.585053350110593,
+      "speedup": 16.5924932298398,
       "accuracy": {
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0009801238775253296,
-        "max_relative_error": 2109.733642578125
+        "max_abs_error": 0.0010006949305534363,
+        "max_relative_error": 1295.8857421875
       },
-      "selected_policy": "auto",
+      "selected_policy": "mixed-fp16-efficient",
       "policy_applied": true,
-      "actual_policy": "auto",
+      "actual_policy": "mixed-fp16-efficient",
       "failure": null
     }
   ],
@@ -363,5 +363,5 @@
   "excluded_case_ids": [
     "official_14"
   ],
-  "geomean_speedup": 4.058909681737585
+  "geomean_speedup": 5.254752705085461
 }
