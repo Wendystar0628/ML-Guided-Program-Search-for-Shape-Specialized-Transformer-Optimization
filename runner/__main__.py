@@ -165,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     streamed.add_argument(
         "--result-dir",
         type=Path,
-        help="write streamed run results here (default: results/streamed)",
+        help="write streamed run results here (default: results/intermediate/streamed)",
     )
     streamed.add_argument(
         "--solution-policy",

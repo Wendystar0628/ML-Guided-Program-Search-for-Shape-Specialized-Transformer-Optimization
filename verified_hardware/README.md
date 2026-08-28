@@ -11,11 +11,12 @@ verified_hardware/<device_id>/
 ├── profile.json          Compact measured hardware/runtime profile
 ├── routes.json           Exact published routes
 ├── manifest.json         Identity binding for the complete package
-├── results/
-│   ├── reference_formal.json   Last resident Formal result, when current
-│   └── reference_streamed.json Provisional streamed Formal result, when current
 └── run_verified.py        Thin entry into the shared runner
 ```
+
+The single tracked performance record for a package is stored separately at
+`results/final/<hardware_id>.json`. Generated runs and search artifacts stay
+under ignored `results/intermediate/`.
 
 ## Package contract
 
@@ -75,24 +76,26 @@ python verified_hardware/<device_id>/run_verified.py --scope streamed --preset f
 python verified_hardware/<device_id>/run_verified.py --scope all --preset formal
 ```
 
-Only a successful streamed Formal run atomically replaces
-`results/reference_streamed.json`. It remains target-only and provisional; the
-launcher neither adds an exact route nor mixes it into the resident geometric
-mean.
+Only successful Formal measurements update the matching scope in
+`results/final/<hardware_id>.json`. The streamed scope remains target-only and
+provisional; the launcher neither adds an exact route nor mixes it into the
+resident geometric mean.
 
 ## Evidence boundary
 
-When current, `results/reference_formal.json` reports one paired row per
-covered exact route. `results/reference_streamed.json` is a compact target-only
-record bound to the Bundle Manifest, verified Probe profile, and current
-Solution. It contains the selected streamed schedule, latency, memory,
-throughput, and project-estimated MFU, but no baseline, speedup, or geometric
-mean. A result whose implementation hash predates the current Solution is
-historical only and is never loaded as current route evidence.
+When current, `results/final/<hardware_id>.json` reports one paired Formal row per
+covered exact route and one separate target-only row per provisional streamed
+shape. Shapes 1-13 retain their resident geometric mean; Shape 14 has no
+baseline, speedup, or contribution to that mean. Every row keeps latency,
+useful TFLOP/s, project-estimated MFU, peak allocator bytes, and scoped logical
+operator traffic. Logical traffic is an operator-boundary estimate, not measured
+DRAM bandwidth. A result whose implementation hash predates the current
+Solution is historical only and is never loaded as current route evidence.
 
 Generated smoke runs, raw timing samples, profiler traces, failed candidates,
-and historical development results are not tracked in a device package. A
-result applies only to the recorded device and software stack.
+and historical development results remain ignored under
+`results/intermediate/`. A final result applies only to the recorded device and
+software stack.
 
 ## Available packages
 

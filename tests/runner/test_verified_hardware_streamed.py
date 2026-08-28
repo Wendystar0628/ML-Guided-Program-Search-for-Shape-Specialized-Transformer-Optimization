@@ -14,6 +14,7 @@ from route_contracts import (
 )
 from runner import verified_hardware
 from runner.contracts import RunVariant, load_workload_set
+from runner.performance_metrics import LOGICAL_OPERATOR_TRAFFIC_SCOPE
 from runner.streamed_service import StreamedBenchmarkResult
 from runner.verified_hardware import (
     BundlePaths,
@@ -121,6 +122,7 @@ def _streamed_run(workload_sha256: str) -> dict[str, Any]:
         "protocol": {
             "preset": "formal",
             "accuracy_trials": 1,
+            "warmup": 2,
             "repeats": 1,
             "rounds": 3,
         },
@@ -150,6 +152,10 @@ def _streamed_run(workload_sha256: str) -> dict[str, Any]:
             "useful_matmul_flops": 1_000_000_000_000,
             "attention_flops_fraction": 0.9,
             "achieved_tflops": 10.0,
+            "estimated_logical_operator_bytes": 5_000_000_000,
+            "logical_operator_arithmetic_intensity_flops_per_byte": 200.0,
+            "estimated_logical_operator_traffic_gbps": 50.0,
+            "logical_operator_traffic_scope": LOGICAL_OPERATOR_TRAFFIC_SCOPE,
         },
         "execution_path": {
             "requested_policy": policy,
@@ -222,6 +228,10 @@ def test_streamed_reference_is_compact_provisional_and_uses_probe_mfu() -> None:
     }
     assert case["project_estimated_mfu"] == pytest.approx(0.5)
     assert case["measured_compute_roof_tflops"] == pytest.approx(20.0)
+    assert case["estimated_logical_operator_bytes"] == 5_000_000_000
+    assert case["logical_operator_arithmetic_intensity_flops_per_byte"] == 200.0
+    assert case["estimated_logical_operator_traffic_gbps"] == 50.0
+    assert case["logical_operator_traffic_scope"] == LOGICAL_OPERATOR_TRAFFIC_SCOPE
     assert case["schedule"]["timing_microbatch_size"] == 2
     assert "baseline" not in case
     assert "speedup" not in case
@@ -284,14 +294,15 @@ def test_verified_streamed_only_formal_replaces_bundle_reference(
     raw_path = tmp_path / "raw.json"
     raw_path.write_text(json.dumps(run), encoding="utf-8")
     paths = BundlePaths(
-        project_root=PROJECT_ROOT,
-        bundle_root=tmp_path,
-        profile=tmp_path / "profile.json",
-        routes=tmp_path / "routes.json",
-        sweeps=tmp_path / "results" / "sweeps",
+        project_root=tmp_path,
+        bundle_root=tmp_path / "verified_hardware" / "fixture_gpu",
+        profile=tmp_path / "verified_hardware" / "fixture_gpu" / "profile.json",
+        routes=tmp_path / "verified_hardware" / "fixture_gpu" / "routes.json",
+        sweeps=tmp_path / "results" / "intermediate" / "sweeps",
     )
-    paths.reference_streamed.parent.mkdir(parents=True)
-    paths.reference_streamed.write_text('{"sentinel": true}', encoding="utf-8")
+    paths.final_performance.parent.mkdir(parents=True)
+    if preset == "smoke":
+        paths.final_performance.write_text('{"sentinel": true}', encoding="utf-8")
 
     class FakeService:
         def run(self, request):
@@ -300,6 +311,11 @@ def test_verified_streamed_only_formal_replaces_bundle_reference(
             return StreamedBenchmarkResult((run,), (raw_path,))
 
     monkeypatch.setattr(verified_hardware, "load_json", lambda _path: _profile())
+    monkeypatch.setattr(
+        verified_hardware,
+        "load_workload_set",
+        lambda *_args, **_kwargs: workload,
+    )
     monkeypatch.setattr(
         verified_hardware,
         "load_verified_bundle",
@@ -326,13 +342,16 @@ def test_verified_streamed_only_formal_replaces_bundle_reference(
     )
 
     if preset == "formal":
-        assert result_path == paths.reference_streamed
-        assert json.loads(result_path.read_text(encoding="utf-8"))["artifact_kind"] == (
-            "verified_streamed_reference"
-        )
+        assert result_path == paths.final_performance
+        final = json.loads(result_path.read_text(encoding="utf-8"))
+        assert final["artifact_kind"] == "final_performance"
+        assert set(final["scopes"]) == {"streamed"}
+        assert {case["scope"] for case in final["cases"]} == {"streamed"}
+        assert final["scopes"]["streamed"]["validation_level"] == "provisional"
+        assert final["scopes"]["streamed"]["comparison_mode"] == "target_only"
     else:
         assert result_path == raw_path
-        assert json.loads(paths.reference_streamed.read_text(encoding="utf-8")) == {
+        assert json.loads(paths.final_performance.read_text(encoding="utf-8")) == {
             "sentinel": True
         }
 
@@ -347,20 +366,26 @@ def test_verified_streamed_rejects_a_mixed_generation_publication(
     raw_path = tmp_path / "raw.json"
     raw_path.write_text(json.dumps(run), encoding="utf-8")
     paths = BundlePaths(
-        project_root=PROJECT_ROOT,
-        bundle_root=tmp_path,
-        profile=tmp_path / "profile.json",
-        routes=tmp_path / "routes.json",
-        sweeps=tmp_path / "results" / "sweeps",
+        project_root=tmp_path,
+        bundle_root=tmp_path / "verified_hardware" / "fixture_gpu",
+        profile=tmp_path / "verified_hardware" / "fixture_gpu" / "profile.json",
+        routes=tmp_path / "verified_hardware" / "fixture_gpu" / "routes.json",
+        sweeps=tmp_path / "results" / "intermediate" / "sweeps",
     )
-    paths.reference_streamed.parent.mkdir(parents=True)
-    paths.reference_streamed.write_text('{"sentinel": true}', encoding="utf-8")
+    paths.final_performance.parent.mkdir(parents=True)
+    sentinel = b'{"sentinel": true}'
+    paths.final_performance.write_bytes(sentinel)
 
     class FakeService:
         def run(self, _request):
             return StreamedBenchmarkResult((run,), (raw_path,))
 
     monkeypatch.setattr(verified_hardware, "load_json", lambda _path: _profile())
+    monkeypatch.setattr(
+        verified_hardware,
+        "load_workload_set",
+        lambda *_args, **_kwargs: workload,
+    )
     monkeypatch.setattr(
         verified_hardware,
         "load_verified_bundle",
@@ -396,9 +421,7 @@ def test_verified_streamed_rejects_a_mixed_generation_publication(
             streamed_service=FakeService(),
         )
 
-    assert json.loads(paths.reference_streamed.read_text(encoding="utf-8")) == {
-        "sentinel": True
-    }
+    assert paths.final_performance.read_bytes() == sentinel
 
 
 def test_verified_launcher_defaults_to_resident_and_can_run_all(

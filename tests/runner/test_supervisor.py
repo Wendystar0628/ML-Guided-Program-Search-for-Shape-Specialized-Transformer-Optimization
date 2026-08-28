@@ -68,7 +68,7 @@ def test_managed_failure_persists_only_known_context(
         "type": "TimeoutExpired",
         "message": "worker exceeded its time limit",
     }
-    assert result_path.parent == tmp_path / "results" / "probes"
+    assert result_path.parent == (tmp_path / "results" / "intermediate" / "probes")
     assert json.loads(result_path.read_text(encoding="utf-8")) == result
 
 
@@ -228,7 +228,7 @@ def test_cancelled_token_prevents_worker_start_and_persists_result(
 
     assert result["outcome"] == "cancelled"
     assert result["failure"]["type"] == "CancellationRequested"
-    assert result_path.parent == tmp_path / "results" / "probes"
+    assert result_path.parent == (tmp_path / "results" / "intermediate" / "probes")
     assert json.loads(result_path.read_text(encoding="utf-8")) == result
 
 

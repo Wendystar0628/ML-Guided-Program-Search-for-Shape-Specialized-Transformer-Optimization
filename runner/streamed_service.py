@@ -16,6 +16,7 @@ from runner.contracts import (
     load_workload_set,
     select_transformer_shape,
 )
+from runner.result_layout import intermediate_results_dir
 from runner.supervisor import run_managed_benchmark
 from runner.workload_execution import (
     STREAMED_POLICY_SELECTOR,
@@ -98,8 +99,9 @@ class StreamedBenchmarkService:
             request.workload_set_id,
         )
         shapes = _select_streamed_shapes(workload_set, request)
-        output_root = (
-            request.output_root or request.project_root / "results" / "streamed"
+        output_root = request.output_root or intermediate_results_dir(
+            request.project_root,
+            "streamed",
         )
 
         runs: list[dict[str, Any]] = []

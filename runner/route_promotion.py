@@ -40,6 +40,7 @@ from runner.locking import (
     exclusive_file_lock,
     hardware_bundle_lock_path,
 )
+from runner.result_layout import final_performance_path
 from runner.routing_contracts import (
     hardware_identity_from_verified_profile,
     route_match_from_summary,
@@ -234,7 +235,6 @@ def find_matching_verified_route(
             package_root / "routes.json",
             package_root / "README.md",
             package_root / "run_verified.py",
-            package_root / "results" / ".gitignore",
         )
         missing = [path.name for path in required_paths if not path.is_file()]
         if missing:
@@ -287,7 +287,6 @@ def _find_recalibration_bundle(
         required_support = (
             profile_path.with_name("README.md"),
             profile_path.with_name("run_verified.py"),
-            profile_path.parent / "results" / ".gitignore",
         )
         if not route_path.is_file() or any(
             not path.is_file() for path in required_support
@@ -342,7 +341,8 @@ This package was created by a complete Formal hardware calibration.
 - `manifest.json` binds routes to the Workload, Solution, and Formal evidence.
 - `routes.json` contains only correctness-gated, formally measured exact routes.
 - `run_verified.py` runs the shared Transformer workload with this route table.
-- generated runs and summaries stay below `results/` and are ignored by Git.
+- intermediate runs stay below `results/intermediate/` and are ignored by Git.
+- the concise final result is published to `results/final/{bundle_id}.json`.
 
 From the repository root:
 
@@ -360,8 +360,6 @@ def _write_new_bundle_support_files(
 ) -> None:
     identity = _verified_bundle_identity(profile)
     bundle_root.mkdir(parents=True, exist_ok=False)
-    results_root = bundle_root / "results"
-    results_root.mkdir()
     (bundle_root / "README.md").write_text(
         _bundle_readme(identity["device_name"], bundle_id),
         encoding="utf-8",
@@ -377,10 +375,6 @@ def _write_new_bundle_support_files(
         'if __name__ == "__main__":\n'
         "    from runner.verified_hardware import main_for_bundle\n\n"
         "    raise SystemExit(main_for_bundle(Path(__file__).resolve().parent))\n",
-        encoding="utf-8",
-    )
-    (results_root / ".gitignore").write_text(
-        "*\n!.gitignore\n!reference_formal.json\n!reference_streamed.json\n",
         encoding="utf-8",
     )
     _atomic_replace_json(
@@ -1075,6 +1069,9 @@ def _publish_bundle_tuning_summaries_locked(
         document,
         manifest_document,
         profile_document=verified_profile,
+    )
+    final_performance_path(project_root, destination.parent.name).unlink(
+        missing_ok=True
     )
     return document, winners, destination
 

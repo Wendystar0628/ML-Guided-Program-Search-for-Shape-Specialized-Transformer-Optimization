@@ -27,6 +27,7 @@ from runner.result_contracts import (
     validate_benchmark_performance,
     validate_correctness,
 )
+from runner.result_layout import intermediate_results_dir
 from runner.supervisor import CancellationToken, run_managed_benchmark
 from runner.workload_execution import (
     resident_benchmark_shapes,
@@ -553,7 +554,10 @@ def summarize_sweep(
 
 def _resolve_output_root(request: BenchmarkSweepRequest) -> Path:
     project_root = request.project_root.resolve()
-    output_root = request.output_root or project_root / "results" / "sweeps"
+    output_root = request.output_root or intermediate_results_dir(
+        project_root,
+        "sweeps",
+    )
     if not output_root.is_absolute():
         output_root = project_root / output_root
     return output_root.resolve()

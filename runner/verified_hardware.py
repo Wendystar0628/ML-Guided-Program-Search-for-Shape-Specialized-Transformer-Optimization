@@ -25,16 +25,17 @@ from runner.contracts import (
     RunVariant,
     TransformerShape,
     WorkloadSet,
-    atomic_replace_json,
     load_json,
     load_workload_set,
 )
+from runner.final_results import update_final_performance
 from runner.locking import (
     bundle_lock_path,
     device_measurement_lease,
     exclusive_file_lock,
 )
 from runner.performance_metrics import (
+    LOGICAL_OPERATOR_TRAFFIC_SCOPE,
     derive_project_compute_efficiency,
     project_mfu_metric_definition,
 )
@@ -44,6 +45,7 @@ from runner.result_contracts import (
     validate_correctness,
     validate_workload_execution,
 )
+from runner.result_layout import final_performance_path, intermediate_results_dir
 from runner.routing_contracts import (
     exact_route_key,
     hardware_identity_from_runtime,
@@ -93,12 +95,8 @@ class BundlePaths:
         return self.bundle_root / "manifest.json"
 
     @property
-    def reference_formal(self) -> Path:
-        return self.bundle_root / "results" / "reference_formal.json"
-
-    @property
-    def reference_streamed(self) -> Path:
-        return self.bundle_root / "results" / "reference_streamed.json"
+    def final_performance(self) -> Path:
+        return final_performance_path(self.project_root, self.bundle_root.name)
 
     @classmethod
     def from_bundle(cls, bundle_root: Path) -> BundlePaths:
@@ -109,7 +107,11 @@ class BundlePaths:
             bundle_root=bundle_root,
             profile=bundle_root / "profile.json",
             routes=bundle_root / "routes.json",
-            sweeps=bundle_root / "results" / "sweeps",
+            sweeps=(
+                intermediate_results_dir(project_root, "sweeps")
+                / "verified"
+                / bundle_root.name
+            ),
         )
 
 
@@ -498,6 +500,14 @@ def _compact_streamed_case(
         raise VerifiedHardwareError(
             f"{case_id}: streamed result has invalid attention_flops_fraction"
         )
+    logical_traffic_scope = _required_string(
+        raw_performance.get("logical_operator_traffic_scope"),
+        field="logical_operator_traffic_scope",
+    )
+    if logical_traffic_scope != LOGICAL_OPERATOR_TRAFFIC_SCOPE:
+        raise VerifiedHardwareError(
+            f"{case_id}: streamed result has unsupported logical traffic scope"
+        )
 
     return {
         "case_id": case_id,
@@ -525,6 +535,23 @@ def _compact_streamed_case(
         "achieved_tflops": _required_positive_float(
             raw_performance.get("achieved_tflops"), field="achieved_tflops"
         ),
+        "estimated_logical_operator_bytes": _required_positive_int(
+            raw_performance.get("estimated_logical_operator_bytes"),
+            field="estimated_logical_operator_bytes",
+        ),
+        "logical_operator_arithmetic_intensity_flops_per_byte": (
+            _required_positive_float(
+                raw_performance.get(
+                    "logical_operator_arithmetic_intensity_flops_per_byte"
+                ),
+                field="logical_operator_arithmetic_intensity_flops_per_byte",
+            )
+        ),
+        "estimated_logical_operator_traffic_gbps": _required_positive_float(
+            raw_performance.get("estimated_logical_operator_traffic_gbps"),
+            field="estimated_logical_operator_traffic_gbps",
+        ),
+        "logical_operator_traffic_scope": logical_traffic_scope,
         "accuracy": {
             key: correctness[key]
             for key in (
@@ -584,7 +611,7 @@ def build_streamed_reference_summary(
     manifest_sha256: str,
     profile_sha256: str,
 ) -> dict[str, Any]:
-    """Build the compact provisional artifact kept beside one verified Bundle."""
+    """Build the verified provisional input for the unified final result."""
 
     expected_shapes = streamed_benchmark_shapes(
         workload_set.shapes,
@@ -980,14 +1007,18 @@ def run_verified_streamed(
                         "verified bundle changed during streamed measurement; "
                         "refusing to publish a mixed-generation reference"
                     )
-                atomic_replace_json(paths.reference_streamed, summary)
+                update_final_performance(
+                    paths.final_performance,
+                    hardware_id=paths.bundle_root.name,
+                    streamed_summary=summary,
+                )
         except VerifiedHardwareError:
             raise
         except (OSError, TypeError, ValueError) as exc:
             raise VerifiedHardwareError(
                 f"cannot revalidate the verified bundle before publication: {exc}"
             ) from exc
-        return paths.reference_streamed
+        return paths.final_performance
     return completed.result_paths[-1]
 
 
@@ -1007,6 +1038,8 @@ def _run_verified(
             paths.routes,
             project_root=paths.project_root,
         )
+        manifest_sha256 = canonical_json_sha256(paths.manifest)
+        profile_sha256 = canonical_json_sha256(paths.profile)
     except (OSError, TypeError, ValueError) as exc:
         raise VerifiedHardwareError(
             f"verified bundle provenance is stale or invalid: {exc}"
@@ -1087,6 +1120,16 @@ def _run_verified(
                     f"{case_result.get('case_id')}: verified summary has no actual policy"
                 )
         enrich_verified_summary_compute_efficiency(profile, runs, summary)
+        source_probe = _required_mapping(
+            profile.get("source_probe"), field="source Probe"
+        )
+        summary["bundle_identity"] = {
+            "manifest_sha256": manifest_sha256,
+            "profile_sha256": profile_sha256,
+            "source_probe_run_id": _required_string(
+                source_probe.get("run_id"), field="source Probe run_id"
+            ),
+        }
 
     service = sweep_service or BenchmarkSweepService()
     try:
@@ -1110,9 +1153,40 @@ def _run_verified(
         raise VerifiedHardwareError(f"verified sweep failed: {exc}") from exc
     if sweep.summary.get("sweep_outcome") == "cancelled":
         return sweep.summary_path
-    if config.preset == "formal":
-        atomic_replace_json(paths.reference_formal, sweep.summary)
-    return sweep.summary_path
+    if config.preset != "formal":
+        return sweep.summary_path
+    try:
+        with exclusive_file_lock(
+            bundle_lock_path(paths.bundle_root),
+            purpose=f"resident result publication for {paths.bundle_root.name}",
+        ):
+            _table, current_route_sha256, _manifest = load_verified_bundle(
+                paths.routes,
+                project_root=paths.project_root,
+            )
+            current_manifest_sha256 = canonical_json_sha256(paths.manifest)
+            current_profile_sha256 = canonical_json_sha256(paths.profile)
+            if (
+                current_route_sha256 != route_sha256
+                or current_manifest_sha256 != manifest_sha256
+                or current_profile_sha256 != profile_sha256
+            ):
+                raise VerifiedHardwareError(
+                    "verified bundle changed during resident measurement; "
+                    "refusing to publish a mixed-generation result"
+                )
+            update_final_performance(
+                paths.final_performance,
+                hardware_id=paths.bundle_root.name,
+                resident_summary=sweep.summary,
+            )
+    except VerifiedHardwareError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise VerifiedHardwareError(
+            f"cannot revalidate the verified bundle before publication: {exc}"
+        ) from exc
+    return paths.final_performance
 
 
 def build_parser(hardware_id: str) -> argparse.ArgumentParser:

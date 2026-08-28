@@ -71,7 +71,9 @@ def test_plan_only_defaults_to_formal_eligible_shapes(
     assert result.outcome == "planned"
     assert result.case_ids == tuple(f"official_{index:02d}" for index in range(1, 14))
     assert [case_id for case_id, _variant in planned] == list(result.case_ids)
-    assert not (tmp_path / "results" / "calibration" / "plan-default.json").exists()
+    assert not (
+        tmp_path / "results" / "intermediate" / "calibration" / "plan-default.json"
+    ).exists()
 
 
 def test_variant_is_forwarded_explicitly_to_each_routing_plan(

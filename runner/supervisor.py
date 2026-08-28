@@ -38,6 +38,7 @@ from runner.result_contracts import (
     validate_correctness,
     validate_execution_path,
 )
+from runner.result_layout import intermediate_results_dir
 from runner.workload_execution import effective_protocol, plan_workload_execution
 
 
@@ -317,7 +318,7 @@ def _persist_result(
     *,
     result_dir: Path | None = None,
 ) -> tuple[dict[str, Any], Path]:
-    output_dir = result_dir or project_root / "results" / "runs"
+    output_dir = result_dir or intermediate_results_dir(project_root, "runs")
     if not output_dir.is_absolute():
         output_dir = project_root / output_dir
     result_path = output_dir.resolve() / f"{result['run_id']}.json"
@@ -771,7 +772,7 @@ def _run_managed_profile(
     return _persist_result(
         project_root,
         result,
-        result_dir=project_root / "results" / "profiles",
+        result_dir=intermediate_results_dir(project_root, "profiles"),
     )
 
 
@@ -855,5 +856,5 @@ def _run_managed_probe(
     return _persist_result(
         project_root,
         result,
-        result_dir=project_root / "results" / "probes",
+        result_dir=intermediate_results_dir(project_root, "probes"),
     )

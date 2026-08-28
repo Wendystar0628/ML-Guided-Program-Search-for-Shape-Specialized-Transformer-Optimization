@@ -16,7 +16,8 @@ The current competition workload is split by execution reality:
 
 ## Verified result at a glance
 
-The checked RTX 4080 artifacts are the only numeric source for this summary:
+The checked RTX 4080 performance record is the only numeric source for this
+summary:
 
 - Resident Formal: **13/13 successful**, **10.980x** unweighted geometric-mean
   speedup, per-shape speedups from **1.746x** to **33.089x**, zero failed output
@@ -31,9 +32,14 @@ The checked RTX 4080 artifacts are the only numeric source for this summary:
 
 Authoritative machine-readable records:
 
-- [Resident Formal result](verified_hardware/nvidia_geforce_rtx_4080/results/reference_formal.json)
-- [Streamed Shape 14 result](verified_hardware/nvidia_geforce_rtx_4080/results/reference_streamed.json)
+- [Unified RTX 4080 performance result](results/final/nvidia_geforce_rtx_4080.json)
 - [Exact RTX 4080 routes](verified_hardware/nvidia_geforce_rtx_4080/routes.json)
+
+The unified result keeps the paired Formal rows and geometric mean for Shapes
+1-13 together with the separate target-only, provisional Shape 14 row. Every
+shape reports latency, useful TFLOP/s, project-estimated MFU, peak allocator
+bytes, and a scoped logical operator-traffic estimate. Logical traffic is not a
+measured DRAM bandwidth counter.
 
 See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) for the per-shape table,
 measurement interpretation, and optimization insights. The geometric mean and
@@ -109,14 +115,15 @@ No external `flash-attn` package is required by the current verified route.
 official/                    Supplied benchmark and published shape source
 solution/                    Optimized Transformer, execution plans, kernels
 runner/                      Probe, measurement, tuning, calibration, routing
-verified_hardware/           Exact routes and compact checked GPU artifacts
+verified_hardware/           Checked GPU profiles, exact routes, manifests
 tests/                       Control-plane, architecture, and real-GPU tests
 policy_registry.py           Shared policy definitions
 route_contracts.py           Route identity and serialization contracts
 torch_transformer_benchmark.py
                              Thin official-compatible entry
 TECHNICAL_REPORT.md          Results, interpretation, and evaluation narrative
-results/                     Generated local experiments; ignored by Git
+results/final/               One tracked final performance file per hardware ID
+results/intermediate/        Generated local experiments; ignored by Git
 docs/                        Official material and development design; not runtime
 ```
 
@@ -168,8 +175,9 @@ Run both scopes sequentially:
 ```
 
 Use `--preset smoke` for a shorter execution-path and correctness check. Formal
-streamed execution refreshes `reference_streamed.json`; it never adds Shape 14
-to the resident route table or geometric mean.
+resident and streamed execution update their respective sections in the single
+hardware result. Shape 14 never enters the resident route table or geometric
+mean.
 
 Other useful entries:
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from runner.contracts import ContractError
+from runner.result_layout import intermediate_results_dir
 
 
 @dataclass
@@ -90,7 +91,13 @@ def _device_measurement_lock_path(
     normalized_device: str,
 ) -> Path:
     safe_device = normalized_device.replace(":", "_")
-    return project_root.resolve() / "results" / ".locks" / f"device_{safe_device}.lock"
+    return (
+        intermediate_results_dir(
+            project_root,
+            ".locks",
+        )
+        / f"device_{safe_device}.lock"
+    )
 
 
 @contextmanager
@@ -168,15 +175,33 @@ def device_measurement_lease(
 
 
 def bundle_lock_path(bundle_root: Path) -> Path:
-    """Keep publication locks inside the bundle's ignored results directory."""
+    """Keep publication locks in the project's intermediate artifact root."""
 
-    return bundle_root.resolve() / "results" / ".bundle.lock"
+    resolved_bundle = bundle_root.resolve()
+    project_root = resolved_bundle.parent
+    for ancestor in resolved_bundle.parents:
+        if ancestor.name == "verified_hardware":
+            project_root = ancestor.parent
+            break
+    return (
+        intermediate_results_dir(
+            project_root,
+            ".locks",
+        )
+        / f"publish_{resolved_bundle.name}.lock"
+    )
 
 
 def hardware_bundle_lock_path(project_root: Path, hardware_id: str) -> Path:
     """Serialize discovery and creation for one stable hardware directory."""
 
-    return project_root.resolve() / "results" / ".locks" / f"bundle_{hardware_id}.lock"
+    return (
+        intermediate_results_dir(
+            project_root,
+            ".locks",
+        )
+        / f"catalog_{hardware_id}.lock"
+    )
 
 
 __all__ = [

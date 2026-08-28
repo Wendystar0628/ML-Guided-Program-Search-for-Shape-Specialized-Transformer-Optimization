@@ -30,6 +30,7 @@ from runner.contracts import (
 )
 from runner.hardware_router import build_routing_plan
 from runner.locking import device_measurement_lease
+from runner.result_layout import intermediate_results_dir
 from runner.route_promotion import (
     auto_promote_calibration,
     find_matching_verified_route,
@@ -193,7 +194,11 @@ class _CalibrationCheckpoint:
         solution_sha256: str | None,
     ) -> None:
         self.path = (
-            project_root.resolve() / "results" / "calibration" / f"{session_id}.json"
+            intermediate_results_dir(
+                project_root,
+                "calibration",
+            )
+            / f"{session_id}.json"
         )
         if self.path.exists():
             raise ContractError(f"calibration session already exists: {session_id}")

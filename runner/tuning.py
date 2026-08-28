@@ -27,6 +27,7 @@ from runner.contracts import (
     utc_now,
 )
 from runner.locking import device_measurement_lease
+from runner.result_layout import intermediate_results_dir
 from runner.routing_contracts import workload_route_identity
 from runner.supervisor import CancellationToken, run_managed_benchmark
 from runner.tuning_contracts import (
@@ -597,7 +598,7 @@ def _run_tuning_case(
 
     observations: list[dict[str, Any]] = []
     tuning_id = new_run_id()
-    tuning_directory = project_root.resolve() / "results" / "tuning" / tuning_id
+    tuning_directory = intermediate_results_dir(project_root, "tuning") / tuning_id
     runs_directory = tuning_directory / "runs"
     compact_device_profile = _compact_device_profile(device_profile)
     solution_root = project_root / "solution"

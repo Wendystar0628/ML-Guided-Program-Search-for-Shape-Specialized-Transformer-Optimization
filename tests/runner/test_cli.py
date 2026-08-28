@@ -150,7 +150,7 @@ def test_tuning_summary_prints_target_only_winner_without_speedup(
         "correctness_passed": True,
         "failed_elements": 0,
         "max_abs_error": 0.0,
-        "result_path": "results/streamed/run.json",
+        "result_path": "results/intermediate/streamed/run.json",
     }
     runner_cli._print_tuning_summary(
         {

@@ -30,21 +30,19 @@ nvidia_geforce_rtx_4080/
 ├── manifest.json
 ├── profile.json
 ├── routes.json
-├── run_verified.py
-└── results/
-    ├── reference_formal.json
-    └── reference_streamed.json
+└── run_verified.py
 ```
 
 - `manifest.json` binds the official snapshot, workload set, Solution source,
   route table, Formal protocol, and resident/provisional workload partition.
 - `profile.json` stores the measured RTX 4080 profile and performance anchors.
 - `routes.json` stores one exact route for each resident workload.
-- `results/reference_formal.json` stores the paired Formal result for Shapes
-  1-13.
-- `results/reference_streamed.json` stores the separate provisional target-only
-  Shape 14 result.
 - `run_verified.py` is a thin launcher over the shared verified runner.
+
+The authoritative machine-readable score is the single
+[RTX 4080 performance result](../../results/final/nvidia_geforce_rtx_4080.json).
+It contains paired Formal rows and the geometric mean for Shapes 1-13, plus a
+separate target-only, provisional Shape 14 row.
 
 ## Reproduce
 
@@ -68,10 +66,9 @@ Run both scopes sequentially:
 .\.venv\Scripts\python.exe verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --scope all --preset formal
 ```
 
-Formal resident execution replaces `reference_formal.json`; Formal streamed
-execution replaces `reference_streamed.json`. Smoke runs create ordinary run
-artifacts without replacing either reference. Recalibrate exact routes after a
-code or runtime change with:
+Formal resident and streamed execution update their respective sections in the
+single hardware result. Smoke runs write only ignored intermediate artifacts.
+Recalibrate exact routes after a code or runtime change with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m runner calibrate --preset formal --device cuda:0
@@ -106,9 +103,10 @@ GEMM roofs, not an official competition score.
 | `official_12` | `graph-fused-norm` | 4.499 | 0.214 / 0.214 | 21.02x | 7.85 | 16.6% | 0.034 |
 | `official_13` | `mixed-fp16-core-efficient` | 108.424 | 5.302 / 5.482 | 20.45x | 22.69 | 24.2% | 0.259 |
 
-`results/reference_formal.json` is authoritative if displayed rounding differs.
-Its logical-traffic fields estimate traffic at the current operator boundary;
-they are not measured DRAM traffic or profiler counters.
+The [unified performance result](../../results/final/nvidia_geforce_rtx_4080.json)
+is authoritative if displayed rounding differs. Its per-shape logical-traffic
+fields estimate traffic at the current operator boundary; they are not measured
+DRAM traffic or profiler counters.
 
 ## Provisional Shape 14 result
 

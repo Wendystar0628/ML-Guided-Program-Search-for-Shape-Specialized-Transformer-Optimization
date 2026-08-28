@@ -36,7 +36,10 @@ def test_service_discovers_streamed_shapes_and_uses_target_only_supervisor_path(
     def fake_run(_project_root: Path, **kwargs: Any):
         calls.append(kwargs)
         result = {"outcome": "success"}
-        return result, PROJECT_ROOT / "results" / "streamed" / "run.json"
+        return (
+            result,
+            PROJECT_ROOT / "results" / "intermediate" / "streamed" / "run.json",
+        )
 
     monkeypatch.setattr("runner.streamed_service.run_managed_benchmark", fake_run)
 
@@ -54,7 +57,9 @@ def test_service_discovers_streamed_shapes_and_uses_target_only_supervisor_path(
     assert [call["shape"].case_id for call in calls] == ["official_14"]
     assert calls[0]["target"] == "solution"
     assert calls[0]["solution_policy"] == "screen"
-    assert calls[0]["result_dir"] == PROJECT_ROOT / "results" / "streamed"
+    assert calls[0]["result_dir"] == (
+        PROJECT_ROOT / "results" / "intermediate" / "streamed"
+    )
     assert events == [
         ("started", "official_14"),
         ("completed", "official_14"),

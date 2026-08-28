@@ -46,7 +46,7 @@ dist/
 agent_state/
 
 # Generated measurement state
-/results/
+/results/intermediate/
 
 # Internal planning, competition research, and development notes
 /docs/

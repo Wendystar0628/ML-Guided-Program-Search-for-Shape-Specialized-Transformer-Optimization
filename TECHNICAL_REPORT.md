@@ -22,9 +22,10 @@ dense `S x S` attention matrix: its measured Target median is **15,987.85 ms** a
 reported separately because its current correctness reference is provisional
 and no executable dense Baseline result exists.
 
-The machine-readable evidence is bound to the current workload, official
-snapshot, Solution implementation, route table, runtime and measurement
-protocol by the [RTX 4080 verified bundle](verified_hardware/nvidia_geforce_rtx_4080/).
+The [unified RTX 4080 performance result](results/final/nvidia_geforce_rtx_4080.json)
+is bound to the current workload, official snapshot, Solution implementation,
+route table, runtime and measurement protocol recorded by the
+[RTX 4080 verified bundle](verified_hardware/nvidia_geforce_rtx_4080/).
 
 ## 1. Environment and measurement protocol
 
@@ -60,8 +61,9 @@ vendor peak specifications.
 - Every reported specialized policy must provide observed execution evidence;
   a silent fallback is not counted as that candidate.
 
-The stored result is the [Formal resident reference](verified_hardware/nvidia_geforce_rtx_4080/results/reference_formal.json).
-It binds Solution implementation `07882d07...` and route table `abe29c3f...`.
+The paired rows are stored in the
+[unified performance result](results/final/nvidia_geforce_rtx_4080.json). They
+bind Solution implementation `07882d07...` and route table `abe29c3f...`.
 
 ### 1.3 Streamed protocol: Shape 14
 
@@ -76,8 +78,9 @@ the full resident logical batch do not fit this device:
 - three complete rounds are timed after two warm-up rounds;
 - GPU Target latency and host-streamed end-to-end latency are both retained.
 
-The stored [Shape 14 reference](verified_hardware/nvidia_geforce_rtx_4080/results/reference_streamed.json)
-is explicitly marked `provisional` and `target_only`. It does not invent a dense
+The Shape 14 row in the
+[unified performance result](results/final/nvidia_geforce_rtx_4080.json) is
+explicitly marked `provisional` and `target_only`. It does not invent a dense
 Baseline latency or a speedup.
 
 ### 1.4 Performance metrics
@@ -88,9 +91,9 @@ saturated GEMM roofs matched to the observed linear and attention compute
 dtypes, then divides it by measured Target time. It is a diagnostic estimate,
 not an official score and not a vendor peak utilization claim.
 
-The result schema also contains a logical operator-traffic estimate. It is not
-measured DRAM traffic and is intentionally not presented as hardware bandwidth
-in the main result table.
+Every shape also carries a logical operator-traffic estimate. It is not measured
+DRAM traffic and is intentionally not presented as hardware bandwidth in the
+main result table.
 
 ## 2. Architecture
 
