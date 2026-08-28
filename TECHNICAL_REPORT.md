@@ -1,4 +1,4 @@
-# Shape-Aware Transformer Optimization on an RTX 4080
+# AI-Assisted Shape-Aware Transformer Optimization on an RTX 4080
 
 ## Executive summary
 
@@ -36,6 +36,8 @@ route table, runtime and measurement protocol recorded by the
 | Item | Recorded value |
 | --- | --- |
 | OS / driver model | Windows 11 / WDDM |
+| CPU / host memory | Intel Core i7-14700KF, 20 cores / 28 threads; 68,534,743,040 bytes (63.83 GiB) RAM |
+| Working storage | SOLIDIGM SSDPFKNU020TZ, local NVMe, 2 TB class |
 | GPU | NVIDIA GeForce RTX 4080, Ada, compute capability 8.9 |
 | GPU resources | 76 SMs, 16 GiB VRAM, 64 MiB L2, 256-bit memory bus |
 | Theoretical memory bandwidth | 716.864 GB/s |
@@ -370,8 +372,15 @@ match the data-center hardware assumptions of a universal kernel package.
 Rather than asking one backend to win everywhere, it extracts repeatable value
 from fixed production-like shapes: launch-bound cases use graphs and fusion,
 throughput cases use mixed precision, and capacity-bound cases use streaming.
-The same measurement loop can be applied to inference services, local ML tools
-and other fixed-shape Transformer deployments.
+On the disclosed machine, the measured benefit is concrete: resident complete
+forwards are 2.219x–39.233x faster than the supplied baseline, and the streamed
+schedule completes Shape 14 with 7.307 GiB peak allocation on a 16 GiB GPU.
+Those improvements can reduce latency or make a previously non-resident fixed
+workload executable for local ML tools, offline inference and shape-stable
+services. They are Transformer-kernel measurements, not an unmeasured claim
+about application-level throughput, cost, or energy. The same calibration loop
+is applicable to other devices, but performance value outside this RTX 4080
+stack remains to be measured.
 
 ### Cross-hardware status
 
@@ -384,39 +393,61 @@ requires calibration.
 
 ## 9. AI-assisted development
 
-OpenAI Codex was used as a development collaborator. Human guidance supplied
-the competition contract, latest official shapes, hardware target, correctness
-boundary, preference for a clean mainline, and the requirement that real GPU
-measurements—not architectural enthusiasm—decide what remains.
+### 9.1 Tool, model and Skill disclosure
 
-The collaboration followed a repeatable pattern:
+| Item | Actual use in this project |
+| --- | --- |
+| AI coding tool | OpenAI Codex Desktop was used to inspect the repository, edit code and documentation, run PowerShell/Git commands, coordinate bounded parallel reviews, and interpret deterministic GPU results. |
+| LLM | A GPT-5-based Codex model. The repository did not persist a stable point-version alias for every development session, so this report does not invent one. |
+| Runtime AI API | None. The benchmark, calibration and deployed dispatcher do not call an LLM or external AI service. |
+| Project-local Agent Skills | None were packaged or claimed for the verified optimization sequence. Direct task-level instructions guided Codex; the planned device/profile/kernel Skills belong to a deferred Agent design and are not presented as used deliverables. |
+| Non-AI development tools | PowerShell, Git, Python, PyTorch, Triton, pytest and Ruff. |
 
-1. Codex inspected the official implementation, profiler evidence and
-   structured results, then proposed bounded bottleneck hypotheses.
-2. Candidate implementations and architecture changes were reviewed against
-   the existing control/data-plane boundary.
-3. Deterministic code performed comparator checks, observed-path validation,
-   GPU timing and route promotion.
-4. Measured outcomes decided whether to keep, specialize or reject a candidate.
+This is a complete disclosure of the AI tooling that can be verified from the
+project record. “No project-local Skill package” is an intentional truthful
+entry, not a missing generated artifact. Built-in repository, shell and
+multi-agent capabilities are tool functions rather than separately authored
+competition Skills.
 
-Representative outcomes include retaining library GEMMs, adding guarded
-compiled-forward paths for Shapes 7, 8 and 11, combining batch-tiled Graph with
-the custom mixed residual-normalization kernel for Shape 6, and adding the
-custom online-softmax attention specialization for Shape 13. None bypasses the
-shared correctness, observed-execution or measurement path. This report
-summarizes decisions rather than reproducing raw conversations or private
-machine paths.
+### 9.2 Human guidance and control
+
+Human guidance supplied the competition contract, latest official shapes,
+hardware target, correctness boundary and four persistent engineering choices:
+
+1. prioritize the measurable performance mainline and avoid over-engineering;
+2. use real GPU results rather than CPU timing or theoretical rank as the final
+   selection authority;
+3. keep project-owned kernels, library primitives and provisional evidence
+   explicitly separated; and
+4. delete obsolete architecture instead of preserving compatibility layers that
+   would obscure the final implementation.
+
+Codex proposed hypotheses and implementation candidates. Deterministic code—not
+the model—performed comparator checks, observed-path validation, CUDA Event
+timing and route publication. Human direction and measured outcomes decided
+whether a candidate was kept, narrowed to one shape, or removed.
+
+### 9.3 Representative interaction history
+
+The following entries are concise, privacy-safe summaries of real development
+interactions. They preserve the decision chain without publishing raw chats,
+system prompts, account data or private machine paths.
+
+| Human goal or constraint | AI-assisted action | Deterministic evidence and decision | Repository evidence |
+| --- | --- | --- | --- |
+| Replace RTX-4080-only hard-coded routing with a hardware-aware cold start whose measured winner is published automatically. | Refactored probing, bounded candidate ranking, calibration and exact route promotion around shared contracts. | The theoretical model only narrows candidates; Smoke and Formal complete-forward GPU measurements own promotion. | `d257a4a`, [policy registry](policy_registry.py), [calibration service](runner/calibration.py) |
+| Remove verbose result artifacts and keep only information useful to judges and later tuning. | Consolidated public output into one final JSON per hardware identity and isolated regenerable experiments. | The [final result](results/final/nvidia_geforce_rtx_4080.json) contains the current per-shape latency, correctness, throughput, MFU estimate, memory and policy; intermediate runs remain ignored. | `0b08a6a`, [result contract](results/README.md) |
+| Migrate completely to the published 14 shapes and make the extreme long-sequence case run instead of mixing it with ordinary resident cases. | Rebuilt the workload contract, isolated Shape 14 in a streamed executor, and screened policy/microbatch pairs without a dense `S x S` allocation. | Shapes 1–13 remain paired; Shape 14 completes the logical batch in 16.237 s with 7.307 GiB peak allocation and is labelled provisional/Target-only. | `37a4d94`, `59a10b5`, [final result](results/final/nvidia_geforce_rtx_4080.json) |
+| Separate workloads needing a new method from those needing engineering refinement, while preserving existing winners. | Added guarded compiled-forward routes, a Shape 6 mixed residual-normalization Triton kernel and a Shape 13 online causal-attention Triton kernel. | All 13 resident shapes pass five comparator trials; measured routes reach 8.505x geometric-mean speedup. Library GEMMs and cuDNN remain attributed to their providers. | `0f2871c`, `cf10787`, `c75dc66` |
+| Keep the architecture readable after repeated optimization rounds. | Removed legacy policy lists and hidden control channels, centralized policy definitions, and made the forward consume one immutable execution plan. | Tests protect registry/plan/route identity and observed execution; no compatibility copy of the old design remains in the public tree. | `9ba848b`, [policy registry](policy_registry.py), [execution plan](solution/execution_plan.py) |
+
+### 9.4 Agent boundary
 
 The planned in-project hardware-aware Agent runtime is **deferred and not
 implemented**. It is not required in the inference hot path and is not claimed
 as a completed contribution. The deterministic probe, measurement, calibration
-and dispatch services are intentionally usable later by such an Agent without
-changing the current competition implementation.
-
-The repository does not encode an immutable Codex model-version identifier or
-a verified list of packaged Skills, so this report does not infer them. The
-submission metadata should name only the exact model and Skills actually used
-at export time.
+and dispatch services can later be called by such an Agent without changing
+the current competition implementation.
 
 ## 10. Reproduction
 

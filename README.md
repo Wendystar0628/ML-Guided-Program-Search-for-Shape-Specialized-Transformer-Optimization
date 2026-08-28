@@ -7,6 +7,23 @@ rank a small set of eligible execution compositions from hardware signals,
 measure the complete Transformer on the target GPU, and deploy the measured
 winner for that exact hardware and software stack.
 
+## 60-second project view
+
+| Question | Answer |
+| --- | --- |
+| What is the problem? | One Transformer execution path cannot efficiently cover launch-bound, throughput-bound, memory-traffic-bound, and capacity-bound shapes on the same consumer GPU. |
+| What is the insight? | Use theory and hardware signals only to narrow the candidates; let complete-workload correctness and GPU measurements choose an exact per-shape route. |
+| What did this project build? | The routing and calibration loop, immutable execution plans, streamed Shape 14 scheduler, custom Shape 6 residual-normalization and Shape 13 online-attention Triton kernels, and the result/route integrity path. |
+| What is verified? | On one disclosed RTX 4080 stack, all 13 resident shapes pass and reach **8.505x** geometric-mean speedup; the extreme Shape 14 completes in **16.237 s** using **7.307 GiB** peak allocation. |
+| Why does it matter? | Many optimized stacks assume data-center GPUs. This approach makes fixed-shape Transformer inference tunable on local hardware and makes a sequence-100000 workload executable within a 16 GiB device. |
+
+Start with the [final machine-readable result](results/final/nvidia_geforce_rtx_4080.json),
+the [technical report](TECHNICAL_REPORT.md), or the
+[reproduction commands](#reproduce-the-checked-rtx-4080-results). AI assisted
+development and bounded parallel review; the deployed benchmark path itself is
+deterministic and has no LLM dependency. The exact disclosure and representative
+interaction history are in [Technical Report section 9](TECHNICAL_REPORT.md#9-ai-assisted-development).
+
 The current competition workload is split by execution reality:
 
 - `official_01` through `official_13` use the resident paired benchmark against
@@ -152,7 +169,6 @@ torch_transformer_benchmark.py
 TECHNICAL_REPORT.md          Results, interpretation, and evaluation narrative
 results/final/               One tracked final performance file per hardware ID
 results/intermediate/        Generated local experiments; ignored by Git
-docs/                        Official material and development design; not runtime
 ```
 
 Performance code stays in `solution/`; a verified hardware package never
@@ -268,7 +284,9 @@ $env:RUN_SHAPE14_GPU='1'
   4080 hardware/software identity in `verified_hardware/` is currently checked.
 - The project-specific autonomous Agent runtime is deliberately deferred. AI
   assistance was used during development, while deterministic code owns
-  correctness, timing, routing, and persisted results.
+  correctness, timing, routing, and persisted results. The actual tool, model
+  boundary, Skills disclosure, and representative interactions are recorded in
+  [Technical Report section 9](TECHNICAL_REPORT.md#9-ai-assisted-development).
 - Library backend availability is platform-dependent. Unsupported specialized
   policies fail eligibility or observed-execution checks and fall back to the
   portable path rather than being reported as successful optimizations.
