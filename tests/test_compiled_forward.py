@@ -8,6 +8,8 @@ import torch
 from solution import compiled_forward as compiled_forward_module
 from solution.compiled_forward import CompiledForward
 
+_COMPILE_MODE = "max-autotune"
+
 
 def _fake_compiler(
     calls: list[dict[str, object]],
@@ -39,8 +41,20 @@ def test_same_plan_and_tensor_signature_reuses_compiled_callable(
     )
     runner = CompiledForward()
 
-    first = runner.run(_add_mask, torch.zeros(2, 3), None, plan_key=("plan", 1))
-    second = runner.run(_add_mask, torch.ones(2, 3), None, plan_key=("plan", 1))
+    first = runner.run(
+        _add_mask,
+        torch.zeros(2, 3),
+        None,
+        plan_key=("plan", 1),
+        compile_mode=_COMPILE_MODE,
+    )
+    second = runner.run(
+        _add_mask,
+        torch.ones(2, 3),
+        None,
+        plan_key=("plan", 1),
+        compile_mode=_COMPILE_MODE,
+    )
 
     torch.testing.assert_close(first, torch.ones(2, 3))
     torch.testing.assert_close(second, torch.full((2, 3), 2.0))
@@ -48,7 +62,35 @@ def test_same_plan_and_tensor_signature_reuses_compiled_callable(
     assert len(compile_calls) == 1
     assert compile_calls[0]["fullgraph"] is True
     assert compile_calls[0]["dynamic"] is False
-    assert compile_calls[0]["mode"] == "max-autotune-no-cudagraphs"
+    assert compile_calls[0]["mode"] == "max-autotune"
+
+
+def test_requested_compile_mode_is_part_of_the_cache_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compile_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        compiled_forward_module.torch,
+        "compile",
+        _fake_compiler(compile_calls),
+    )
+    runner = CompiledForward()
+    value = torch.zeros(2, 3)
+
+    for compile_mode in ("max-autotune", "max-autotune-no-cudagraphs"):
+        runner.run(
+            _add_mask,
+            value,
+            None,
+            plan_key="same-plan",
+            compile_mode=compile_mode,
+        )
+
+    assert runner.cache_size == 2
+    assert [call["mode"] for call in compile_calls] == [
+        "max-autotune",
+        "max-autotune-no-cudagraphs",
+    ]
 
 
 def test_plan_input_and_mask_signatures_create_separate_entries(
@@ -65,10 +107,18 @@ def test_plan_input_and_mask_signatures_create_separate_entries(
     transposed = torch.zeros(3, 2).transpose(0, 1)
     mask = torch.ones(2, 3, dtype=torch.bool)
 
-    runner.run(_add_mask, contiguous, None, plan_key="first")
-    runner.run(_add_mask, contiguous, None, plan_key="second")
-    runner.run(_add_mask, transposed, None, plan_key="first")
-    runner.run(_add_mask, contiguous, mask, plan_key="first")
+    runner.run(
+        _add_mask, contiguous, None, plan_key="first", compile_mode=_COMPILE_MODE
+    )
+    runner.run(
+        _add_mask, contiguous, None, plan_key="second", compile_mode=_COMPILE_MODE
+    )
+    runner.run(
+        _add_mask, transposed, None, plan_key="first", compile_mode=_COMPILE_MODE
+    )
+    runner.run(
+        _add_mask, contiguous, mask, plan_key="first", compile_mode=_COMPILE_MODE
+    )
 
     assert runner.cache_size == 4
     assert len(compile_calls) == 4
@@ -90,6 +140,7 @@ def test_unhashable_plan_key_is_rejected_before_compilation(
             torch.zeros(2, 3),
             None,
             plan_key=["invalid"],  # type: ignore[arg-type]
+            compile_mode=_COMPILE_MODE,
         )
 
     assert compile_calls == []
@@ -105,7 +156,13 @@ def test_compiler_factory_failure_is_explicit(
     runner = CompiledForward()
 
     with pytest.raises(RuntimeError, match="failed to create"):
-        runner.run(_add_mask, torch.zeros(2, 3), None, plan_key="plan")
+        runner.run(
+            _add_mask,
+            torch.zeros(2, 3),
+            None,
+            plan_key="plan",
+            compile_mode=_COMPILE_MODE,
+        )
 
     assert runner.cache_size == 0
 
@@ -127,7 +184,13 @@ def test_first_execution_failure_is_explicit_and_drops_entry(
     runner = CompiledForward()
 
     with pytest.raises(RuntimeError, match="compilation failed"):
-        runner.run(_add_mask, torch.zeros(2, 3), None, plan_key="plan")
+        runner.run(
+            _add_mask,
+            torch.zeros(2, 3),
+            None,
+            plan_key="plan",
+            compile_mode=_COMPILE_MODE,
+        )
 
     assert runner.cache_size == 0
 
@@ -154,10 +217,14 @@ def test_later_execution_failure_is_explicit_and_drops_entry(
     )
     runner = CompiledForward()
     value = torch.zeros(2, 3)
-    runner.run(_add_mask, value, None, plan_key="plan")
+    runner.run(
+        _add_mask, value, None, plan_key="plan", compile_mode=_COMPILE_MODE
+    )
 
     with pytest.raises(RuntimeError, match="execution failed"):
-        runner.run(_add_mask, value, None, plan_key="plan")
+        runner.run(
+            _add_mask, value, None, plan_key="plan", compile_mode=_COMPILE_MODE
+        )
 
     assert runner.cache_size == 0
 
@@ -171,14 +238,21 @@ def test_clear_and_rebuild_replace_cached_callable(
         "compile",
         _fake_compiler(compile_calls),
     )
-    runner = CompiledForward(mode="reduce-overhead")
+    runner = CompiledForward()
     value = torch.zeros(2, 3)
 
-    runner.run(_add_mask, value, None, plan_key="plan")
-    runner.rebuild(_add_mask, value, None, plan_key="plan")
+    runner.run(
+        _add_mask, value, None, plan_key="plan", compile_mode="reduce-overhead"
+    )
+    runner.rebuild(
+        _add_mask, value, None, plan_key="plan", compile_mode="reduce-overhead"
+    )
     assert runner.cache_size == 1
     assert len(compile_calls) == 2
-    assert runner.mode == "reduce-overhead"
+    assert [call["mode"] for call in compile_calls] == [
+        "reduce-overhead",
+        "reduce-overhead",
+    ]
 
     runner.clear()
     assert runner.cache_size == 0
@@ -206,6 +280,7 @@ def test_non_tensor_output_is_rejected_without_poisoning_cache(
             torch.zeros(2, 3),
             None,
             plan_key="plan",
+            compile_mode=_COMPILE_MODE,
         )
 
     assert runner.cache_size == 0

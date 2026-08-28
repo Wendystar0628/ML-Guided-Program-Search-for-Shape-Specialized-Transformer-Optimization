@@ -175,6 +175,21 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
     batch_tiled_path["observed_execution"]["runtime_wrappers"] = [
         "batch_tiled_cuda_graph"
     ]
+    mixed_residual_path = deepcopy(batch_tiled_path)
+    mixed_residual_path.update(
+        {
+            "requested_policy": (
+                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+            ),
+            "selected_policy": (
+                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+            ),
+            "residual_norm_backend": "triton_mixed_residual_layer_norm",
+        }
+    )
+    mixed_residual_path["observed_execution"]["residual_norm_backends"] = [
+        "triton_mixed_residual_layer_norm"
+    ]
 
     for candidate_id, path in (
         ("mixed-fp16-core-efficient-triton-norm", triton_path),
@@ -186,6 +201,10 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
         (
             "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
             batch_tiled_path,
+        ),
+        (
+            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+            mixed_residual_path,
         ),
     ):
         candidate = CANDIDATE_SPECS[candidate_id]
@@ -210,6 +229,7 @@ def test_compiled_forward_evidence_requires_inner_and_outer_execution() -> None:
         "linear_backend": "autocast_fp16",
         "linear_compute_dtype": "float16",
         "runtime_wrapper": "compiled_forward",
+        "compile_mode": "max-autotune",
         "residual_norm_backend": "torch",
         "observed_execution": {
             "complete": True,
@@ -230,3 +250,39 @@ def test_compiled_forward_evidence_requires_inner_and_outer_execution() -> None:
     wrong_inner = deepcopy(path)
     wrong_inner["observed_execution"]["attention_backends"] = ["causal_sdpa"]
     assert not candidate.evidence_matches(wrong_inner)
+    wrong_mode = deepcopy(path)
+    wrong_mode["compile_mode"] = "max-autotune-no-cudagraphs"
+    assert not candidate.evidence_matches(wrong_mode)
+
+
+def test_shape13_triton_evidence_rejects_an_efficient_attention_fallback() -> None:
+    policy = "compiled-mixed-fp16-core-shape13-triton-attention"
+    path = {
+        "requested_policy": policy,
+        "selected_policy": policy,
+        "attention_backend": "triton_shape13_causal_attention",
+        "attention_compute_dtype": "float16",
+        "linear_backend": "autocast_fp16",
+        "linear_compute_dtype": "float16",
+        "runtime_wrapper": "compiled_forward",
+        "compile_mode": "max-autotune-no-cudagraphs",
+        "residual_norm_backend": "torch",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["triton_shape13_causal_attention"],
+            "attention_compute_dtypes": ["float16"],
+            "linear_backends": ["autocast_fp16"],
+            "linear_compute_dtypes": ["float16"],
+            "residual_norm_backends": ["torch"],
+            "runtime_wrappers": ["compiled_forward"],
+        },
+    }
+    candidate = CANDIDATE_SPECS[policy]
+
+    assert candidate.evidence_matches(path)
+    fallback = deepcopy(path)
+    fallback["observed_execution"]["attention_backends"] = ["mixed_fp16_efficient"]
+    assert not candidate.evidence_matches(fallback)
+    wrong_mode = deepcopy(path)
+    wrong_mode["compile_mode"] = "max-autotune"
+    assert not candidate.evidence_matches(wrong_mode)

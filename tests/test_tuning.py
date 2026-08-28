@@ -208,6 +208,70 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "runtime_wrappers": ["batch_tiled_cuda_graph"],
             },
         },
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm": {
+            "requested_policy": (
+                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+            ),
+            "selected_policy": (
+                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+            ),
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "batch_tiled_cuda_graph",
+            "batch_tile_size": 128,
+            "residual_norm_backend": "triton_mixed_residual_layer_norm",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["triton_mixed_residual_layer_norm"],
+                "runtime_wrappers": ["batch_tiled_cuda_graph"],
+            },
+        },
+        "compiled-mixed-fp16-core-efficient": {
+            "requested_policy": "compiled-mixed-fp16-core-efficient",
+            "selected_policy": "compiled-mixed-fp16-core-efficient",
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "compiled_forward",
+            "compile_mode": "max-autotune",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["torch"],
+                "runtime_wrappers": ["compiled_forward"],
+            },
+        },
+        "compiled-mixed-fp16-core-shape13-triton-attention": {
+            "requested_policy": ("compiled-mixed-fp16-core-shape13-triton-attention"),
+            "selected_policy": ("compiled-mixed-fp16-core-shape13-triton-attention"),
+            "attention_backend": "triton_shape13_causal_attention",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "autocast_fp16",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "compiled_forward",
+            "compile_mode": "max-autotune-no-cudagraphs",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["triton_shape13_causal_attention"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["autocast_fp16"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["torch"],
+                "runtime_wrappers": ["compiled_forward"],
+            },
+        },
     }
     return paths[candidate_id]
 
@@ -236,11 +300,13 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
             "mixed-fp16-core-efficient",
             "mixed-fp16-core-efficient-triton-norm",
             "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
         ],
         "official_07": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
+            "compiled-mixed-fp16-core-efficient",
         ],
         "official_08": [
             "mixed-fp16-core-efficient",
@@ -260,12 +326,14 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
+            "compiled-mixed-fp16-core-efficient",
         ],
         "official_12": ["graph-fused-norm"],
         "official_13": [
             "mixed-fp16-efficient",
             "mixed-fp16-core-efficient",
             "compiled-mixed-fp16-core-efficient",
+            "compiled-mixed-fp16-core-shape13-triton-attention",
         ],
     }
 

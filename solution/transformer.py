@@ -26,10 +26,12 @@ from .kernels import (
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
     prevalidated_mixed_fp16_efficient_attention,
+    prevalidated_triton_shape13_causal_attention,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
     split_qkv,
+    triton_mixed_residual_layer_norm,
     triton_residual_layer_norm,
 )
 
@@ -107,7 +109,16 @@ class _SelfAttention(nn.Module):
                 packed_qkv,
                 self.num_heads,
             )
-            if plan.attention_backend == "mixed_fp16_cudnn":
+            if plan.attention_backend == "triton_shape13_causal_attention":
+                context, actual_attention_backend = (
+                    prevalidated_triton_shape13_causal_attention(
+                        query,
+                        key,
+                        projected_value,
+                        scale=self.scale,
+                    )
+                )
+            elif plan.attention_backend == "mixed_fp16_cudnn":
                 context, actual_attention_backend = mixed_fp16_cudnn_attention(
                     query,
                     key,
@@ -176,7 +187,10 @@ class _SelfAttention(nn.Module):
                         str(output.dtype).removeprefix("torch."),
                     ]
                 )
-        if output.dtype != value.dtype:
+        mixed_residual_stream = (
+            plan.residual_norm_backend == ResidualNormBackend.TRITON_MIXED
+        )
+        if output.dtype != value.dtype and not mixed_residual_stream:
             output = output.to(value.dtype)
         if valid_token_mask is not None:
             output.masked_fill_(~valid_token_mask[..., None], 0)
@@ -235,7 +249,10 @@ class _TransformerBlock(nn.Module):
                     str(ffn_update.dtype).removeprefix("torch."),
                 ]
             )
-        if ffn_update.dtype != normalized.dtype:
+        mixed_residual_stream = (
+            plan.residual_norm_backend == ResidualNormBackend.TRITON_MIXED
+        )
+        if ffn_update.dtype != normalized.dtype and not mixed_residual_stream:
             ffn_update = ffn_update.to(normalized.dtype)
         return ffn_update
 
@@ -500,6 +517,8 @@ class UserOptimizedTransformer(nn.Module):
             value = self.final_norm(value)
         else:
             normalized = self.layers[0].norm1(value)
+            if plan.residual_norm_backend == ResidualNormBackend.TRITON_MIXED:
+                normalized = normalized.to(torch.float16)
             for layer_index, layer in enumerate(self.layers):
                 attention_update = layer.attention_update(
                     normalized,
@@ -515,6 +534,7 @@ class UserOptimizedTransformer(nn.Module):
                     valid_token_mask,
                     plan,
                     observation,
+                    final_boundary=False,
                 )
                 ffn_update = layer.ffn_update(normalized, plan, observation)
                 next_norm = (
@@ -529,6 +549,7 @@ class UserOptimizedTransformer(nn.Module):
                     valid_token_mask,
                     plan,
                     observation,
+                    final_boundary=layer_index + 1 == len(self.layers),
                 )
             value = normalized
         if valid_token_mask is not None:
@@ -545,6 +566,8 @@ class UserOptimizedTransformer(nn.Module):
         valid_token_mask: torch.Tensor | None,
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
+        *,
+        final_boundary: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply one residual boundary and its following LayerNorm."""
 
@@ -559,6 +582,13 @@ class UserOptimizedTransformer(nn.Module):
                 value,
                 update,
                 layer_norm,
+            )
+        elif plan.residual_norm_backend == ResidualNormBackend.TRITON_MIXED:
+            value, normalized, actual_backend = triton_mixed_residual_layer_norm(
+                value,
+                update,
+                layer_norm,
+                final_boundary=final_boundary,
             )
         else:
             value = residual_add(value, update, valid_token_mask)
@@ -640,6 +670,8 @@ class UserOptimizedTransformer(nn.Module):
                 ]
             return output
         if plan.use_compiled_forward:
+            if plan.compile_mode is None:
+                raise RuntimeError("compiled-forward plan is missing its compile mode")
             if self._execution_observation_enabled:
                 self._forward_eager(x, valid_token_mask, plan)
             output = self._compiled_forward.run(
@@ -652,6 +684,7 @@ class UserOptimizedTransformer(nn.Module):
                 x,
                 valid_token_mask,
                 plan_key=plan,
+                compile_mode=plan.compile_mode,
             )
             if (
                 self._execution_observation_enabled

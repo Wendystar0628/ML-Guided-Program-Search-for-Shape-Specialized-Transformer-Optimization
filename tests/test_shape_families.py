@@ -8,6 +8,8 @@ from solution.shape_families import (
     is_measured_triton_residual_norm_workload,
     is_mixed_fp16_core_efficient_runtime_family,
     is_shape06_batch_tiled_workload,
+    is_shape13_triton_attention_tensor_family,
+    is_shape13_triton_attention_workload,
     is_streamed_mixed_fp16_core_cudnn_slice,
 )
 
@@ -100,6 +102,29 @@ def test_solution_predicates_cover_runtime_slices_without_broadening_deployment(
         d_model=128,
         num_heads=4,
         ffn_dim=128,
+        num_layers=4,
+    )
+
+    assert is_shape13_triton_attention_tensor_family(
+        batch_size=64,
+        seq_len=1024,
+        num_heads=4,
+        head_dim=32,
+    )
+    assert is_shape13_triton_attention_workload(
+        batch_size=64,
+        seq_len=1024,
+        d_model=128,
+        num_heads=4,
+        ffn_dim=128,
+        num_layers=4,
+    )
+    assert not is_shape13_triton_attention_workload(
+        batch_size=64,
+        seq_len=1024,
+        d_model=128,
+        num_heads=4,
+        ffn_dim=256,
         num_layers=4,
     )
 

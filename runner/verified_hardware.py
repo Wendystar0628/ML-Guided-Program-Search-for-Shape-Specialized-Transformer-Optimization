@@ -914,6 +914,28 @@ def run_verified_streamed(
     identity_collector: Callable[..., dict[str, Any]] = collect_runtime_identity,
     streamed_service: StreamedBenchmarkService | None = None,
 ) -> Path:
+    """Measure one streamed Bundle scope while exclusively owning its GPU."""
+
+    with device_measurement_lease(
+        paths.project_root,
+        config.device,
+        purpose="verified streamed hardware measurement",
+    ):
+        return _run_verified_streamed(
+            config,
+            paths=paths,
+            identity_collector=identity_collector,
+            streamed_service=streamed_service,
+        )
+
+
+def _run_verified_streamed(
+    config: LaunchConfig,
+    *,
+    paths: BundlePaths,
+    identity_collector: Callable[..., dict[str, Any]] = collect_runtime_identity,
+    streamed_service: StreamedBenchmarkService | None = None,
+) -> Path:
     """Measure and publish only the Bundle's provisional streamed scope."""
 
     try:

@@ -8,7 +8,9 @@ import pytest
 from policy_registry import (
     POLICY_SPECS,
     ROUTABLE_POLICY_IDS,
+    PolicySpec,
     ResidualNormBackend,
+    RuntimeWrapper,
     policy_ids,
 )
 from route_contracts import ALLOWED_POLICIES
@@ -36,7 +38,9 @@ EXPECTED_EXPLICIT_POLICIES = frozenset(
         "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
         "compiled-mixed-fp16-core-efficient",
+        "compiled-mixed-fp16-core-shape13-triton-attention",
     }
 )
 EXPECTED_ROUTABLE_POLICIES = EXPECTED_EXPLICIT_POLICIES - {"safe"}
@@ -94,6 +98,44 @@ def test_candidates_derive_capabilities_from_policy_specs() -> None:
         POLICY_SPECS["mixed-fp16-core-efficient-triton-norm"].residual_norm
         is ResidualNormBackend.TRITON
     )
+    assert (
+        POLICY_SPECS[
+            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+        ].residual_norm
+        is ResidualNormBackend.TRITON_MIXED
+    )
+    assert (
+        POLICY_SPECS["compiled-mixed-fp16-core-efficient"].compile_mode
+        == "max-autotune"
+    )
+    assert (
+        POLICY_SPECS[
+            "compiled-mixed-fp16-core-shape13-triton-attention"
+        ].compile_mode
+        == "max-autotune-no-cudagraphs"
+    )
+    assert POLICY_SPECS["eager-sdpa"].compile_mode is None
+
+
+def test_compile_mode_is_owned_only_by_compiled_policy_specs() -> None:
+    assert (
+        PolicySpec("compiled", runtime=RuntimeWrapper.COMPILED_FORWARD).compile_mode
+        == "max-autotune"
+    )
+    with pytest.raises(ValueError, match="unsupported compiled-forward mode"):
+        PolicySpec(
+            "empty-mode",
+            runtime=RuntimeWrapper.COMPILED_FORWARD,
+            compile_mode="",
+        )
+    with pytest.raises(ValueError, match="unsupported compiled-forward mode"):
+        PolicySpec(
+            "unknown-mode",
+            runtime=RuntimeWrapper.COMPILED_FORWARD,
+            compile_mode="unknown",
+        )
+    with pytest.raises(ValueError, match="valid only"):
+        PolicySpec("eager-with-mode", compile_mode="max-autotune")
 
 
 def test_candidate_registry_contains_only_distinct_strategies() -> None:
@@ -111,7 +153,9 @@ def test_candidate_registry_contains_only_distinct_strategies() -> None:
         "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
         "compiled-mixed-fp16-core-efficient",
+        "compiled-mixed-fp16-core-shape13-triton-attention",
     }
 
 

@@ -22,6 +22,7 @@ from solution.shape_families import (
     is_measured_streamed_mixed_fp16_core_cudnn_workload,
     is_measured_triton_residual_norm_workload,
     is_shape06_batch_tiled_workload,
+    is_shape13_triton_attention_workload,
 )
 
 
@@ -338,6 +339,26 @@ def _compiled_forward_candidate(
     )
 
 
+def _shape13_triton_attention_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
+    """Expose the custom compiled path only for exact resident Shape 13."""
+
+    return bool(
+        _native_sdpa_candidate(shape, variant)
+        and variant.dtype == "float32"
+        and is_shape13_triton_attention_workload(
+            batch_size=shape.batch_size,
+            seq_len=shape.seq_len,
+            d_model=shape.d_model,
+            num_heads=shape.num_heads,
+            ffn_dim=shape.ffn_dim,
+            num_layers=shape.num_layers,
+        )
+    )
+
+
 def _expect(field: str, *values: object) -> PathExpectation:
     return PathExpectation(field, frozenset(values))
 
@@ -372,6 +393,9 @@ def _native_evidence(
         _expect("runtime_wrapper", runtime_wrapper),
         _expect("residual_norm_backend", residual_norm_backend),
     ]
+    compile_mode = get_policy_spec(policy).compile_mode
+    if compile_mode is not None:
+        path_expectations.append(_expect("compile_mode", compile_mode))
     if attention_compute_dtype is not None:
         path_expectations.append(
             _expect("attention_compute_dtype", attention_compute_dtype)
@@ -555,13 +579,43 @@ _CANDIDATE_SPECS = (
         ),
     ),
     CandidateSpec(
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        _shape06_batch_tiled_candidate,
+        "Shape 06 B128 graph tiles with FP32 residual and FP16 normalized streams",
+        _native_evidence(
+            policy=("batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"),
+            attention_backend="mixed_fp16_efficient",
+            runtime_wrapper="batch_tiled_cuda_graph",
+            residual_norm_backend="triton_mixed_residual_layer_norm",
+            attention_compute_dtype="float16",
+            linear_backend="autocast_fp16",
+            linear_compute_dtype="float16",
+            batch_tile_size=128,
+        ),
+    ),
+    CandidateSpec(
         "compiled-mixed-fp16-core-efficient",
         "compiled-mixed-fp16-core-efficient",
         _compiled_forward_candidate,
-        "fixed-plan full-stack compilation for measured Shapes 08 and 13",
+        "fixed-plan full-stack compilation for measured Shapes 07, 08, 11, and 13",
         _native_evidence(
             policy="compiled-mixed-fp16-core-efficient",
             attention_backend="mixed_fp16_efficient",
+            runtime_wrapper="compiled_forward",
+            attention_compute_dtype="float16",
+            linear_backend="autocast_fp16",
+            linear_compute_dtype="float16",
+        ),
+    ),
+    CandidateSpec(
+        "compiled-mixed-fp16-core-shape13-triton-attention",
+        "compiled-mixed-fp16-core-shape13-triton-attention",
+        _shape13_triton_attention_candidate,
+        "exact Shape 13 with compiled mixed core and custom causal Triton Attention",
+        _native_evidence(
+            policy="compiled-mixed-fp16-core-shape13-triton-attention",
+            attention_backend="triton_shape13_causal_attention",
             runtime_wrapper="compiled_forward",
             attention_compute_dtype="float16",
             linear_backend="autocast_fp16",

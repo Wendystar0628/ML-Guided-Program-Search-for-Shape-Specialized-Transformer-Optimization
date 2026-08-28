@@ -267,6 +267,13 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
             "eager",
             "torch",
         ),
+        (
+            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
     ],
 )
 def test_explicit_policy_reports_one_honest_execution_plan(
@@ -446,6 +453,79 @@ def test_execution_observation_reports_batch_tiled_graph_wrapper(
     ]
 
 
+def test_mixed_residual_stream_keeps_branch_updates_in_fp16(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    branch_inputs: list[torch.dtype] = []
+    boundary_calls: list[tuple[torch.dtype, torch.dtype, bool]] = []
+
+    def attention_update(
+        _layer,
+        normalized,
+        _valid_mask,
+        _causal,
+        _plan,
+        _observation,
+    ):  # type: ignore[no-untyped-def]
+        branch_inputs.append(normalized.dtype)
+        return torch.ones_like(normalized, dtype=torch.float16)
+
+    def ffn_update(
+        _layer,
+        normalized,
+        _plan,
+        _observation,
+    ):  # type: ignore[no-untyped-def]
+        branch_inputs.append(normalized.dtype)
+        return torch.ones_like(normalized, dtype=torch.float16)
+
+    def mixed_residual_norm(
+        value,
+        update,
+        layer_norm,
+        *,
+        final_boundary,
+    ):  # type: ignore[no-untyped-def]
+        boundary_calls.append((value.dtype, update.dtype, final_boundary))
+        residual = value + update.float()
+        normalized = layer_norm(residual).to(
+            torch.float32 if final_boundary else torch.float16
+        )
+        return residual, normalized, "triton_mixed_residual_layer_norm"
+
+    monkeypatch.setattr(
+        solution_module._TransformerBlock,
+        "attention_update",
+        attention_update,
+    )
+    monkeypatch.setattr(
+        solution_module._TransformerBlock,
+        "ffn_update",
+        ffn_update,
+    )
+    monkeypatch.setattr(
+        solution_module,
+        "triton_mixed_residual_layer_norm",
+        mixed_residual_norm,
+    )
+    plan = SimpleNamespace(
+        residual_norm_backend="triton_mixed_residual_layer_norm",
+    )
+
+    output = solution._forward_eager(torch.zeros(2, 4, 8), None, plan)
+
+    assert branch_inputs == [torch.float16] * 4
+    assert boundary_calls == [
+        (torch.float32, torch.float16, False),
+        (torch.float32, torch.float16, False),
+        (torch.float32, torch.float16, False),
+        (torch.float32, torch.float16, True),
+    ]
+    assert output.dtype == torch.float32
+
+
 def test_execution_observation_reports_compiled_forward_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -455,8 +535,9 @@ def test_execution_observation_reports_compiled_forward_wrapper(
         use_batch_tiled_cuda_graph=False,
         use_compiled_forward=True,
         use_cuda_graph=False,
+        compile_mode="max-autotune-no-cudagraphs",
     )
-    compiled_calls: list[object] = []
+    compiled_calls: list[tuple[object, str]] = []
 
     class FakeCompiledForward:
         def run(
@@ -466,8 +547,9 @@ def test_execution_observation_reports_compiled_forward_wrapper(
             valid_mask,
             *,
             plan_key,
+            compile_mode,
         ):  # type: ignore[no-untyped-def]
-            compiled_calls.append(plan_key)
+            compiled_calls.append((plan_key, compile_mode))
             return function(value, valid_mask)
 
     def fake_forward_eager(
@@ -499,7 +581,7 @@ def test_execution_observation_reports_compiled_forward_wrapper(
     inputs = torch.zeros(2, 4, 8)
     output = solution(inputs)
 
-    assert compiled_calls == [plan]
+    assert compiled_calls == [(plan, "max-autotune-no-cudagraphs")]
     assert torch.equal(output, inputs + 1)
     assert solution._last_execution_observation["runtime_wrappers"] == [
         "compiled_forward"

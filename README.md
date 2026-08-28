@@ -19,12 +19,12 @@ The current competition workload is split by execution reality:
 The checked RTX 4080 performance record is the only numeric source for this
 summary:
 
-- Resident Formal: **13/13 successful**, **8.220830719x** unweighted
-  geometric-mean speedup, per-shape speedups from **2.196x** to **28.841x**,
-  zero failed output elements, and maximum absolute error **0.00188206**.
-- Streamed Shape 14 Formal: **17.136172 s** target median, **17.158589 s**
-  target P90, **18.821000 s** host-streamed end-to-end time, **81.1887 useful
-  TFLOP/s**, **94.0529% project-estimated MFU**, and **7.307 GiB**
+- Resident Formal: **13/13 successful**, **8.505368951x** unweighted
+  geometric-mean speedup, per-shape speedups from **2.219x** to **39.233x**,
+  zero failed output elements, and maximum absolute error **0.00180167**.
+- Streamed Shape 14 Formal: **16.236815 s** target median, **16.240448 s**
+  target P90, **18.182579 s** host-streamed end-to-end time, **85.6858 useful
+  TFLOP/s**, **91.7134% project-estimated MFU**, and **7.307 GiB**
   (**7,845,867,008 bytes**) peak device allocation.
 - The streamed artifact selected `mixed-fp16-core-cudnn`, timing microbatch
   size `2`, and microbatch count `16`. These are measured outputs of the joint
@@ -40,6 +40,15 @@ The unified result keeps the paired Formal rows and geometric mean for Shapes
 shape reports latency, useful TFLOP/s, project-estimated MFU, peak allocator
 bytes, and a scoped logical operator-traffic estimate. Logical traffic is not a
 measured DRAM bandwidth counter.
+
+The largest verified method changes are shape-specific rather than global:
+
+- Shape 06 uses batch-tiled Graph replay with a mixed-precision Triton
+  residual-plus-LayerNorm kernel: **42.753536 ms**, **10.620x**.
+- Shapes 07 and 11 use one compiled fixed-plan forward: **0.139264 ms / 12.772x**
+  and **0.385024 ms / 18.519x**, respectively.
+- Shape 13 uses a guarded Triton online causal-attention kernel inside the
+  compiled forward: **2.806784 ms**, **39.233x**.
 
 See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) for the per-shape table,
 measurement interpretation, and optimization insights. The geometric mean and
@@ -60,9 +69,9 @@ replay; they are not unrelated model implementations.
 | Mixed attention | `mixed-fp16-efficient`, `mixed-fp16-cudnn` | Run selected FP32-model attention in FP16 with an explicit SDPA backend |
 | Mixed core | `mixed-fp16-core-efficient`, `mixed-fp16-core-cudnn` | Extend FP16 execution to attention and linear compute for throughput-bound shapes |
 | Graph compositions | `graph-mixed-fp16-efficient`, `graph-mixed-fp16-efficient-compiled-norm`, `graph-mixed-fp16-core-efficient-compiled-norm` | Compose full-forward graph replay with mixed attention or mixed core and optional compiled residual-to-normalization boundaries |
-| Batch-tiled Graph | `batch-tiled-mixed-fp16-core-efficient-compiled-norm` | Split the exact high-batch resident shape into independent fixed batch tiles and replay one captured full-model graph per tile |
-| Compiled forward | `compiled-mixed-fp16-core-efficient` | Compile and cache one full fixed-plan forward for the guarded wide or long resident shapes |
-| Custom Triton | `mixed-fp16-core-efficient-triton-norm` | Fuse residual add + LayerNorm for the guarded high-row, width-128 path |
+| Batch-tiled Graph | `batch-tiled-mixed-fp16-core-efficient-compiled-norm`, `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm` | Split the exact high-batch resident shape into fixed tiles and replay one captured full-model graph per tile; Shape 06 can fuse its FP32 residual stream with FP16 branch output in Triton |
+| Compiled forward | `compiled-mixed-fp16-core-efficient`, `compiled-mixed-fp16-core-shape13-triton-attention` | Compile and cache one full fixed-plan forward for guarded shapes; Shapes 07/11 use the general path and Shape 13 embeds its dedicated Triton attention |
+| Custom Triton | `mixed-fp16-core-efficient-triton-norm`, `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm`, `compiled-mixed-fp16-core-shape13-triton-attention` | Provide narrow specializations for residual-plus-LayerNorm and Shape 13 online causal attention without turning the registry into a general kernel zoo |
 
 `safe` is an internal, non-routable diagnostic fallback. A specialized policy
 is accepted only when its requested backend is observed during execution;
@@ -103,7 +112,9 @@ one pipeline. An attention residual is paired with the same block's `norm2`,
 while an FFN residual is paired with the next block's `norm1` or the final
 normalization. Compiled and Triton backends can therefore return both the
 updated residual stream and its normalized view without changing the supplied
-pre-normalization mathematics.
+pre-normalization mathematics. Shape 13 separately replaces only its guarded
+causal-attention core with an online Triton kernel; other shapes retain their
+selected library attention backend.
 
 ## Contribution boundary
 
@@ -114,8 +125,8 @@ Project-owned work includes:
 - hardware probing, explainable candidate ranking, real-GPU calibration,
   observed-path checks, and atomic route promotion;
 - mixed-core integration, full-forward compilation, batch-tiled Graph replay,
-  dynamic Shape 14 scheduling, and guarded compiled/Triton residual-to-norm
-  implementations;
+  dynamic Shape 14 scheduling, guarded compiled/Triton residual-to-norm
+  implementations, and the exact-Shape-13 Triton online attention path;
 - paired/streamed measurement services, correctness checks, compact metrics,
   and verified-hardware artifacts.
 
@@ -123,7 +134,7 @@ The supplied Transformer and comparator define the reference calculation.
 PyTorch, ATen/cuBLAS, Efficient SDPA, cuDNN SDPA, CUDA Graph, and
 `torch.compile` provide library primitives. Their kernels are not presented as
 project-authored innovation; the contribution is the measured, shape-aware
-composition around them plus the explicitly identified custom Triton kernel.
+composition around them plus the explicitly identified custom Triton kernels.
 No external `flash-attn` package is required by the current verified route.
 
 ## Repository map

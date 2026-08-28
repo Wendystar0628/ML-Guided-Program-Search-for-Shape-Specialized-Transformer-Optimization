@@ -387,6 +387,66 @@ def test_shape06_batch_tiled_plan_is_exact_and_self_describing(
     assert nearby.batch_tile_size is None
 
 
+def test_shape06_mixed_residual_plan_is_exact_and_atomic(monkeypatch) -> None:
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+    monkeypatch.setattr(
+        execution_plan_module,
+        "triton_mixed_residual_layer_norm_available",
+        lambda: True,
+    )
+
+    exact = _resolve(
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        _context(
+            device="cuda",
+            batch_size=10_000,
+            seq_len=128,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+    cpu = _resolve(
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        _context(
+            device="cpu",
+            batch_size=10_000,
+            seq_len=128,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+
+    assert exact.selected_policy == (
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+    )
+    assert exact.runtime_wrapper == "batch_tiled_cuda_graph"
+    assert exact.batch_tile_size == 128
+    assert exact.residual_norm_backend == "triton_mixed_residual_layer_norm"
+    assert exact.resolved_components == (
+        "batch_tiled_cuda_graph",
+        "cuda_graph",
+        "mixed_fp16_core",
+        "mixed_fp16_efficient_attention",
+        "triton_mixed_residual_layer_norm",
+    )
+    assert cpu.selected_policy == "safe"
+    assert cpu.residual_norm_backend == "torch"
+    assert cpu.runtime_wrapper == "eager"
+
+
 def test_compiled_forward_plan_is_exact_to_measured_shapes(monkeypatch) -> None:
     monkeypatch.setattr(
         torch.backends.cuda,
@@ -438,8 +498,10 @@ def test_compiled_forward_plan_is_exact_to_measured_shapes(monkeypatch) -> None:
 
     assert exact.selected_policy == "compiled-mixed-fp16-core-efficient"
     assert exact.runtime_wrapper == "compiled_forward"
+    assert exact.compile_mode == "max-autotune"
     assert exact.use_compiled_forward
     assert wide.selected_policy == "compiled-mixed-fp16-core-efficient"
+    assert wide.compile_mode == "max-autotune"
     assert wide.use_compiled_forward
     assert exact.resolved_components == (
         "compiled_forward",
@@ -448,6 +510,73 @@ def test_compiled_forward_plan_is_exact_to_measured_shapes(monkeypatch) -> None:
     )
     assert nearby.selected_policy == "safe"
     assert nearby.runtime_wrapper == "eager"
+    assert nearby.compile_mode is None
+
+
+def test_shape13_triton_attention_composes_with_compiled_mixed_core(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+    monkeypatch.setattr(
+        execution_plan_module,
+        "triton_shape13_causal_attention_available",
+        lambda: True,
+    )
+
+    exact = _resolve(
+        "compiled-mixed-fp16-core-shape13-triton-attention",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=1024,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+    )
+    nearby = _resolve(
+        "compiled-mixed-fp16-core-shape13-triton-attention",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=1024,
+            d_model=128,
+            num_heads=4,
+            ffn_dim=256,
+            num_layers=4,
+        ),
+    )
+
+    assert exact.selected_policy == (
+        "compiled-mixed-fp16-core-shape13-triton-attention"
+    )
+    assert exact.attention_backend == "triton_shape13_causal_attention"
+    assert exact.attention_compute_dtype == "float16"
+    assert exact.linear_backend == "autocast_fp16"
+    assert exact.runtime_wrapper == "compiled_forward"
+    assert exact.compile_mode == "max-autotune-no-cudagraphs"
+    assert exact.resolved_components == (
+        "compiled_forward",
+        "mixed_fp16_core",
+        "triton_shape13_causal_attention",
+    )
+    description = exact.describe(
+        dispatch_source=None,
+        dispatch_table_sha256=None,
+        dispatch_policy=None,
+        route_origin="explicit",
+        causal=True,
+    )
+    assert description["causal_mask"] == "online_causal"
+    assert description["compile_mode"] == "max-autotune-no-cudagraphs"
+    assert nearby.selected_policy == "safe"
+    assert nearby.runtime_wrapper == "eager"
+    assert nearby.compile_mode is None
 
 
 def test_triton_residual_norm_composes_with_shape06_mixed_core(

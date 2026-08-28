@@ -10,8 +10,6 @@ import torch
 
 ForwardFunction: TypeAlias = Callable[[torch.Tensor, torch.Tensor | None], torch.Tensor]
 
-_COMPILE_MODE = "max-autotune-no-cudagraphs"
-
 
 @dataclass(slots=True)
 class _CompiledEntry:
@@ -27,17 +25,8 @@ class CompiledForward:
     compiled callable is never reused for a different tensor contract.
     """
 
-    def __init__(self, *, mode: str = _COMPILE_MODE) -> None:
-        if not mode:
-            raise ValueError("compile mode must not be empty")
-        self._mode = mode
+    def __init__(self) -> None:
         self._entries: dict[tuple[object, ...], _CompiledEntry] = {}
-
-    @property
-    def mode(self) -> str:
-        """Return the configured ``torch.compile`` mode."""
-
-        return self._mode
 
     @property
     def cache_size(self) -> int:
@@ -60,6 +49,7 @@ class CompiledForward:
         value: torch.Tensor,
         valid_mask: torch.Tensor | None,
         plan_key: Hashable,
+        compile_mode: str,
     ) -> tuple[object, ...]:
         try:
             hash(plan_key)
@@ -68,9 +58,19 @@ class CompiledForward:
         mask_signature = (
             None if valid_mask is None else cls._tensor_signature(valid_mask)
         )
-        return (plan_key, cls._tensor_signature(value), mask_signature)
+        return (
+            compile_mode,
+            plan_key,
+            cls._tensor_signature(value),
+            mask_signature,
+        )
 
-    def _create(self, function: ForwardFunction) -> _CompiledEntry:
+    def _create(
+        self,
+        function: ForwardFunction,
+        *,
+        compile_mode: str,
+    ) -> _CompiledEntry:
         compile_function = getattr(torch, "compile", None)
         if not callable(compile_function):
             raise TypeError("torch.compile is unavailable")
@@ -79,7 +79,7 @@ class CompiledForward:
                 function,
                 fullgraph=True,
                 dynamic=False,
-                mode=self._mode,
+                mode=compile_mode,
             )
         except Exception as exc:
             raise RuntimeError("failed to create full-stack compiled forward") from exc
@@ -92,13 +92,16 @@ class CompiledForward:
         valid_mask: torch.Tensor | None,
         *,
         plan_key: Hashable,
+        compile_mode: str,
     ) -> torch.Tensor:
         """Run the compiled callable for one exact tensor and plan signature."""
 
-        key = self._cache_key(value, valid_mask, plan_key)
+        if not compile_mode:
+            raise ValueError("compile mode must not be empty")
+        key = self._cache_key(value, valid_mask, plan_key, compile_mode)
         entry = self._entries.get(key)
         if entry is None:
-            entry = self._create(function)
+            entry = self._create(function, compile_mode=compile_mode)
             self._entries[key] = entry
         first_execution = not entry.has_run
         try:
@@ -129,16 +132,20 @@ class CompiledForward:
         valid_mask: torch.Tensor | None,
         *,
         plan_key: Hashable,
+        compile_mode: str,
     ) -> torch.Tensor:
         """Discard and rebuild one exact tensor and plan signature."""
 
-        key = self._cache_key(value, valid_mask, plan_key)
+        if not compile_mode:
+            raise ValueError("compile mode must not be empty")
+        key = self._cache_key(value, valid_mask, plan_key, compile_mode)
         self._entries.pop(key, None)
         return self.run(
             function,
             value,
             valid_mask,
             plan_key=plan_key,
+            compile_mode=compile_mode,
         )
 
     def clear(self) -> None:

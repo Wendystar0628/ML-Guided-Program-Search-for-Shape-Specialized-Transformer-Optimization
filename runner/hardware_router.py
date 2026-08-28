@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from policy_registry import (
+    DEFAULT_COMPILED_FORWARD_MODE,
     ExecutionComponent,
     ResidualNormBackend,
     RuntimeWrapper,
@@ -325,6 +326,17 @@ def _capability_rejection(
     ):
         return "custom Triton fusion requires a positively established Triton runtime"
     if (
+        ExecutionComponent.TRITON_MIXED_RESIDUAL_LAYER_NORM in spec.required_components
+        and profile.get("triton_available") is not True
+    ):
+        return "mixed residual Triton fusion requires a positively established runtime"
+    if ExecutionComponent.TRITON_SHAPE13_CAUSAL_ATTENTION in spec.required_components:
+        if profile.get("triton_available") is not True:
+            return "Shape 13 Triton Attention requires a positively established runtime"
+        capability = _version_pair(profile.get("compute_capability"))
+        if capability is None or capability < (8, 0):
+            return "Shape 13 Triton Attention requires SM80 or newer"
+    if (
         ExecutionComponent.COMPILED_FORWARD in spec.required_components
         and profile.get("triton_available") is not True
     ):
@@ -483,7 +495,11 @@ def _incremental_prior(
     reasons: list[str] = []
     has_incremental_model = False
 
-    if policy.use_cuda_graph:
+    compiler_uses_cuda_graphs = (
+        policy.runtime is RuntimeWrapper.COMPILED_FORWARD
+        and policy.compile_mode == DEFAULT_COMPILED_FORWARD_MODE
+    )
+    if policy.use_cuda_graph or compiler_uses_cuda_graphs:
         launch_latency_us = _positive_float(anchors.get("launch_latency_us"))
         replay_node_us = _positive_float(anchors.get("graph_replay_per_node_us"))
         copy_bandwidth = signals.copy_bandwidth_gbps
@@ -508,10 +524,17 @@ def _incremental_prior(
             net_seconds / eager_cost_estimate if eager_cost_estimate else net_seconds
         )
         relative += graph_relative
-        reasons.append(
-            "estimated graph benefit is measured eager-versus-replay node "
-            "timing saved minus static input/output copy cost"
-        )
+        if compiler_uses_cuda_graphs:
+            reasons.append(
+                "compiled-forward mode enables CUDAGraph Trees; its graph benefit "
+                "uses the measured eager-versus-replay node timing saved minus "
+                "static input/output copy cost"
+            )
+        else:
+            reasons.append(
+                "estimated graph benefit is measured eager-versus-replay node "
+                "timing saved minus static input/output copy cost"
+            )
         if policy.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
             reasons.append(f"estimated graph replay groups={graph_replays}")
         reasons.append(f"estimated relative cost gain={graph_relative:.6f}")
@@ -527,24 +550,42 @@ def _incremental_prior(
         has_incremental_model = True
 
     if policy.runtime is RuntimeWrapper.COMPILED_FORWARD:
-        launch_fraction = (
-            signals.eager_node_timing_seconds / eager_cost_estimate
-            if signals.eager_node_timing_seconds is not None and eager_cost_estimate
-            else 0.1
+        norm_fusion_relative = (
+            analysis.residual_norm_fusible_bytes
+            / max(analysis.separate_operator_bytes, 1)
+            if policy.residual_norm is ResidualNormBackend.TORCH
+            else 0.0
         )
-        compile_relative = max(0.05, min(launch_fraction, 0.5))
-        relative += compile_relative
+        epilogue_relative = analysis.dense_gemm_fraction * 0.05
+        compile_fusion_relative = norm_fusion_relative + epilogue_relative
+        relative += compile_fusion_relative
         reasons.extend(
             [
                 "adds a fixed-plan whole-stack fusion and launch-reduction opportunity",
-                f"heuristic compilation opportunity={compile_relative:.6f}",
+                (
+                    "heuristic whole-stack fusion opportunity="
+                    f"{compile_fusion_relative:.6f}"
+                ),
             ]
         )
+        if not compiler_uses_cuda_graphs:
+            launch_fraction = (
+                signals.eager_node_timing_seconds / eager_cost_estimate
+                if signals.eager_node_timing_seconds is not None and eager_cost_estimate
+                else 0.1
+            )
+            compile_launch_relative = max(0.05, min(launch_fraction, 0.5))
+            relative += compile_launch_relative
+            reasons.append(
+                "heuristic compilation launch opportunity="
+                f"{compile_launch_relative:.6f}"
+            )
         has_incremental_model = True
 
     if policy.attention in {
         "mixed_fp16_efficient",
         "mixed_fp16_cudnn",
+        "triton_shape13_causal_attention",
     }:
         # The candidate halves Q/K/V element width around the measured
         # Attention family. Attention share is a transparent ordering signal;
@@ -558,6 +599,19 @@ def _incremental_prior(
             ]
         )
         has_incremental_model = True
+
+    if policy.attention == "triton_shape13_causal_attention":
+        specialization_relative = analysis.attention_fraction * 0.15
+        relative += specialization_relative
+        reasons.extend(
+            [
+                "adds an exact-shape online-softmax Attention specialization",
+                (
+                    "heuristic exact Attention specialization opportunity="
+                    f"{specialization_relative:.6f}"
+                ),
+            ]
+        )
 
     if policy.linear_compute == "float16":
         linear_relative = analysis.dense_gemm_fraction * 0.5

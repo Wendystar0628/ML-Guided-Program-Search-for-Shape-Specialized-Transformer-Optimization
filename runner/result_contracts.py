@@ -153,6 +153,7 @@ class ExecutionPathDocument(TypedDict, total=False):
     qkv_projection: str
     attention_backend: str
     runtime_wrapper: str
+    compile_mode: str | None
     batch_tile_size: int
     residual_norm_backend: str
     causal_mask: str

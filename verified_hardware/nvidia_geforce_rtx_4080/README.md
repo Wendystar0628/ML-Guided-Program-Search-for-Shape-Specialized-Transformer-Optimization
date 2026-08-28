@@ -1,10 +1,11 @@
 # NVIDIA GeForce RTX 4080 verified package
 
-This directory is the RTX 4080-specific deployment and measurement package for
-`official_transformer_v1`. Shared workload, Transformer, kernel, routing, and
-measurement code remains at the repository root.
+This directory contains the RTX 4080-specific hardware profile, exact resident
+routes, reproducibility manifest, and launcher for `official_transformer_v1`.
+Shared Transformer, kernel, routing, and measurement code remains at the
+repository root.
 
-## Scope and runtime
+## Runtime identity
 
 | Field | Recorded value |
 | --- | --- |
@@ -14,13 +15,14 @@ measurement code remains at the repository root.
 | Python / PyTorch | Python 3.12.5 / PyTorch 2.12.1+cu132 |
 | CUDA / cuDNN / Triton | CUDA 13.2 / cuDNN 92000 / Triton 3.7.1 |
 | Runtime policy | `matmul_precision=high`, TF32 enabled |
-| Measured roofs | FP16 93.73, BF16 93.91, FP32/TF32 47.22 TFLOP/s |
-| Measured copy anchor | 270.88 GB/s, 192 MiB device-to-device payload |
-| Exact resident routes | `official_01` through `official_13` |
+| Measured GEMM anchors | FP16 93.43, BF16 99.56, FP32/TF32 49.54 TFLOP/s |
+| Measured copy anchor | 291.97 GB/s, 192 MiB device-to-device payload |
+| Exact resident scope | `official_01` through `official_13` |
 | Provisional streamed scope | `official_14` |
 
-Efficient SDPA, cuDNN SDPA, CUDA Graph, BF16, and Triton were available in the
-recorded Probe. `profile.json` is the authoritative hardware and runtime record.
+`profile.json` is the authoritative runtime and hardware record. The single
+machine-readable performance artifact is
+[the RTX 4080 final result](../../results/final/nvidia_geforce_rtx_4080.json).
 
 ## Package contents
 
@@ -34,26 +36,21 @@ nvidia_geforce_rtx_4080/
 ```
 
 - `manifest.json` binds the official snapshot, workload set, Solution source,
-  route table, Formal protocol, and resident/provisional workload partition.
-- `profile.json` stores the measured RTX 4080 profile and performance anchors.
-- `routes.json` stores one exact route for each resident workload.
-- `run_verified.py` is a thin launcher over the shared verified runner.
-
-The authoritative machine-readable score is the single
-[RTX 4080 performance result](../../results/final/nvidia_geforce_rtx_4080.json).
-It contains paired Formal rows and the geometric mean for Shapes 1-13, plus a
-separate target-only, provisional Shape 14 row.
+  route table, Formal protocol, and resident/provisional split.
+- `profile.json` stores the measured RTX 4080 capabilities and anchors.
+- `routes.json` stores one exact deployed policy for every resident Shape.
+- `run_verified.py` launches the shared verified runner with this package.
 
 ## Reproduce
 
-Run only the exact resident routes:
+Run the exact resident routes:
 
 ```powershell
 .\.venv\Scripts\python.exe verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --scope resident --preset smoke
 .\.venv\Scripts\python.exe verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --scope resident --preset formal
 ```
 
-Run only the independent Shape 14 streamed path:
+Run the independent streamed Shape 14 path:
 
 ```powershell
 .\.venv\Scripts\python.exe verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --scope streamed --preset smoke
@@ -66,9 +63,9 @@ Run both scopes sequentially:
 .\.venv\Scripts\python.exe verified_hardware/nvidia_geforce_rtx_4080/run_verified.py --scope all --preset formal
 ```
 
-Formal resident and streamed execution update their respective sections in the
-single hardware result. Smoke runs write only ignored intermediate artifacts.
-Recalibrate exact routes after a code or runtime change with:
+Formal runs update their corresponding section in the single final artifact;
+Smoke artifacts remain under the ignored intermediate-results area. Rebuild the
+exact routes after a Solution or runtime change with:
 
 ```powershell
 .\.venv\Scripts\python.exe -m runner calibrate --preset formal --device cuda:0
@@ -76,73 +73,88 @@ Recalibrate exact routes after a code or runtime change with:
 
 ## Resident Formal result
 
-This result uses FP32 inputs, five Comparator trials per case, 20 warm-ups, 100
-timed repeats, three alternating baseline/Solution rounds, seed 1234, high
-matmul precision, and TF32 enabled. All 13 cases completed; all 65 Comparator
-trials passed with zero failed elements. Maximum absolute error was
-`0.0017772168` under `rtol=0.02` and `atol=0.002`. Geometric-mean speedup was
-**10.980x**.
+The current result used FP32 inputs, five Comparator trials per case, 20
+warm-ups, 100 timed repeats, three alternating baseline/Solution rounds, seed
+1234, high matmul precision, and TF32. All 13 cases completed, all 65
+Comparator trials passed, and zero elements failed. The maximum observed
+absolute error was `0.0018016696`. Geometric-mean speedup was **8.505x**.
 
-Times are complete Transformer-forward milliseconds. Peak is Solution CUDA
-allocated memory. MFU is the project's estimate against dtype-matched measured
-GEMM roofs, not an official competition score.
+Latencies cover the complete Transformer forward and are measured with CUDA
+events. Achieved TFLOP/s counts useful matrix-multiplication work. MFU is the
+project estimate against dtype-matched measured GEMM anchors, not an official
+competition score. Peak GiB is PyTorch peak CUDA allocation for the target.
 
-| Case | Exact route | Baseline median | Solution median / P90 | Speedup | Useful TFLOP/s | Est. MFU | Peak GiB |
+| Shape | Exact policy | Baseline median (ms) | Target median / P90 (ms) | Speedup | Achieved TFLOP/s | Est. MFU | Peak GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `official_01` | `graph-mixed-fp16-efficient-compiled-norm` | 4.544 | 0.492 / 0.493 | 9.25x | 15.31 | 30.1% | 0.084 |
-| `official_02` | `graph-fused-norm` | 4.642 | 0.140 / 0.143 | 33.09x | 0.84 | 1.8% | 0.018 |
-| `official_03` | `graph-fused-norm` | 4.527 | 0.148 / 0.148 | 30.49x | 3.17 | 6.7% | 0.022 |
-| `official_04` | `graph-fused-norm` | 4.482 | 0.238 / 0.238 | 18.87x | 7.92 | 16.8% | 0.034 |
-| `official_05` | `graph-mixed-fp16-efficient-compiled-norm` | 4.214 | 0.929 / 1.146 | 4.54x | 16.20 | 31.9% | 0.150 |
-| `official_06` | `mixed-fp16-core-efficient-triton-norm` | 450.089 | 104.440 / 106.300 | 4.31x | 11.26 | 12.0% | 4.900 |
-| `official_07` | `graph-mixed-fp16-efficient-compiled-norm` | 4.403 | 0.295 / 0.296 | 14.93x | 2.28 | 3.9% | 0.033 |
-| `official_08` | `mixed-fp16-core-efficient` | 13.210 | 7.565 / 7.775 | 1.75x | 55.65 | 59.4% | 0.352 |
-| `official_09` | `graph-mixed-fp16-efficient-compiled-norm` | 3.892 | 0.479 / 0.480 | 8.12x | 15.70 | 30.9% | 0.084 |
-| `official_10` | `graph-mixed-fp16-efficient-compiled-norm` | 4.331 | 0.469 / 0.470 | 9.23x | 16.04 | 31.6% | 0.084 |
-| `official_11` | `graph-mixed-fp16-efficient-compiled-norm` | 7.103 | 0.609 / 0.611 | 11.66x | 12.35 | 24.3% | 0.084 |
-| `official_12` | `graph-fused-norm` | 4.499 | 0.214 / 0.214 | 21.02x | 7.85 | 16.6% | 0.034 |
-| `official_13` | `mixed-fp16-core-efficient` | 108.424 | 5.302 / 5.482 | 20.45x | 22.69 | 24.2% | 0.259 |
+| `official_01` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.637 | 0.376 / 0.378 | 4.36x | 20.02 | 21.4% | 0.080 |
+| `official_02` | `graph-fused-norm` | 1.807 | 0.133 / 0.134 | 13.57x | 0.88 | 1.8% | 0.018 |
+| `official_03` | `graph-fused-norm` | 1.840 | 0.139 / 0.139 | 13.21x | 3.38 | 6.8% | 0.021 |
+| `official_04` | `graph-fused-norm` | 1.942 | 0.217 / 0.217 | 8.94x | 8.67 | 17.5% | 0.033 |
+| `official_05` | `graph-mixed-fp16-core-efficient-compiled-norm` | 2.384 | 0.680 / 0.714 | 3.50x | 22.12 | 23.7% | 0.142 |
+| `official_06` | `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm` | 454.034 | 42.754 / 43.298 | 10.62x | 27.50 | 29.4% | 1.257 |
+| `official_07` | `compiled-mixed-fp16-core-efficient` | 1.779 | 0.139 / 0.164 | 12.77x | 4.83 | 5.2% | 0.012 |
+| `official_08` | `compiled-mixed-fp16-core-efficient` | 13.435 | 6.054 / 6.588 | 2.22x | 69.54 | 74.4% | 0.227 |
+| `official_09` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.619 | 0.356 / 0.358 | 4.54x | 21.12 | 22.6% | 0.080 |
+| `official_10` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.792 | 0.346 / 0.349 | 5.18x | 21.74 | 23.3% | 0.080 |
+| `official_11` | `compiled-mixed-fp16-core-efficient` | 7.130 | 0.385 / 0.388 | 18.52x | 19.54 | 20.9% | 0.017 |
+| `official_12` | `graph-fused-norm` | 1.864 | 0.193 / 0.194 | 9.68x | 8.73 | 17.6% | 0.033 |
+| `official_13` | `compiled-mixed-fp16-core-shape13-triton-attention` | 110.119 | 2.807 / 3.090 | 39.23x | 42.87 | 45.9% | 0.181 |
 
-The [unified performance result](../../results/final/nvidia_geforce_rtx_4080.json)
-is authoritative if displayed rounding differs. Its per-shape logical-traffic
-fields estimate traffic at the current operator boundary; they are not measured
-DRAM traffic or profiler counters.
+The final JSON is authoritative if displayed rounding differs. Its logical
+traffic values describe estimated traffic at the current operator boundary;
+they are not profiler-measured DRAM traffic.
+
+## Deployed strategy groups
+
+- Shapes 2, 3, 4, and 12 use CUDA Graph replay with fused normalization.
+- Shapes 1, 5, 9, and 10 combine mixed-FP16 Efficient SDPA, compiled
+  normalization, and CUDA Graph replay.
+- Shapes 7, 8, and 11 use whole-forward compiled mixed-FP16 execution.
+- Shape 6 uses batch tiling plus a Triton fused mixed-precision residual and
+  normalization path.
+- Shape 13 uses its own compiled path with a Shape-specific Triton causal
+  attention kernel.
+
+These are exact measured winners for this recorded RTX 4080 software stack;
+they are not assumed to transfer unchanged to another device or runtime.
 
 ## Provisional Shape 14 result
 
-Shape 14 is intentionally isolated from resident exact routing. The streamed
-Formal path dynamically screened supported policy and microbatch combinations,
-then covered logical `B=32` as 16 serial microbatches of size 2.
+Shape 14 is isolated from resident exact routing. The streamed Formal path
+covered logical `B=32` with 16 serial microbatches of size 2.
 
 | Metric | Result |
 | --- | ---: |
 | Selected policy | `mixed-fp16-core-cudnn` |
-| Target median / P90 | 15.988 s / 15.988 s |
-| End-to-end elapsed time | 19.333 s |
-| Useful matmul throughput | 87.02 TFLOP/s |
-| Project-estimated MFU | 92.8% |
-| Peak CUDA allocation | 6.927 GiB |
+| Target median / P90 | 16.237 s / 16.240 s |
+| Host end-to-end elapsed time | 18.183 s |
+| Useful matmul throughput | 85.69 TFLOP/s |
+| Project-estimated MFU | 91.7% |
+| Peak CUDA allocation | 7.307 GiB |
 | Correctness | 0 / 102,400,000 failed elements |
 | Maximum absolute error | 0.000833869 |
 
 Correctness is provisional and uses one full `B=1` long-sequence validation
-microbatch. This artifact is therefore `target_only`: it reports no fabricated
-dense full-batch baseline, speedup, exact route, or contribution to the
+microbatch. The artifact therefore remains `target_only`: it reports no dense
+full-batch baseline, speedup, exact resident route, or contribution to the
 resident geometric mean.
 
-## Identity and reproducibility boundaries
+## Bound identities
 
-The exact route key includes GPU name, compute capability, operating-system
-family, PyTorch version, CUDA runtime, driver, matmul precision, TF32 policy,
-input dtype, and complete workload shape. The Manifest additionally binds:
+- Workload set SHA-256:
+  `621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9`
+- Official snapshot SHA-256:
+  `d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762`
+- Solution implementation SHA-256:
+  `57e014b8cbb626905e4a619e2fd468b7c7113b5d2b88217eac876c0fe256d4f4`
+- Route-table SHA-256:
+  `440d6fa1f6ae86f41ccb5a83ec5029a1f9e84ab1344e28616d98bf2f7de419f9`
+- Hardware-profile identity SHA-256:
+  `04f06297e42a81b0f9d47eab3aca1bad769e0c2b1ec5b696583e504480f63474`
+- Verified-manifest identity SHA-256:
+  `d5b33c65c3734f5183c937566df0a888acc080d921166f7a2d5c82a8cd83dfdb`
 
-- workload set SHA-256 `621c0f205180f303970ed9e7ce2ee1548cd6c1ac5d46fff1e69dc938039736e9`;
-- official snapshot SHA-256 `d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762`;
-- Solution implementation SHA-256 `07882d07b4d1f682ebaa1fc2d8bc1a7a2ff65ab2d9a3740481e4c9499ae34d9a`;
-- route-table SHA-256 `abe29c3fba8efcf2aaf74c5d3177f74e57d2b9fb462fec2a290e14356f9a9b3b`.
-
-The verified launcher rejects stale provenance, an unmatched runtime, missing
-routes, fallback execution, or a policy whose observed execution path does not
-match its registered evidence. Another GPU or software stack must run its own
-Probe and bounded calibration; this package does not claim that RTX 4080 winners
-transfer unchanged.
+The verified launcher rejects a stale manifest, unmatched runtime, missing
+route, fallback execution, or an observed execution path that does not satisfy
+the registered policy evidence. A new hardware or software stack should run
+its own Probe and bounded calibration before publishing exact routes.

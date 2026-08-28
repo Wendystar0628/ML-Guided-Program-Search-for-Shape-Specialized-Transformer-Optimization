@@ -22,6 +22,7 @@ DEPLOYABLE_CANDIDATES = (
     "graph-mixed-fp16-core-efficient-compiled-norm",
     "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
     "compiled-mixed-fp16-core-efficient",
+    "compiled-mixed-fp16-core-shape13-triton-attention",
 )
 ALL_CANDIDATES = ("eager-sdpa", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
 
@@ -118,10 +119,8 @@ def test_operator_bandwidth_converts_copy_payload_when_theoretical_is_unknown() 
     [
         "official_01",
         "official_05",
-        "official_07",
         "official_09",
         "official_10",
-        "official_11",
     ],
 )
 def test_measured_s128_family_prioritizes_graph_mixed_attention(
@@ -138,6 +137,42 @@ def test_measured_s128_family_prioritizes_graph_mixed_attention(
     assert plan["candidate_order"] == [
         "graph-mixed-fp16-core-efficient-compiled-norm",
         "graph-mixed-fp16-efficient-compiled-norm",
+        "eager-sdpa",
+    ]
+
+
+def test_shape07_shortlists_compiled_forward_with_compiler_graphs() -> None:
+    plan = build_routing_plan(
+        official_shape("official_07"),
+        RunVariant(),
+        _ada_profile(),
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["candidate_order"][-1] == "eager-sdpa"
+    assert set(plan["candidate_order"][:2]) == {
+        "graph-mixed-fp16-core-efficient-compiled-norm",
+        "compiled-mixed-fp16-core-efficient",
+    }
+    reasons = " ".join(
+        plan["selection_reasons"]["compiled-mixed-fp16-core-efficient"]
+    )
+    assert "CUDAGraph Trees" in reasons
+
+
+def test_shape11_prioritizes_fixed_plan_compilation() -> None:
+    plan = build_routing_plan(
+        official_shape("official_11"),
+        RunVariant(),
+        _ada_profile(),
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["candidate_order"] == [
+        "compiled-mixed-fp16-core-efficient",
+        "graph-mixed-fp16-core-efficient-compiled-norm",
         "eager-sdpa",
     ]
 
@@ -183,9 +218,14 @@ def test_shape13_prioritizes_fixed_plan_compilation() -> None:
         limit=3,
     )
 
-    assert plan["candidate_order"][0] == "compiled-mixed-fp16-core-efficient"
-    reasons = " ".join(plan["selection_reasons"]["compiled-mixed-fp16-core-efficient"])
+    assert plan["candidate_order"][0] == (
+        "compiled-mixed-fp16-core-shape13-triton-attention"
+    )
+    reasons = " ".join(
+        plan["selection_reasons"]["compiled-mixed-fp16-core-shape13-triton-attention"]
+    )
     assert "whole-stack fusion" in reasons
+    assert "online-softmax" in reasons
 
 
 def test_negative_prior_still_retains_the_current_incumbent() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import platform
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -422,6 +423,74 @@ def test_verified_streamed_rejects_a_mixed_generation_publication(
         )
 
     assert paths.final_performance.read_bytes() == sentinel
+
+
+def test_verified_streamed_holds_the_device_lease_around_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = BundlePaths.from_bundle(
+        tmp_path / "verified_hardware" / "fixture_gpu"
+    )
+    expected_path = tmp_path / "streamed.json"
+    events: list[str] = []
+
+    @contextmanager
+    def fake_lease(project_root: Path, device: str, *, purpose: str):
+        assert project_root == paths.project_root
+        assert device == "cuda:3"
+        assert purpose == "verified streamed hardware measurement"
+        events.append("lease_entered")
+        try:
+            yield
+        finally:
+            events.append("lease_released")
+
+    def fake_run(*_args, **_kwargs) -> Path:
+        events.append("measurement")
+        return expected_path
+
+    monkeypatch.setattr(verified_hardware, "device_measurement_lease", fake_lease)
+    monkeypatch.setattr(verified_hardware, "_run_verified_streamed", fake_run)
+
+    result_path = run_verified_streamed(
+        LaunchConfig(device="cuda:3"),
+        paths=paths,
+    )
+
+    assert result_path == expected_path
+    assert events == ["lease_entered", "measurement", "lease_released"]
+
+
+def test_verified_streamed_releases_the_device_lease_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = BundlePaths.from_bundle(
+        tmp_path / "verified_hardware" / "fixture_gpu"
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def fake_lease(_project_root: Path, _device: str, *, purpose: str):
+        assert purpose == "verified streamed hardware measurement"
+        events.append("lease_entered")
+        try:
+            yield
+        finally:
+            events.append("lease_released")
+
+    def fail_run(*_args, **_kwargs) -> Path:
+        events.append("measurement")
+        raise RuntimeError("streamed failure")
+
+    monkeypatch.setattr(verified_hardware, "device_measurement_lease", fake_lease)
+    monkeypatch.setattr(verified_hardware, "_run_verified_streamed", fail_run)
+
+    with pytest.raises(RuntimeError, match="streamed failure"):
+        run_verified_streamed(LaunchConfig(), paths=paths)
+
+    assert events == ["lease_entered", "measurement", "lease_released"]
 
 
 def test_verified_launcher_defaults_to_resident_and_can_run_all(

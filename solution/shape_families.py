@@ -84,6 +84,16 @@ def is_compiled_forward_candidate_workload(
 ) -> bool:
     """Match resident workloads selected for fixed-plan full-stack compilation."""
 
+    small_head = (
+        batch_size == 64
+        and seq_len == 128
+        and d_model in {32, 128}
+        and num_heads in {4, 16}
+        and d_model // num_heads == 8
+        and ffn_dim == d_model
+        and num_layers == 4
+    )
+
     shape13 = (
         batch_size == 64
         and seq_len == 1024
@@ -100,7 +110,47 @@ def is_compiled_forward_candidate_workload(
         and ffn_dim == 1024
         and num_layers == 4
     )
-    return bool(shape08 or shape13)
+    return bool(small_head or shape08 or shape13)
+
+
+def is_shape13_triton_attention_tensor_family(
+    *,
+    batch_size: int,
+    seq_len: int,
+    num_heads: int,
+    head_dim: int,
+) -> bool:
+    """Match the exact Q/K/V contract of the measured Shape 13 kernel."""
+
+    return bool(
+        batch_size == 64 and seq_len == 1024 and num_heads == 4 and head_dim == 32
+    )
+
+
+def is_shape13_triton_attention_workload(
+    *,
+    batch_size: int,
+    seq_len: int,
+    d_model: int,
+    num_heads: int,
+    ffn_dim: int,
+    num_layers: int,
+) -> bool:
+    """Match the complete workload measured for the Shape 13 specialization."""
+
+    if num_heads <= 0 or d_model % num_heads:
+        return False
+    return bool(
+        is_shape13_triton_attention_tensor_family(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            num_heads=num_heads,
+            head_dim=d_model // num_heads,
+        )
+        and d_model == 128
+        and ffn_dim == 128
+        and num_layers == 4
+    )
 
 
 def is_streamed_mixed_fp16_core_cudnn_slice(
@@ -194,5 +244,7 @@ __all__ = [
     "is_measured_triton_residual_norm_workload",
     "is_mixed_fp16_core_efficient_runtime_family",
     "is_shape06_batch_tiled_workload",
+    "is_shape13_triton_attention_tensor_family",
+    "is_shape13_triton_attention_workload",
     "is_streamed_mixed_fp16_core_cudnn_slice",
 ]

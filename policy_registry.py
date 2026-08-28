@@ -17,6 +17,8 @@ class ExecutionComponent(StrEnum):
     COMPILED_FORWARD = "compiled_forward"
     COMPILED_RESIDUAL_LAYER_NORM = "compiled_residual_layer_norm"
     TRITON_RESIDUAL_LAYER_NORM = "triton_residual_layer_norm"
+    TRITON_MIXED_RESIDUAL_LAYER_NORM = "triton_mixed_residual_layer_norm"
+    TRITON_SHAPE13_CAUSAL_ATTENTION = "triton_shape13_causal_attention"
     MIXED_FP16_EFFICIENT_ATTENTION = "mixed_fp16_efficient_attention"
     MIXED_FP16_CUDNN_ATTENTION = "mixed_fp16_cudnn_attention"
     MIXED_FP16_CORE = "mixed_fp16_core"
@@ -28,6 +30,7 @@ class ResidualNormBackend(StrEnum):
     TORCH = "torch"
     COMPILED = "compiled_residual_layer_norm"
     TRITON = "triton_residual_layer_norm"
+    TRITON_MIXED = "triton_mixed_residual_layer_norm"
 
 
 class RuntimeWrapper(StrEnum):
@@ -39,6 +42,15 @@ class RuntimeWrapper(StrEnum):
     COMPILED_FORWARD = "compiled_forward"
 
 
+DEFAULT_COMPILED_FORWARD_MODE = "max-autotune"
+COMPILED_FORWARD_MODES = frozenset(
+    {
+        DEFAULT_COMPILED_FORWARD_MODE,
+        "max-autotune-no-cudagraphs",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PolicySpec:
     """One execution composition, independent of workload shape and hardware."""
@@ -48,6 +60,7 @@ class PolicySpec:
     linear_compute: str = "input"
     residual_norm: ResidualNormBackend = ResidualNormBackend.TORCH
     runtime: RuntimeWrapper = RuntimeWrapper.EAGER
+    compile_mode: str | None = None
     batch_tile_size: int | None = None
     routable: bool = True
 
@@ -59,6 +72,7 @@ class PolicySpec:
             "causal_sdpa",
             "mixed_fp16_efficient",
             "mixed_fp16_cudnn",
+            "triton_shape13_causal_attention",
         }:
             raise ValueError(f"unsupported attention backend: {self.attention}")
         if self.linear_compute not in {"input", "float16"}:
@@ -75,6 +89,17 @@ class PolicySpec:
         except ValueError as exc:
             raise ValueError(f"unsupported runtime wrapper: {self.runtime}") from exc
         object.__setattr__(self, "runtime", runtime)
+        compile_mode = self.compile_mode
+        if runtime is RuntimeWrapper.COMPILED_FORWARD:
+            if compile_mode is None:
+                compile_mode = DEFAULT_COMPILED_FORWARD_MODE
+            if compile_mode not in COMPILED_FORWARD_MODES:
+                raise ValueError(f"unsupported compiled-forward mode: {compile_mode}")
+            object.__setattr__(self, "compile_mode", compile_mode)
+        elif compile_mode is not None:
+            raise ValueError(
+                "compile_mode is valid only for the compiled-forward runtime"
+            )
         if runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
             if (
                 isinstance(self.batch_tile_size, bool)
@@ -109,6 +134,8 @@ class PolicySpec:
             components.add(ExecutionComponent.MIXED_FP16_EFFICIENT_ATTENTION)
         elif self.attention == "mixed_fp16_cudnn":
             components.add(ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION)
+        elif self.attention == "triton_shape13_causal_attention":
+            components.add(ExecutionComponent.TRITON_SHAPE13_CAUSAL_ATTENTION)
         if self.linear_compute == "float16":
             components.add(ExecutionComponent.MIXED_FP16_CORE)
         if self.runtime is RuntimeWrapper.CUDA_GRAPH:
@@ -126,6 +153,8 @@ class PolicySpec:
             components.add(ExecutionComponent.COMPILED_RESIDUAL_LAYER_NORM)
         elif self.residual_norm is ResidualNormBackend.TRITON:
             components.add(ExecutionComponent.TRITON_RESIDUAL_LAYER_NORM)
+        elif self.residual_norm is ResidualNormBackend.TRITON_MIXED:
+            components.add(ExecutionComponent.TRITON_MIXED_RESIDUAL_LAYER_NORM)
         return frozenset(components)
 
 
@@ -196,11 +225,26 @@ _POLICY_SPECS = {
         runtime=RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
         batch_tile_size=128,
     ),
+    "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm": PolicySpec(
+        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+        residual_norm=ResidualNormBackend.TRITON_MIXED,
+        runtime=RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
+        batch_tile_size=128,
+    ),
     "compiled-mixed-fp16-core-efficient": PolicySpec(
         "compiled-mixed-fp16-core-efficient",
         attention="mixed_fp16_efficient",
         linear_compute="float16",
         runtime=RuntimeWrapper.COMPILED_FORWARD,
+    ),
+    "compiled-mixed-fp16-core-shape13-triton-attention": PolicySpec(
+        "compiled-mixed-fp16-core-shape13-triton-attention",
+        attention="triton_shape13_causal_attention",
+        linear_compute="float16",
+        runtime=RuntimeWrapper.COMPILED_FORWARD,
+        compile_mode="max-autotune-no-cudagraphs",
     ),
 }
 
@@ -231,6 +275,8 @@ def policy_ids() -> frozenset[str]:
 
 
 __all__ = [
+    "COMPILED_FORWARD_MODES",
+    "DEFAULT_COMPILED_FORWARD_MODE",
     "POLICY_SELECTORS",
     "POLICY_SPECS",
     "ROUTABLE_POLICY_IDS",

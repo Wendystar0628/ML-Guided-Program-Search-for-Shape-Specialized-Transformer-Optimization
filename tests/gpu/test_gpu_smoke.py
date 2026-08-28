@@ -81,6 +81,10 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
             "official_06",
             "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         ),
+        (
+            "official_06",
+            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        ),
         ("official_07", "graph-mixed-fp16-efficient"),
         ("official_07", "graph-mixed-fp16-efficient-compiled-norm"),
         (
@@ -88,6 +92,10 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
             "graph-mixed-fp16-core-efficient-compiled-norm",
         ),
         ("official_13", "compiled-mixed-fp16-core-efficient"),
+        (
+            "official_13",
+            "compiled-mixed-fp16-core-shape13-triton-attention",
+        ),
     ],
 )
 def test_representative_policy_executes_and_passes_the_official_comparator(
