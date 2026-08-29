@@ -222,7 +222,6 @@ class ParameterDomain:
     name: str
     choices: tuple[Scalar, ...]
     default: Scalar
-    ordered: bool = False
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -485,7 +484,6 @@ class BranchSpace:
                         "name": domain.name,
                         "choices": list(domain.choices),
                         "default": domain.default,
-                        "ordered": domain.ordered,
                     }
                     for domain in self.domains
                 ],
@@ -529,25 +527,10 @@ class BranchSpace:
     def default_parameters(self) -> dict[str, Scalar]:
         return {domain.name: domain.default for domain in self.domains}
 
-    def representative_parameter_sets(
-        self, limit: int = 3
-    ) -> tuple[dict[str, Scalar], ...]:
-        """Cover defaults plus bounded one-coordinate alternatives."""
+    def default_config(self) -> ConfigSpec:
+        """Build the reproducible starting point for this branch."""
 
-        if limit <= 0:
-            raise ValueError("representative limit must be positive")
-        default = self.default_parameters()
-        values = [default]
-        for domain in self.domains:
-            for choice in domain.choices:
-                if choice == domain.default:
-                    continue
-                alternative = dict(default)
-                alternative[domain.name] = choice
-                values.append(alternative)
-                if len(values) >= limit:
-                    return tuple(values)
-        return tuple(values)
+        return self.build(self.default_parameters())
 
     def suggest_parameters(self, trial: TrialLike) -> dict[str, Scalar]:
         return {domain.name: domain.suggest(trial) for domain in self.domains}
@@ -775,35 +758,6 @@ class BranchSpace:
             return None
         return values
 
-    def representative_configs(self, limit: int = 3) -> tuple[ConfigSpec, ...]:
-        return tuple(
-            self.build(parameters)
-            for parameters in self.representative_parameter_sets(limit)
-        )
-
-    def neighbours(self, config: ConfigSpec) -> tuple[ConfigSpec, ...]:
-        """Return bounded single-coordinate neighbours for ordered parameters."""
-
-        current = self.parameters_for(config)
-        if current is None:
-            return ()
-        neighbours: list[ConfigSpec] = []
-        seen: set[str] = set()
-        for domain in self.domains:
-            if not domain.ordered or len(domain.choices) <= 1:
-                continue
-            index = domain.choices.index(current[domain.name])
-            for neighbour_index in (index - 1, index + 1):
-                if not 0 <= neighbour_index < len(domain.choices):
-                    continue
-                parameters = dict(current)
-                parameters[domain.name] = domain.choices[neighbour_index]
-                candidate = self.build(parameters)
-                if candidate.config_id not in seen:
-                    seen.add(candidate.config_id)
-                    neighbours.append(candidate)
-        return tuple(neighbours)
-
 
 def _domains_for_structure(
     structure: StructureSpec,
@@ -855,13 +809,11 @@ def _domains_for_structure(
                     "attention_tile",
                     tile_choices,
                     default_tile,
-                    True,
                 ),
                 ParameterDomain(
                     "attention_num_warps",
                     (2, 4, 8),
                     warps,
-                    True,
                 ),
                 ParameterDomain(
                     "attention_num_stages",
@@ -871,7 +823,6 @@ def _domains_for_structure(
                         else (1, 2, 3, 4)
                     ),
                     stages,
-                    True,
                 ),
             )
         )
@@ -888,9 +839,8 @@ def _domains_for_structure(
                     "qkv_gemm_tile",
                     tile_choices,
                     default_tile,
-                    True,
                 ),
-                ParameterDomain("qkv_num_warps", (2, 4, 8), 4, True),
+                ParameterDomain("qkv_num_warps", (2, 4, 8), 4),
             )
         )
     if (
@@ -908,19 +858,16 @@ def _domains_for_structure(
                     "attention_output_gemm_tile",
                     tile_choices,
                     "32x32x32",
-                    True,
                 ),
                 ParameterDomain(
                     "attention_output_num_warps",
                     (2, 4, 8),
                     4,
-                    True,
                 ),
                 ParameterDomain(
                     "attention_output_num_stages",
                     (1, 2, 3, 4),
                     2,
-                    True,
                 ),
             )
         )
@@ -973,13 +920,11 @@ def _domains_for_structure(
                         if 2 in norm_rows
                         else norm_rows[0]
                     ),
-                    True,
                 ),
                 ParameterDomain(
                     "residual_num_warps",
                     norm_warps,
                     4 if model_width in {32, 1024} else 2,
-                    True,
                 ),
             )
         )
@@ -990,13 +935,11 @@ def _domains_for_structure(
                     "initial_block_rows",
                     initial_norm_rows,
                     2 if 2 in initial_norm_rows else initial_norm_rows[0],
-                    True,
                 ),
                 ParameterDomain(
                     "initial_num_warps",
                     initial_norm_warps,
                     4 if model_width == 1024 else 2,
-                    True,
                 ),
             )
         )
@@ -1007,13 +950,11 @@ def _domains_for_structure(
                     "ffn_block_size",
                     (128, 256, 512, 1024),
                     256,
-                    True,
                 ),
                 ParameterDomain(
                     "ffn_num_warps",
                     (1, 2, 4, 8),
                     4,
-                    True,
                 ),
             )
         )
@@ -1030,19 +971,16 @@ def _domains_for_structure(
                     "ffn_input_gemm_tile",
                     tile_choices,
                     default_tile,
-                    True,
                 ),
                 ParameterDomain(
                     "ffn_input_num_warps",
                     (1, 2, 4, 8),
                     4,
-                    True,
                 ),
                 ParameterDomain(
                     "ffn_input_num_stages",
                     (1, 2, 3, 4),
                     2,
-                    True,
                 ),
             )
         )
@@ -1052,7 +990,7 @@ def _domains_for_structure(
     if structure.runtime is RuntimeBackend.BATCH_TILED_CUDA_GRAPH:
         choices = _batch_tile_choices(context.batch_size)
         default = min(choices, key=lambda value: abs(value - 128))
-        domains.append(ParameterDomain("batch_tile_size", choices, default, True))
+        domains.append(ParameterDomain("batch_tile_size", choices, default))
     if structure.runtime is RuntimeBackend.CUDA_GRAPH:
         domains.append(
             ParameterDomain(
@@ -1066,7 +1004,7 @@ def _domains_for_structure(
         if structure.attention is AttentionBackend.TRITON_STREAMING_DH64:
             choices = tuple(choice for choice in choices if choice in {1, 2, 4})
         default = 2 if 2 in choices else choices[0]
-        domains.append(ParameterDomain("microbatch_size", choices, default, True))
+        domains.append(ParameterDomain("microbatch_size", choices, default))
     return tuple(domains)
 
 
@@ -1168,6 +1106,7 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             if value
             in {
                 AttentionBackend.REFERENCE_STREAMING,
+                AttentionBackend.CAUSAL_SDPA,
                 AttentionBackend.TRITON_STREAMING_DH64,
             }
         )
@@ -1436,10 +1375,10 @@ class ProgramSearchSpace:
                 scope=context.scope,
             )
             try:
-                representatives = branch.representative_configs()
+                default = branch.default_config()
             except (TypeError, ValueError):
                 continue
-            if any(self.accepted(config) for config in representatives):
+            if self.accepted(default):
                 candidates.append(branch)
         required: list[BranchSpace] = []
         if context.scope == "resident":

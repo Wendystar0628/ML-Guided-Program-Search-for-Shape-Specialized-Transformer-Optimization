@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version
-
 import torch
 
-
-def _package_version(name: str) -> str | None:
-    try:
-        return version(name)
-    except PackageNotFoundError:
-        return None
+from deployment.environment import installed_triton_version
 
 
 def execute_probe(device: str = "cuda:0") -> dict[str, object]:
@@ -32,7 +25,7 @@ def execute_probe(device: str = "cuda:0") -> dict[str, object]:
         "warp_size": int(properties.warp_size),
         "torch_version": torch.__version__,
         "cuda_version": torch.version.cuda,
-        "triton_version": _package_version("triton"),
+        "triton_version": installed_triton_version(),
     }
 
 

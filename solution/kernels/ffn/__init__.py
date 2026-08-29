@@ -1,4 +1,4 @@
-"""Feed-forward-network operator primitives."""
+"""Handwritten Triton feed-forward kernels."""
 
 from .triton_exact_gelu import (
     TRITON_EXACT_GELU_BACKEND,

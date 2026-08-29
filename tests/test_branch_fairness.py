@@ -132,7 +132,6 @@ def _branch(
                 "batch_tile_size",
                 choices,
                 default=choices[0],
-                ordered=True,
             ),
         ),
         scope=scope,
@@ -194,7 +193,7 @@ def _plan(request: SearchRequest, branches: tuple[BranchSpace, ...]) -> SearchPl
     )
 
 
-def test_screening_uses_three_unique_configs_and_best_feasible_latency(
+def test_screening_uses_default_plus_startup_samples_and_best_latency(
     tmp_path,
 ) -> None:
     branches = (
@@ -215,7 +214,7 @@ def test_screening_uses_three_unique_configs_and_best_feasible_latency(
     }
     state = _RunState(studies=studies)
 
-    historical = branches[0].representative_configs(limit=3)[0]
+    historical = branches[0].default_config()
     backend.record_completed(
         studies[branches[0].branch_id],
         branches[0],
@@ -236,7 +235,7 @@ def test_screening_uses_three_unique_configs_and_best_feasible_latency(
         completed = backend.completed_trials(studies[branch.branch_id], branch)
         assert len({trial.config.config_id for trial in completed}) == 3
 
-    # The first branch wins because its best representative is 1 ms, even
+    # The first branch wins because its best observation is 1 ms, even
     # though its other completed observations are 100 ms.
     assert engine._select_survivors(plan, state, backend) == (branches[0],)
 
@@ -320,7 +319,7 @@ def test_exhausted_finite_branch_does_not_ask_or_measure(
     assert evaluator.calls == []
 
 
-def test_formal_tabu_skips_rejected_challenger_for_same_incumbent(tmp_path) -> None:
+def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -> None:
     branch = _branch(PrecisionPlan.INPUT_DTYPE)
     configs = tuple(branch.config_at(index) for index in range(branch.cardinality))
     incumbent, rejected, next_challenger = configs
@@ -397,8 +396,8 @@ def test_plan_keeps_unique_warm_start_branches(
         _branch(PrecisionPlan.INPUT_DTYPE),
         _branch(PrecisionPlan.FP16_QKV_ATTENTION),
     )
-    incumbent = branches[0].representative_configs(limit=1)[0]
-    transfer = branches[1].representative_configs(limit=1)[0]
+    incumbent = branches[0].default_config()
+    transfer = branches[1].default_config()
     request = replace(
         _request(max_trials=6),
         incumbent=incumbent,
@@ -452,7 +451,7 @@ def test_time_limited_partial_screen_has_no_winner(
     assert not result.deployment_approved
 
 
-def test_tpe_startup_is_dynamic_and_uses_an_absolute_history_threshold(
+def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -466,53 +465,27 @@ def test_tpe_startup_is_dynamic_and_uses_an_absolute_history_threshold(
         scope="resident",
     )
 
-    assert (
-        startup_trial_count(
-            normal,
-            branch_budget=5,
-            scope=EvaluationScope.RESIDENT,
-        )
-        == 4
-    )
-    assert (
-        startup_trial_count(
-            huge,
-            branch_budget=10,
-            scope=EvaluationScope.RESIDENT,
-        )
-        == 6
-    )
-    assert (
-        startup_trial_count(
-            huge,
-            branch_budget=10,
-            scope=EvaluationScope.STREAMED,
-        )
-        == 4
-    )
-    assert (
-        startup_trial_count(
-            huge,
-            branch_budget=3,
-            scope=EvaluationScope.STREAMED,
-        )
-        == 3
-    )
+    tiny = _branch(PrecisionPlan.INPUT_DTYPE, choices=(1, 2, 3))
+
+    assert startup_trial_count(normal) == 10
+    assert startup_trial_count(huge) == 10
+    assert startup_trial_count(tiny) == 3
 
     backend = OptunaBackend(SearchStorage(tmp_path), seed=7)
     identity = StudyIdentity("startup", normal.branch_id, "test")
-    study = backend.create_study(identity, n_startup_trials=4)
-    for index, config in enumerate(normal.representative_configs(limit=4), start=1):
+    study = backend.create_study(identity, n_startup_trials=10)
+    for index in range(10):
+        config = normal.config_at(index)
         backend.record_completed(
             study,
             normal,
             config,
-            _measurement(config, float(index)),
+            _measurement(config, float(index + 1)),
             source="preloaded",
         )
 
-    assert study.sampler._n_startup_trials == 4
-    assert len(backend.completed_trials(study, normal)) == 4
+    assert study.sampler._n_startup_trials == 10
+    assert len(backend.completed_trials(study, normal)) == 10
 
     def _unexpected_random_sample(*args: object, **kwargs: object) -> object:
         del args, kwargs
@@ -526,7 +499,10 @@ def test_tpe_startup_is_dynamic_and_uses_an_absolute_history_threshold(
     backend.ask(study, normal)
 
 
-def test_unknown_benchmark_errors_propagate_after_screening(tmp_path) -> None:
+def test_duplicate_fallback_benchmark_error_stops_only_that_branch(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     branch = _branch(PrecisionPlan.INPUT_DTYPE)
     request = _request(max_trials=3)
     plan = _plan(request, (branch,))
@@ -537,24 +513,36 @@ def test_unknown_benchmark_errors_propagate_after_screening(tmp_path) -> None:
     )
     backend = OptunaBackend(engine.storage, seed=request.seed)
     study = backend.create_study(plan.identity_for(branch.branch_id))
-    middle = branch.representative_configs(limit=3)[1]
+    historical = branch.default_config()
     backend.record_completed(
         study,
         branch,
-        middle,
-        _measurement(middle, 1.0),
+        historical,
+        _measurement(historical, 1.0),
         source="seed",
     )
     state = _RunState(studies={branch.branch_id: study})
 
-    with pytest.raises(RuntimeError, match="benchmark infrastructure failed"):
-        engine._run_local_neighbourhood(
-            plan,
-            state,
-            backend,
-            (branch,),
-            deadline=time.monotonic() + 30.0,
-        )
+    monkeypatch.setattr(
+        backend,
+        "ask",
+        lambda *args: (study.ask(), historical),
+    )
+
+    assert not engine._ask_and_measure(plan, state, backend, branch)
+    assert state.budget.new_level1_trials == 1
+
+
+def test_unknown_benchmark_errors_propagate_after_screening(tmp_path) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
+    request = _request(max_trials=3)
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_RaisingEvaluator(),  # type: ignore[arg-type]
+        plan_builder=_PlanBuilder(),
+    )
+    middle = branch.config_at(1)
+
     with pytest.raises(RuntimeError, match="benchmark infrastructure failed"):
         engine._evaluate_promotions(
             request,

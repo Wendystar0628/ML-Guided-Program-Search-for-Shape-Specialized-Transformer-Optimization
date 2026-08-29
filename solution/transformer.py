@@ -24,44 +24,52 @@ from .config import (
     RuntimeBackend,
     portable_config,
 )
-from .operators import (
-    MIXED_FP16_CUDNN_BACKEND,
-    MIXED_FP16_EFFICIENT_BACKEND,
-    TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
-    TRITON_D32_RESIDUAL_LAYER_NORM_BACKEND,
+from .kernels.attention import (
     TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
-    TRITON_EXACT_GELU_BACKEND,
-    TRITON_LINEAR_EXACT_GELU_BACKEND,
-    TRITON_MASKED_LAYER_NORM_BACKEND,
-    TRITON_MASKED_RESIDUAL_LAYER_NORM_BACKEND,
-    TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND,
-    TRITON_QKV_NATIVE_BHSD_BACKEND,
-    TRITON_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND,
     TRITON_STREAMING_DH64_CAUSAL_ATTENTION_BSD_BACKEND,
+    prevalidated_triton_dh8_causal_attention_bsd,
+    prevalidated_triton_shape13_causal_attention,
+    prevalidated_triton_shape13_causal_attention_bsd,
+    prevalidated_triton_streaming_dh64_causal_attention_bsd,
+)
+from .kernels.ffn import (
+    TRITON_EXACT_GELU_BACKEND,
+    TRITON_LINEAR_EXACT_GELU_BACKEND,
+    prevalidated_triton_exact_gelu,
+    prevalidated_triton_linear_exact_gelu,
+)
+from .kernels.norm import (
+    TRITON_D32_RESIDUAL_LAYER_NORM_BACKEND,
+    TRITON_MASKED_LAYER_NORM_BACKEND,
+    TRITON_MASKED_RESIDUAL_LAYER_NORM_BACKEND,
+    TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND,
+    TRITON_RESIDUAL_LAYER_NORM_BACKEND,
+    prevalidated_triton_d32_residual_layer_norm,
+    prevalidated_triton_masked_layer_norm,
+    prevalidated_triton_masked_residual_layer_norm,
+    triton_initial_fp16_layer_norm,
+    triton_mixed_residual_layer_norm,
+    triton_residual_layer_norm,
+)
+from .kernels.projection import (
+    TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
+    TRITON_QKV_NATIVE_BHSD_BACKEND,
+    prevalidated_triton_attention_output_projection,
+    prevalidated_triton_qkv_native_bhsd,
+)
+from .operators import (
+    MIXED_FP16_CUDNN_BACKEND,
+    MIXED_FP16_EFFICIENT_BACKEND,
     causal_sdpa,
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
     prevalidated_mixed_fp16_efficient_attention,
-    prevalidated_triton_attention_output_projection,
-    prevalidated_triton_d32_residual_layer_norm,
-    prevalidated_triton_dh8_causal_attention_bsd,
-    prevalidated_triton_exact_gelu,
-    prevalidated_triton_linear_exact_gelu,
-    prevalidated_triton_masked_layer_norm,
-    prevalidated_triton_masked_residual_layer_norm,
-    prevalidated_triton_qkv_native_bhsd,
-    prevalidated_triton_shape13_causal_attention,
-    prevalidated_triton_shape13_causal_attention_bsd,
-    prevalidated_triton_streaming_dh64_causal_attention_bsd,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
     split_qkv,
-    triton_initial_fp16_layer_norm,
-    triton_mixed_residual_layer_norm,
-    triton_residual_layer_norm,
 )
 from .plan import ExecutionContext, ExecutionPlan
 from .plan_builder import PlanBuilder

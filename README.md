@@ -34,7 +34,8 @@ solution/
   plan_builder.py           ConfigSpec -> validated ExecutionPlan
   plan.py                   immutable execution plan and expected trace
   transformer.py            model that executes the plan
-  operators/                attention, projection, FFN, norm, and fusion kernels
+  operators/                PyTorch, SDPA, and compiled operator compositions
+  kernels/                  handwritten Triton candidates by subsystem
   runtimes/                 eager/compile/CUDA Graph/streamed schedules
 
 autotune/
@@ -55,17 +56,17 @@ software and hardware environment.
 
 ## Setup
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
 For the validated native Windows RTX 4080 environment:
 
 ```powershell
+python -m venv .venv
 .\environments\activate_windows_rtx4080.ps1
 python -m pip install -r environments\windows-rtx4080.txt
 ```
+
+On another platform, install the CUDA-enabled PyTorch and Triton builds selected
+for that platform first, then install `requirements.txt`. The project does not
+force one cross-platform GPU runtime combination.
 
 ## Commands
 

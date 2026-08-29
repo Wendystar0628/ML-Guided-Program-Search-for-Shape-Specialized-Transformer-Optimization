@@ -146,24 +146,59 @@ def _max_tolerance_ratio(
 ) -> float:
     """Return the continuous form of the official OR comparator."""
 
+    return _comparison_metrics(
+        reference,
+        candidate,
+        rtol=rtol,
+        atol=atol,
+        chunk_size=chunk_size,
+    )[1]
+
+
+def _comparison_metrics(
+    reference: torch.Tensor,
+    candidate: torch.Tensor,
+    *,
+    rtol: float,
+    atol: float,
+    chunk_size: int = 4096,
+) -> tuple[bool, float]:
+    """Return the exact official pass result and a continuous error ratio."""
+
     if reference.shape != candidate.shape:
-        return math.inf
+        return False, math.inf
     flat_reference = reference.detach().reshape(-1)
     flat_candidate = candidate.detach().reshape(-1)
+    passed = True
     maximum = 0.0
-    epsilon = torch.finfo(torch.float32).eps
     for start in range(0, flat_reference.numel(), chunk_size):
         ref = flat_reference[start : start + chunk_size].float()
         value = flat_candidate[start : start + chunk_size].float()
         finite = torch.isfinite(ref) & torch.isfinite(value)
         if not bool(finite.all().item()):
-            return math.inf
+            return False, math.inf
         error = (value - ref).abs()
-        absolute_ratio = error / max(float(atol), epsilon)
-        relative_ratio = error / (float(rtol) * ref.abs() + epsilon)
+        absolute_allowance = torch.full_like(error, float(atol))
+        relative_allowance = float(rtol) * ref.abs()
+        passed = passed and bool(
+            ((error <= absolute_allowance) | (error <= relative_allowance)).all().item()
+        )
+
+        infinite = torch.full_like(error, math.inf)
+        zero_error_ratio = torch.where(error == 0, torch.zeros_like(error), infinite)
+        absolute_ratio = torch.where(
+            absolute_allowance > 0,
+            error / absolute_allowance,
+            zero_error_ratio,
+        )
+        relative_ratio = torch.where(
+            relative_allowance > 0,
+            error / relative_allowance,
+            zero_error_ratio,
+        )
         local = torch.minimum(absolute_ratio, relative_ratio).max().item()
         maximum = max(maximum, float(local))
-    return maximum
+    return passed, maximum
 
 
 def _execution_signatures(
@@ -192,8 +227,9 @@ def _correctness(
     variant: RunVariant,
     protocol: MeasurementProtocol,
     device: torch.device,
-) -> float:
+) -> tuple[bool, float]:
     dtype = official.resolve_dtype(variant.dtype)
+    passed = True
     maximum = 0.0
     with torch.inference_mode():
         for trial in range(protocol.accuracy_trials):
@@ -207,16 +243,15 @@ def _correctness(
             )
             reference_output = reference(x, mask)
             candidate_output = candidate(x, mask)
-            maximum = max(
-                maximum,
-                _max_tolerance_ratio(
-                    reference_output,
-                    candidate_output,
-                    rtol=protocol.rtol,
-                    atol=protocol.atol,
-                ),
+            trial_passed, trial_ratio = _comparison_metrics(
+                reference_output,
+                candidate_output,
+                rtol=protocol.rtol,
+                atol=protocol.atol,
             )
-    return maximum
+            passed = passed and trial_passed
+            maximum = max(maximum, trial_ratio)
+    return passed, maximum
 
 
 def _timings(
@@ -400,7 +435,7 @@ def _measure_streamed(
     reference.configure_execution(config=reference_config)
     candidate_b1.configure_execution(config=inner)
     model_config_b1 = _official_config(shape, batch_size=1)
-    ratio = _correctness(
+    passed, ratio = _correctness(
         reference,
         candidate_b1,
         model_config_b1,
@@ -448,7 +483,7 @@ def _measure_streamed(
     return BenchmarkResult(
         case_id=shape.case_id,
         config=config,
-        passed=ratio <= 1.0,
+        passed=passed,
         max_tolerance_ratio=ratio,
         optimized=TimingStats.from_samples(optimized_samples),
         peak_memory_bytes=peak,
@@ -478,7 +513,7 @@ def _measure_paired_resident(
     incumbent.configure_execution(config=incumbent_config)
     challenger.configure_execution(config=challenger_config)
 
-    incumbent_ratio = _correctness(
+    incumbent_passed, incumbent_ratio = _correctness(
         baseline,
         incumbent,
         model_config,
@@ -486,7 +521,7 @@ def _measure_paired_resident(
         protocol,
         device,
     )
-    challenger_ratio = _correctness(
+    challenger_passed, challenger_ratio = _correctness(
         baseline,
         challenger,
         model_config,
@@ -523,7 +558,7 @@ def _measure_paired_resident(
         incumbent=BenchmarkResult(
             case_id=shape.case_id,
             config=incumbent_config,
-            passed=incumbent_ratio <= 1.0,
+            passed=incumbent_passed,
             max_tolerance_ratio=incumbent_ratio,
             optimized=TimingStats.from_samples(incumbent_samples),
             peak_memory_bytes=incumbent_peak,
@@ -533,7 +568,7 @@ def _measure_paired_resident(
         challenger=BenchmarkResult(
             case_id=shape.case_id,
             config=challenger_config,
-            passed=challenger_ratio <= 1.0,
+            passed=challenger_passed,
             max_tolerance_ratio=challenger_ratio,
             optimized=TimingStats.from_samples(challenger_samples),
             peak_memory_bytes=challenger_peak,
@@ -581,7 +616,7 @@ def _measure_paired_streamed(
     reference.configure_execution(config=reference_config)
     incumbent_b1.configure_execution(config=incumbent_inner)
     challenger_b1.configure_execution(config=challenger_inner)
-    incumbent_ratio = _correctness(
+    incumbent_passed, incumbent_ratio = _correctness(
         reference,
         incumbent_b1,
         model_config_b1,
@@ -589,7 +624,7 @@ def _measure_paired_streamed(
         protocol,
         device,
     )
-    challenger_ratio = _correctness(
+    challenger_passed, challenger_ratio = _correctness(
         reference,
         challenger_b1,
         model_config_b1,
@@ -693,7 +728,7 @@ def _measure_paired_streamed(
         incumbent=BenchmarkResult(
             case_id=shape.case_id,
             config=incumbent_config,
-            passed=incumbent_ratio <= 1.0,
+            passed=incumbent_passed,
             max_tolerance_ratio=incumbent_ratio,
             optimized=TimingStats.from_samples(incumbent_samples),
             peak_memory_bytes=incumbent_peak,
@@ -709,7 +744,7 @@ def _measure_paired_streamed(
         challenger=BenchmarkResult(
             case_id=shape.case_id,
             config=challenger_config,
-            passed=challenger_ratio <= 1.0,
+            passed=challenger_passed,
             max_tolerance_ratio=challenger_ratio,
             optimized=TimingStats.from_samples(challenger_samples),
             peak_memory_bytes=challenger_peak,
@@ -793,7 +828,7 @@ def measure_config(
     )
     assert baseline is not None
     model_config = _official_config(shape)
-    ratio = _correctness(
+    passed, ratio = _correctness(
         baseline,
         solution,
         model_config,
@@ -811,22 +846,24 @@ def measure_config(
         variant.input_scale,
     )
     expected, actual = _execution_signatures(solution, x, mask)
-    optimized_samples = _timings(solution, x, mask, protocol, resolved_device)
     baseline_stats = None
     if include_baseline:
-        baseline_samples = _timings(
+        baseline_samples, optimized_samples, _ = _interleaved_timings(
             baseline,
-            x,
-            mask,
+            (x, mask),
+            solution,
+            (x, mask),
             protocol,
             resolved_device,
         )
         baseline_stats = TimingStats.from_samples(baseline_samples)
+    else:
+        optimized_samples = _timings(solution, x, mask, protocol, resolved_device)
     peak = _peak_memory(solution, x, mask, resolved_device)
     return BenchmarkResult(
         case_id=shape.case_id,
         config=config,
-        passed=ratio <= 1.0,
+        passed=passed,
         max_tolerance_ratio=ratio,
         optimized=TimingStats.from_samples(optimized_samples),
         peak_memory_bytes=peak,

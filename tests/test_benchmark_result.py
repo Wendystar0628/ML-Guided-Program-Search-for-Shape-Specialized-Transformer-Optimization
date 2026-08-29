@@ -1,4 +1,12 @@
+import math
+
+import pytest
+import torch
+from torch import nn
+
+import benchmarking.measure as measure_module
 from benchmarking.measure import BenchmarkResult, TimingStats
+from benchmarking.protocols import MeasurementProtocol, RunVariant, TransformerShape
 from solution.config import portable_config
 
 
@@ -29,3 +37,104 @@ def test_benchmark_result_serializes_only_the_compact_public_fields() -> None:
         "peak_memory_bytes": 1024,
         "execution_matches": True,
     }
+
+
+def test_comparator_rejects_nonzero_error_when_both_tolerances_are_zero() -> None:
+    reference = torch.zeros(1)
+    candidate = torch.tensor([torch.finfo(torch.float32).eps / 2])
+
+    passed, ratio = measure_module._comparison_metrics(
+        reference,
+        candidate,
+        rtol=0.0,
+        atol=0.0,
+    )
+
+    assert not passed
+    assert math.isinf(ratio)
+
+
+def test_comparator_accepts_exact_zero_with_zero_tolerances() -> None:
+    passed, ratio = measure_module._comparison_metrics(
+        torch.zeros(2),
+        torch.zeros(2),
+        rtol=0.0,
+        atol=0.0,
+    )
+
+    assert passed
+    assert ratio == 0.0
+
+
+def test_measure_config_interleaves_baseline_and_solution_timings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = nn.Identity()
+    solution = nn.Identity()
+    x = torch.zeros(1)
+    mask = torch.ones(1, dtype=torch.bool)
+    calls: list[tuple[nn.Module, nn.Module]] = []
+
+    monkeypatch.setattr(
+        measure_module,
+        "_build_models",
+        lambda *args, **kwargs: (baseline, solution),
+    )
+    monkeypatch.setattr(
+        measure_module,
+        "_correctness",
+        lambda *args, **kwargs: (True, 0.25),
+    )
+    monkeypatch.setattr(
+        measure_module.official,
+        "generate_random_case",
+        lambda *args, **kwargs: (x, mask),
+    )
+    monkeypatch.setattr(
+        measure_module,
+        "_execution_signatures",
+        lambda *args: ({"path": "solution"}, {"path": "solution"}),
+    )
+
+    def interleaved(
+        incumbent: nn.Module,
+        _incumbent_input: tuple[torch.Tensor, torch.Tensor],
+        challenger: nn.Module,
+        _challenger_input: tuple[torch.Tensor, torch.Tensor],
+        *_args: object,
+    ) -> tuple[list[float], list[float], tuple[float, ...]]:
+        calls.append((incumbent, challenger))
+        return [4.0, 6.0], [2.0, 3.0], (2.0,)
+
+    monkeypatch.setattr(measure_module, "_interleaved_timings", interleaved)
+    monkeypatch.setattr(measure_module, "_peak_memory", lambda *args: 0)
+    monkeypatch.setattr(
+        measure_module,
+        "_timings",
+        lambda *args: pytest.fail("standalone timing must not be used"),
+    )
+
+    result = measure_module.measure_config(
+        TransformerShape(
+            case_id="tiny",
+            batch_size=1,
+            seq_len=2,
+            d_model=4,
+            num_heads=1,
+            ffn_dim=8,
+            num_layers=1,
+            causal=True,
+        ),
+        portable_config(),
+        RunVariant(),
+        MeasurementProtocol(accuracy_trials=1, warmup=0, repeats=1, rounds=2),
+        "cpu",
+        include_baseline=True,
+    )
+
+    assert calls == [(baseline, solution)]
+    assert result.baseline is not None
+    assert result.baseline.median_ms == 5.0
+    assert result.baseline.p90_ms == pytest.approx(5.8)
+    assert result.optimized.median_ms == 2.5
+    assert result.optimized.p90_ms == pytest.approx(2.9)

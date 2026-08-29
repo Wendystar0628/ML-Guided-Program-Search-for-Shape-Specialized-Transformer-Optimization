@@ -19,28 +19,24 @@ from .config import (
     ResidualNormBackend,
     RuntimeBackend,
 )
-from .operators import (
+from .kernels.attention import (
     triton_dh8_causal_attention_available,
-    triton_exact_gelu_available,
-    triton_initial_fp16_layer_norm_available,
-    triton_mixed_residual_layer_norm_available,
-    triton_residual_layer_norm_available,
     triton_shape13_causal_attention_available,
-)
-from .operators.attention.triton_streaming_dh64 import (
     triton_streaming_dh64_causal_attention_available,
 )
-from .operators.ffn.triton_linear_exact_gelu import (
+from .kernels.ffn import (
+    triton_exact_gelu_available,
     triton_linear_exact_gelu_available,
 )
-from .operators.fusion.triton_d32_fusion import (
+from .kernels.norm import (
     triton_d32_residual_layer_norm_available,
+    triton_initial_fp16_layer_norm_available,
+    triton_masked_layer_norm_available,
+    triton_mixed_residual_layer_norm_available,
+    triton_residual_layer_norm_available,
 )
-from .operators.norm.triton_masked import triton_masked_layer_norm_available
-from .operators.projection.triton_attention_output import (
+from .kernels.projection import (
     triton_attention_output_projection_available,
-)
-from .operators.projection.triton_qkv_layout import (
     triton_qkv_native_bhsd_available,
 )
 from .plan import (

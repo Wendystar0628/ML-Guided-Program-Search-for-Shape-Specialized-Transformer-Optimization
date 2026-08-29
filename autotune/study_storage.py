@@ -65,7 +65,7 @@ class SearchStorage:
         incumbent_id: str | None,
         challenger_id: str,
     ) -> None:
-        """Persist one completed Formal decision as a branch-local tabu entry."""
+        """Persist one completed Formal decision for duplicate suppression."""
 
         with self._connect() as connection:
             connection.execute(

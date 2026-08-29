@@ -297,6 +297,34 @@ def test_structure_generation_prunes_only_statically_impossible_combinations() -
     )
 
 
+def test_streamed_shape14_search_compares_library_and_custom_attention() -> None:
+    context = SearchContext(
+        execution_context=ExecutionContext(
+            batch_size=32,
+            seq_len=100000,
+            d_model=1024,
+            num_heads=16,
+            causal=True,
+            device=torch.device("cuda"),
+            dtype=torch.float32,
+            training=False,
+            grad_enabled=False,
+            input_contiguous=True,
+            has_valid_token_mask=False,
+            mask_compatible=True,
+            ffn_dim=1024,
+            num_layers=2,
+        ),
+        scope="streamed",
+    )
+
+    attentions = {item.attention for item in space_module._structure_specs(context)}
+
+    assert AttentionBackend.REFERENCE_STREAMING in attentions
+    assert AttentionBackend.CAUSAL_SDPA in attentions
+    assert AttentionBackend.TRITON_STREAMING_DH64 in attentions
+
+
 def test_batch_tiled_d32_norm_domain_is_valid_for_the_inner_batch_template() -> None:
     context = SearchContext(
         execution_context=_official07_context(),

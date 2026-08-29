@@ -45,26 +45,10 @@ def _branch_seed(seed: int, identity: StudyIdentity) -> int:
 
 def startup_trial_count(
     branch: BranchSpace,
-    *,
-    branch_budget: int,
-    scope: EvaluationScope,
 ) -> int:
-    """Choose a small absolute TPE startup threshold for one branch."""
+    """Use a stable absolute startup threshold for branch-local TPE."""
 
-    if (
-        isinstance(branch_budget, bool)
-        or not isinstance(branch_budget, int)
-        or branch_budget <= 0
-    ):
-        raise ValueError("branch_budget must be a positive integer")
-    normalized_scope = EvaluationScope(scope)
-    if normalized_scope is EvaluationScope.STREAMED:
-        ceiling = 4
-    elif branch.cardinality >= 1_024:
-        ceiling = 6
-    else:
-        ceiling = 4
-    return min(branch.cardinality, branch_budget, ceiling)
+    return min(10, branch.cardinality)
 
 
 def _optional_mapping(value: object, *, field: str) -> Mapping[str, Any] | None:
@@ -257,7 +241,7 @@ class OptunaBackend:
         *,
         source: str,
     ) -> None:
-        """Insert an explicitly generated local-neighbour observation."""
+        """Insert an explicitly generated Level-1 observation."""
 
         if measurement.fidelity is not Fidelity.SCREEN:
             raise ValueError("only Level-1 SCREEN measurements belong in TPE")

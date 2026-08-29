@@ -99,7 +99,9 @@ def _driver_version(device_index: int, device_uuid: object | None) -> str:
     return versions[0]
 
 
-def _triton_version() -> str:
+def installed_triton_version() -> str:
+    """Return the installed Triton distribution version on any supported OS."""
+
     for distribution in ("triton", "triton-windows"):
         try:
             return importlib.metadata.version(distribution)
@@ -157,7 +159,7 @@ class EnvironmentFingerprint:
             torch_version=str(torch.__version__),
             cuda_runtime_version=str(cuda_runtime),
             cudnn_version="not-available" if cudnn is None else str(cudnn),
-            triton_version=_triton_version(),
+            triton_version=installed_triton_version(),
             matmul_precision=str(torch.get_float32_matmul_precision()),
             allow_tf32=bool(torch.backends.cuda.matmul.allow_tf32),
             cudnn_allow_tf32=getattr(torch.backends.cudnn, "allow_tf32", None),
@@ -229,6 +231,7 @@ class EnvironmentFingerprint:
 
 __all__ = [
     "EnvironmentFingerprint",
+    "installed_triton_version",
     "official_definitions_digest",
     "solution_implementation_digest",
     "stable_digest",

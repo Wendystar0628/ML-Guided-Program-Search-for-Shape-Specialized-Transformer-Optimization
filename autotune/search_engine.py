@@ -42,7 +42,6 @@ class SearchBudget:
     survivor_count: int = 3
     promote_fraction: float = 0.2
     enhanced_top_k: int = 8
-    local_top_k: int = 3
 
     def __post_init__(self) -> None:
         if (
@@ -62,7 +61,6 @@ class SearchBudget:
             "min_trials_per_branch",
             "survivor_count",
             "enhanced_top_k",
-            "local_top_k",
             "max_structure_branches",
         ):
             value = getattr(self, name)
@@ -182,7 +180,9 @@ class SearchResult:
     def made_search_progress(self) -> bool:
         """Whether this run added a new Screen point or Formal decision."""
 
-        return self.new_level1_trials > 0 or self.formal_challenger_measurement is not None
+        return (
+            self.new_level1_trials > 0 or self.formal_challenger_measurement is not None
+        )
 
 
 @dataclass(slots=True)
@@ -302,23 +302,15 @@ class SearchEngine:
         )
 
     def run(self, request: SearchRequest) -> SearchResult:
-        """Execute screening, TPE, local refinement, and promotion in order."""
+        """Execute screening, TPE, and multi-fidelity promotion in order."""
 
         plan = self.plan(request)
         backend = OptunaBackend(self.storage, seed=request.seed)
-        branch_budgets = {
-            branch.branch_id: self._expected_branch_trial_budget(plan, branch)
-            for branch in plan.search_space.branches
-        }
         run_state = _RunState(
             studies={
                 branch.branch_id: backend.create_study(
                     plan.identity_for(branch.branch_id),
-                    n_startup_trials=startup_trial_count(
-                        branch,
-                        branch_budget=branch_budgets[branch.branch_id],
-                        scope=request.scope,
-                    ),
+                    n_startup_trials=startup_trial_count(branch),
                 )
                 for branch in plan.search_space.branches
             }
@@ -326,7 +318,6 @@ class SearchEngine:
         start = time.monotonic()
         budget = request.budget
         screen_deadline = start + float(budget.max_seconds) * 0.20
-        tpe_deadline = start + float(budget.max_seconds) * 0.55
         level1_deadline = start + float(budget.max_seconds) * 0.65
         enhanced_deadline = start + float(budget.max_seconds) * 0.82
         final_deadline = start + float(budget.max_seconds)
@@ -351,13 +342,6 @@ class SearchEngine:
             else:
                 survivors = self._select_survivors(plan, run_state, backend)
                 self._run_tpe(
-                    plan,
-                    run_state,
-                    backend,
-                    survivors,
-                    deadline=tpe_deadline,
-                )
-                self._run_local_neighbourhood(
                     plan,
                     run_state,
                     backend,
@@ -464,37 +448,16 @@ class SearchEngine:
         seeds.extend(("warm_start", config) for config in request.warm_starts)
         for branch in plan.search_space.branches:
             study = state.studies[branch.branch_id]
-            for index, config in enumerate(branch.representative_configs(limit=3)):
-                backend.enqueue(
-                    study,
-                    branch,
-                    config,
-                    source=f"structure_representative_{index}",
-                )
-            # Representatives define the fair minimum coverage. Incumbent and
-            # cross-shape seeds follow them and guide branch-local TPE without
-            # displacing structural screening.
+            backend.enqueue(
+                study,
+                branch,
+                branch.default_config(),
+                source="structure_default",
+            )
+            # The default establishes a reproducible branch baseline. Optuna's
+            # startup sampler chooses the remaining screening points.
             for source, config in seeds:
                 backend.enqueue(study, branch, config, source=source)
-
-    @staticmethod
-    def _expected_branch_trial_budget(
-        plan: SearchPlan,
-        branch: BranchSpace,
-    ) -> int:
-        budget = plan.request.budget
-        screening_target = _screening_trial_target(branch)
-        if budget.max_trials is None:
-            expected = max(screening_target, budget.min_trials_per_branch)
-        else:
-            screening_total = _screening_trial_total(plan.search_space.branches)
-            remaining = max(0, budget.max_trials - screening_total)
-            survivor_slots = max(
-                1,
-                min(budget.survivor_count, len(plan.search_space.branches)),
-            )
-            expected = screening_target + remaining // survivor_slots
-        return min(branch.cardinality, max(1, expected))
 
     def _screen_structures(
         self,
@@ -614,47 +577,12 @@ class SearchEngine:
                 state.studies[branch.branch_id],
                 branch,
             )
-            if (
-                len(completed_ids) >= branch.cardinality or not progressed
-            ):
+            if len(completed_ids) >= branch.cardinality or not progressed:
                 active.pop(index)
                 if active:
                     cursor %= len(active)
             else:
                 cursor += 1
-
-    def _run_local_neighbourhood(
-        self,
-        plan: SearchPlan,
-        state: _RunState,
-        backend: OptunaBackend,
-        survivors: tuple[BranchSpace, ...],
-        *,
-        deadline: float,
-    ) -> None:
-        ranked = self._ranked_level1(state, backend, survivors)
-        for completed in ranked[: plan.request.budget.local_top_k]:
-            branch = plan.search_space.branch(completed.branch_id)
-            study = state.studies[branch.branch_id]
-            for config in branch.neighbours(completed.config):
-                if not state.budget.can_start(
-                    deadline=deadline,
-                    max_trials=plan.request.budget.max_trials,
-                ):
-                    break
-                if backend.measurement_for(study, branch, config.config_id) is not None:
-                    continue
-                try:
-                    measurement = self._measure_screen(plan.request, config)
-                    backend.record_completed(
-                        study,
-                        branch,
-                        config,
-                        measurement,
-                        source="local_neighbour",
-                    )
-                finally:
-                    state.budget.new_level1_trials += 1
 
     def _ask_and_measure(
         self,
@@ -689,6 +617,8 @@ class SearchEngine:
                     source="uniform_unseen_fallback",
                 )
                 return True
+            except Exception:  # noqa: BLE001 - stop this branch on benchmark failure
+                return False
             finally:
                 state.budget.new_level1_trials += 1
 
@@ -790,9 +720,7 @@ class SearchEngine:
                 configs.append(best.config)
         configs.extend(completed.config for completed in ranked)
         incumbent_id = (
-            None
-            if plan.request.incumbent is None
-            else plan.request.incumbent.config_id
+            None if plan.request.incumbent is None else plan.request.incumbent.config_id
         )
         attempted = self.storage.attempted_challenger_ids(
             case_id=plan.request.case_id,

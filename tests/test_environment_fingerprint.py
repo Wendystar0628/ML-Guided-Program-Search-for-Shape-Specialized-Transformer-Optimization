@@ -135,7 +135,7 @@ def test_detect_collects_complete_runtime_facts(
     )
     monkeypatch.setattr(environment, "torch", fake_torch)
     monkeypatch.setattr(environment, "_driver_version", lambda index, uuid: "610.88")
-    monkeypatch.setattr(environment, "_triton_version", lambda: "3.7.1")
+    monkeypatch.setattr(environment, "installed_triton_version", lambda: "3.7.1")
 
     fingerprint = EnvironmentFingerprint.detect("cuda:0", project_root=tmp_path)
 
@@ -153,6 +153,20 @@ def test_detect_collects_complete_runtime_facts(
         "official_definitions_digest": official_definitions_digest(tmp_path),
         "solution_implementation_digest": solution_implementation_digest(tmp_path),
     }
+
+
+def test_triton_version_supports_the_windows_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_version(distribution: str) -> str:
+        if distribution == "triton":
+            raise environment.importlib.metadata.PackageNotFoundError
+        assert distribution == "triton-windows"
+        return "3.7.1.post27"
+
+    monkeypatch.setattr(environment.importlib.metadata, "version", fake_version)
+
+    assert environment.installed_triton_version() == "3.7.1.post27"
 
 
 def test_driver_detection_fails_instead_of_using_an_empty_value(
