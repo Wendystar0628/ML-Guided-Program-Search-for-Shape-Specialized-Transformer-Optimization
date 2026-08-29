@@ -39,6 +39,7 @@ def _hardware() -> EnvironmentFingerprint:
         triton_version="3.7.0",
         matmul_precision="highest",
         allow_tf32=False,
+        allow_fp16_reduced_precision_reduction=False,
         cudnn_allow_tf32=False,
         official_definitions_digest="official-test",
         solution_implementation_digest="solution-test",

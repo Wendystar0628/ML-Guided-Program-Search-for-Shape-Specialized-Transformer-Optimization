@@ -237,6 +237,12 @@ def _infer_precision_plan(
         (False, False, False, False): PrecisionPlan.INPUT_DTYPE,
         (True, False, False, False): PrecisionPlan.FP16_QKV_ATTENTION,
         (True, True, False, False): PrecisionPlan.FP16_ATTENTION_BRANCH,
+        (False, False, True, False): (
+            PrecisionPlan.FP16_FFN_INPUT_FP32_GELU
+        ),
+        (True, True, True, False): (
+            PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT
+        ),
         (False, False, True, True): PrecisionPlan.FP16_FFN_BRANCH,
         (False, False, False, True): PrecisionPlan.FP16_FFN_OUTPUT,
         (True, True, True, True): PrecisionPlan.FP16_CORE,
@@ -387,22 +393,24 @@ class _SelfAttention(nn.Module):
                 self.num_heads,
                 contiguous=(plan.qkv_materialization is QKVMaterialization.CONTIGUOUS),
             )
-            packed_storage = packed_qkv.untyped_storage().data_ptr()
-            shares_packed = all(
-                tensor.untyped_storage().data_ptr() == packed_storage
-                for tensor in (query, key, projected_value)
-            )
-            materialization = (
-                QKVMaterialization.VIEW
-                if shares_packed
-                else QKVMaterialization.CONTIGUOUS
-            )
-            if materialization is not plan.qkv_materialization:
-                raise RuntimeError("QKV materialization does not match the plan")
-            if materialization is QKVMaterialization.CONTIGUOUS and not all(
-                tensor.is_contiguous() for tensor in (query, key, projected_value)
-            ):
-                raise RuntimeError("materialized QKV tensors must be contiguous")
+            materialization = plan.qkv_materialization
+            if observation is not None:
+                packed_storage = packed_qkv.untyped_storage().data_ptr()
+                shares_packed = all(
+                    tensor.untyped_storage().data_ptr() == packed_storage
+                    for tensor in (query, key, projected_value)
+                )
+                actual_materialization = (
+                    QKVMaterialization.VIEW
+                    if shares_packed
+                    else QKVMaterialization.CONTIGUOUS
+                )
+                if actual_materialization is not materialization:
+                    raise RuntimeError("QKV materialization does not match the plan")
+                if materialization is QKVMaterialization.CONTIGUOUS and not all(
+                    tensor.is_contiguous() for tensor in (query, key, projected_value)
+                ):
+                    raise RuntimeError("materialized QKV tensors must be contiguous")
             qkv_compute_dtype = str(packed_qkv.dtype).removeprefix("torch.")
         if observation is not None:
             observation.qkv_materializations.append(materialization.value)
@@ -690,12 +698,17 @@ class _TransformerBlock(nn.Module):
     ) -> torch.Tensor:
         """Compute the FFN branch from an already normalized value."""
 
+        def exact_gelu(projected_value: torch.Tensor) -> torch.Tensor:
+            if plan.ffn_activation_output_dtype == "float32":
+                projected_value = projected_value.float()
+            return F.gelu(projected_value, approximate="none")
+
         def exact_ffn(value: torch.Tensor) -> torch.Tensor:
             projected_value = self.ffn_in.forward_backend(
                 value,
                 plan.ffn_input_projection_backend,
             )
-            hidden_value = F.gelu(projected_value, approximate="none")
+            hidden_value = exact_gelu(projected_value)
             return self.ffn_out.forward_backend(
                 hidden_value,
                 plan.ffn_output_projection_backend,
@@ -771,7 +784,7 @@ class _TransformerBlock(nn.Module):
                     planned_backend=plan.ffn_backend.value,
                 )
             else:
-                hidden = F.gelu(projected, approximate="none")
+                hidden = exact_gelu(projected)
             observed_update = self.ffn_out.forward_backend(
                 hidden,
                 plan.ffn_output_projection_backend,
@@ -927,6 +940,9 @@ class UserOptimizedTransformer(nn.Module):
         )
         matmul_precision = torch.get_float32_matmul_precision()
         allow_tf32 = bool(torch.backends.cuda.matmul.allow_tf32)
+        allow_fp16_reduced_precision_reduction = bool(
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+        )
         cudnn_allow_tf32 = bool(torch.backends.cudnn.allow_tf32)
         signature = (
             device.type,
@@ -935,6 +951,7 @@ class UserOptimizedTransformer(nn.Module):
             shape,
             matmul_precision,
             allow_tf32,
+            allow_fp16_reduced_precision_reduction,
             cudnn_allow_tf32,
         )
         if signature == self._deployment_signature:

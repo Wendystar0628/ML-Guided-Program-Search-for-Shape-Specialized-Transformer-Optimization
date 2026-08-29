@@ -34,6 +34,7 @@ def _environment(**changes: object) -> EnvironmentFingerprint:
         triton_version="3.7.0",
         matmul_precision="highest",
         allow_tf32=False,
+        allow_fp16_reduced_precision_reduction=False,
         cudnn_allow_tf32=False,
         official_definitions_digest="official-a",
         solution_implementation_digest="solution-a",
@@ -87,6 +88,7 @@ def test_identity_is_stable_and_binds_every_environment_field() -> None:
         "triton_version": "3.8.0",
         "matmul_precision": "high",
         "allow_tf32": True,
+        "allow_fp16_reduced_precision_reduction": True,
         "cudnn_allow_tf32": True,
         "official_definitions_digest": "official-b",
         "solution_implementation_digest": "solution-b",
@@ -129,7 +131,12 @@ def test_detect_collects_complete_runtime_facts(
         ),
         backends=SimpleNamespace(
             cudnn=SimpleNamespace(version=lambda: 92000, allow_tf32=False),
-            cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=True)),
+            cuda=SimpleNamespace(
+                matmul=SimpleNamespace(
+                    allow_tf32=True,
+                    allow_fp16_reduced_precision_reduction=False,
+                )
+            ),
         ),
         get_float32_matmul_precision=lambda: "high",
     )
@@ -149,10 +156,32 @@ def test_detect_collects_complete_runtime_facts(
         "triton_version": "3.7.1",
         "matmul_precision": "high",
         "allow_tf32": True,
+        "allow_fp16_reduced_precision_reduction": False,
         "cudnn_allow_tf32": False,
         "official_definitions_digest": official_definitions_digest(tmp_path),
         "solution_implementation_digest": solution_implementation_digest(tmp_path),
     }
+
+
+def test_process_math_mode_disables_reduced_precision_fp16_reductions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_torch = SimpleNamespace(
+        backends=SimpleNamespace(
+            cuda=SimpleNamespace(
+                matmul=SimpleNamespace(
+                    allow_fp16_reduced_precision_reduction=True,
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(environment, "torch", fake_torch)
+
+    environment.configure_process_math_mode()
+
+    assert not (
+        fake_torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+    )
 
 
 def test_triton_version_supports_the_windows_distribution(

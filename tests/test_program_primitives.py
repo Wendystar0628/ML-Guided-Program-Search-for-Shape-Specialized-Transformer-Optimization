@@ -15,8 +15,10 @@ from autotune.search_space import (
     SearchContext,
     StructureSpec,
 )
-from official.torch_transformer_benchmark import TransformerConfig
+from official.torch_transformer_benchmark import TransformerConfig, compare_outputs
 from solution.config import (
+    COMPILED_FORWARD_MODES,
+    DEFAULT_COMPILED_FORWARD_MODE,
     AttentionBackend,
     AttentionOutputBridge,
     ConfigSpec,
@@ -48,6 +50,16 @@ _FP16_FIELDS = {
     PrecisionPlan.FP16_ATTENTION_BRANCH: frozenset(
         {"qkv_projection", "attention_output_projection"}
     ),
+    PrecisionPlan.FP16_FFN_INPUT_FP32_GELU: frozenset(
+        {"ffn_input_projection"}
+    ),
+    PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT: frozenset(
+        {
+            "qkv_projection",
+            "attention_output_projection",
+            "ffn_input_projection",
+        }
+    ),
     PrecisionPlan.FP16_FFN_BRANCH: frozenset(
         {"ffn_input_projection", "ffn_output_projection"}
     ),
@@ -59,6 +71,21 @@ _FP16_FIELDS = {
 def test_structure_cover_limit_has_one_shared_default() -> None:
     assert SearchBudget(max_seconds=1.0).max_structure_branches == 36
     assert DEFAULT_MAX_STRUCTURE_BRANCHES == 36
+
+
+def test_compiled_forward_search_exposes_all_supported_modes() -> None:
+    assert DEFAULT_COMPILED_FORWARD_MODE == "max-autotune"
+    assert COMPILED_FORWARD_MODES == {
+        "max-autotune",
+        "max-autotune-no-cudagraphs",
+        "reduce-overhead",
+    }
+    for mode in COMPILED_FORWARD_MODES:
+        schedule = ScheduleConfig(
+            runtime=RuntimeBackend.COMPILED_FORWARD,
+            compile_mode=mode,
+        )
+        assert schedule.compile_mode == mode
 
 
 def _program(
@@ -140,6 +167,14 @@ def test_precision_plans_bind_exactly_their_projection_roles(
         (
             PrecisionPlan.FP16_ATTENTION_BRANCH,
             "attention_output_projection",
+        ),
+        (
+            PrecisionPlan.FP16_FFN_INPUT_FP32_GELU,
+            "ffn_input_projection",
+        ),
+        (
+            PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT,
+            "ffn_input_projection",
         ),
         (PrecisionPlan.FP16_FFN_BRANCH, "ffn_input_projection"),
         (PrecisionPlan.FP16_FFN_OUTPUT, "ffn_output_projection"),
@@ -223,6 +258,23 @@ def test_generated_projection_patterns_cover_every_legal_weight_implementation()
         == "shadow_qkv_projection__attention_output_projection__ffn_input_projection"
         for name, _ in patterns
     )
+
+
+@pytest.mark.parametrize(
+    ("precision_plan", "expected_count"),
+    (
+        (PrecisionPlan.FP16_FFN_INPUT_FP32_GELU, 2),
+        (PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT, 8),
+    ),
+)
+def test_new_precision_plans_generate_every_projection_implementation(
+    precision_plan: PrecisionPlan,
+    expected_count: int,
+) -> None:
+    patterns = space_module._projection_patterns(precision_plan)
+
+    assert len(patterns) == expected_count
+    assert len({values for _, values in patterns}) == expected_count
 
 
 def test_generated_schedule_domains_cover_supported_shapes_without_padding_small_widths() -> (
@@ -529,6 +581,57 @@ def test_fp16_core_projection_plan_has_a_real_cuda_execution_signature() -> None
     assert actual["attention_output_projection_compute_dtype"] == "float16"
     assert actual["ffn_input_projection_compute_dtype"] == "float16"
     assert actual["ffn_output_projection_compute_dtype"] == "float16"
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+@pytest.mark.parametrize(
+    "precision_plan",
+    (
+        PrecisionPlan.FP16_FFN_INPUT_FP32_GELU,
+        PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT,
+    ),
+)
+def test_new_precision_plans_restore_fp32_before_exact_gelu(
+    precision_plan: PrecisionPlan,
+) -> None:
+    reference = _tiny_model().cuda()
+    candidate = _tiny_model().cuda()
+    candidate.load_state_dict(reference.state_dict())
+    reference.configure_execution(
+        config=ConfigSpec(
+            program=_program(PrecisionPlan.INPUT_DTYPE),
+            schedule=ScheduleConfig(runtime=RuntimeBackend.EAGER),
+        )
+    )
+    candidate.configure_execution(
+        config=ConfigSpec(
+            program=_program(precision_plan),
+            schedule=ScheduleConfig(runtime=RuntimeBackend.EAGER),
+        )
+    )
+    candidate.set_execution_observation(True)
+    value = torch.randn(1, 4, 8, device="cuda")
+    mask = torch.ones(1, 4, dtype=torch.bool, device="cuda")
+
+    with torch.inference_mode():
+        expected_output = reference(value, mask)
+        actual_output = candidate(value, mask)
+
+    accuracy = compare_outputs(
+        expected_output,
+        actual_output,
+        rtol=0.02,
+        atol=0.002,
+    )
+    description = candidate.describe_execution_path()
+    actual = description["observed_execution_signature"]
+    assert accuracy.passed
+    assert actual == description["expected_execution_signature"]
+    assert actual["precision_plan"] == precision_plan.value
+    assert actual["ffn_input_projection_compute_dtype"] == "float16"
+    assert actual["ffn_activation_output_dtype"] == "float32"
+    assert actual["ffn_output_projection_compute_dtype"] == "float32"
 
 
 @pytest.mark.gpu

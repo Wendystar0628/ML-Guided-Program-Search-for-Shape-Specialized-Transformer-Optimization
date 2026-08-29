@@ -37,6 +37,8 @@ class PrecisionPlan(StrEnum):
     INPUT_DTYPE = "input_dtype"
     FP16_QKV_ATTENTION = "fp16_qkv_attention"
     FP16_ATTENTION_BRANCH = "fp16_attention_branch"
+    FP16_FFN_INPUT_FP32_GELU = "fp16_ffn_input_fp32_gelu"
+    FP16_ATTENTION_AND_FFN_INPUT = "fp16_attention_and_ffn_input"
     FP16_FFN_BRANCH = "fp16_ffn_branch"
     FP16_FFN_OUTPUT = "fp16_ffn_output"
     FP16_CORE = "fp16_core"
@@ -113,6 +115,16 @@ _PRECISION_FP16_PROJECTIONS = {
     PrecisionPlan.FP16_ATTENTION_BRANCH: frozenset(
         {"qkv_projection", "attention_output_projection"}
     ),
+    PrecisionPlan.FP16_FFN_INPUT_FP32_GELU: frozenset(
+        {"ffn_input_projection"}
+    ),
+    PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT: frozenset(
+        {
+            "qkv_projection",
+            "attention_output_projection",
+            "ffn_input_projection",
+        }
+    ),
     PrecisionPlan.FP16_FFN_BRANCH: frozenset(
         {"ffn_input_projection", "ffn_output_projection"}
     ),
@@ -121,10 +133,17 @@ _PRECISION_FP16_PROJECTIONS = {
 }
 
 
+def fp16_projection_fields(precision_plan: PrecisionPlan) -> frozenset[str]:
+    """Return the projection roles executed in FP16 for one precision graph."""
+
+    return _PRECISION_FP16_PROJECTIONS[PrecisionPlan(precision_plan)]
+
+
 COMPILED_FORWARD_MODES = frozenset(
     {
         "max-autotune",
         "max-autotune-no-cudagraphs",
+        "reduce-overhead",
     }
 )
 DEFAULT_COMPILED_FORWARD_MODE = "max-autotune"
@@ -815,6 +834,7 @@ __all__ = [
     "TritonGemmParams",
     "TritonNormParams",
     "TritonQKVParams",
+    "fp16_projection_fields",
     "portable_config",
     "portable_streamed_config",
 ]

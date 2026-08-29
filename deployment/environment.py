@@ -116,6 +116,12 @@ def _required_string(value: Any, field: str) -> str:
     return value
 
 
+def configure_process_math_mode() -> None:
+    """Use full-precision accumulation for FP16 matrix reductions."""
+
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+
+
 @dataclass(frozen=True, slots=True)
 class EnvironmentFingerprint:
     """All execution facts that may change a GPU-kernel winner."""
@@ -129,6 +135,7 @@ class EnvironmentFingerprint:
     triton_version: str
     matmul_precision: str
     allow_tf32: bool
+    allow_fp16_reduced_precision_reduction: bool
     cudnn_allow_tf32: bool | None
     official_definitions_digest: str
     solution_implementation_digest: str
@@ -162,6 +169,9 @@ class EnvironmentFingerprint:
             triton_version=installed_triton_version(),
             matmul_precision=str(torch.get_float32_matmul_precision()),
             allow_tf32=bool(torch.backends.cuda.matmul.allow_tf32),
+            allow_fp16_reduced_precision_reduction=bool(
+                torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+            ),
             cudnn_allow_tf32=getattr(torch.backends.cudnn, "allow_tf32", None),
             official_definitions_digest=official_definitions_digest(project_root),
             solution_implementation_digest=solution_implementation_digest(project_root),
@@ -173,6 +183,14 @@ class EnvironmentFingerprint:
         if not isinstance(allow_tf32, bool):
             raise TypeError(
                 "environment fingerprint field 'allow_tf32' must be boolean"
+            )
+        allow_fp16_reduced_precision_reduction = value[
+            "allow_fp16_reduced_precision_reduction"
+        ]
+        if not isinstance(allow_fp16_reduced_precision_reduction, bool):
+            raise TypeError(
+                "environment fingerprint field "
+                "'allow_fp16_reduced_precision_reduction' must be boolean"
             )
         cudnn_allow_tf32 = value["cudnn_allow_tf32"]
         if cudnn_allow_tf32 is not None and not isinstance(cudnn_allow_tf32, bool):
@@ -196,6 +214,9 @@ class EnvironmentFingerprint:
                 value["matmul_precision"], "matmul_precision"
             ),
             allow_tf32=allow_tf32,
+            allow_fp16_reduced_precision_reduction=(
+                allow_fp16_reduced_precision_reduction
+            ),
             cudnn_allow_tf32=cudnn_allow_tf32,
             official_definitions_digest=_required_string(
                 value["official_definitions_digest"], "official_definitions_digest"
@@ -217,6 +238,9 @@ class EnvironmentFingerprint:
             "triton_version": self.triton_version,
             "matmul_precision": self.matmul_precision,
             "allow_tf32": self.allow_tf32,
+            "allow_fp16_reduced_precision_reduction": (
+                self.allow_fp16_reduced_precision_reduction
+            ),
             "cudnn_allow_tf32": self.cudnn_allow_tf32,
             "official_definitions_digest": self.official_definitions_digest,
             "solution_implementation_digest": self.solution_implementation_digest,
@@ -231,6 +255,7 @@ class EnvironmentFingerprint:
 
 __all__ = [
     "EnvironmentFingerprint",
+    "configure_process_math_mode",
     "installed_triton_version",
     "official_definitions_digest",
     "solution_implementation_digest",

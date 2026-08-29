@@ -23,6 +23,7 @@ from benchmarking.protocols import (
     load_streamed_shapes,
     write_json,
 )
+from deployment.environment import configure_process_math_mode
 from deployment.registry import (
     EnvironmentFingerprint,
     ShapeFingerprint,
@@ -402,6 +403,7 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_process_math_mode()
     args = build_parser().parse_args(argv)
     project_root = Path(__file__).resolve().parent
     try:

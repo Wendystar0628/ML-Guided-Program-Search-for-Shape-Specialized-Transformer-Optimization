@@ -77,7 +77,11 @@ def test_requested_compile_mode_is_part_of_the_cache_identity(
     runner = CompiledForward()
     value = torch.zeros(2, 3)
 
-    for compile_mode in ("max-autotune", "max-autotune-no-cudagraphs"):
+    for compile_mode in (
+        "max-autotune",
+        "max-autotune-no-cudagraphs",
+        "reduce-overhead",
+    ):
         runner.run(
             _add_mask,
             value,
@@ -86,10 +90,11 @@ def test_requested_compile_mode_is_part_of_the_cache_identity(
             compile_mode=compile_mode,
         )
 
-    assert runner.cache_size == 2
+    assert runner.cache_size == 3
     assert [call["mode"] for call in compile_calls] == [
         "max-autotune",
         "max-autotune-no-cudagraphs",
+        "reduce-overhead",
     ]
 
 

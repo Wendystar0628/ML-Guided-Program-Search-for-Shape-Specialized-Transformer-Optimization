@@ -29,6 +29,7 @@ from solution.config import (
     TritonGemmParams,
     TritonNormParams,
     TritonQKVParams,
+    fp16_projection_fields,
 )
 
 Scalar = str | int | float | bool
@@ -46,28 +47,16 @@ _PROJECTION_FIELDS = (
     "ffn_input_projection",
     "ffn_output_projection",
 )
-_FP16_PROJECTION_FIELDS = {
-    PrecisionPlan.INPUT_DTYPE: (),
-    PrecisionPlan.FP16_QKV_ATTENTION: ("qkv_projection",),
-    PrecisionPlan.FP16_ATTENTION_BRANCH: (
-        "qkv_projection",
-        "attention_output_projection",
-    ),
-    PrecisionPlan.FP16_FFN_BRANCH: (
-        "ffn_input_projection",
-        "ffn_output_projection",
-    ),
-    PrecisionPlan.FP16_FFN_OUTPUT: ("ffn_output_projection",),
-    PrecisionPlan.FP16_CORE: _PROJECTION_FIELDS,
-}
-
-
 def _projection_patterns(
     precision_plan: PrecisionPlan,
 ) -> tuple[tuple[str, ProjectionTuple], ...]:
     """Return every legal per-role FP16 weight implementation pattern."""
 
-    active_fields = _FP16_PROJECTION_FIELDS[precision_plan]
+    active_fields = tuple(
+        field_name
+        for field_name in _PROJECTION_FIELDS
+        if field_name in fp16_projection_fields(precision_plan)
+    )
     if not active_fields:
         return (
             (
@@ -1140,6 +1129,7 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         InitialNormBackend,
         runtimes,
     ):
+        fp16_fields = fp16_projection_fields(precision_plan)
         if runtime is RuntimeBackend.COMPILED_FORWARD and (
             residual_norm is not ResidualNormBackend.TORCH
             or initial_norm is not InitialNormBackend.TORCH
@@ -1159,28 +1149,15 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             AttentionBackend.TRITON_SHAPE13,
             AttentionBackend.TRITON_DH8,
             AttentionBackend.TRITON_STREAMING_DH64,
-        } and precision_plan not in {
-            PrecisionPlan.FP16_QKV_ATTENTION,
-            PrecisionPlan.FP16_ATTENTION_BRANCH,
-            PrecisionPlan.FP16_CORE,
-        }:
+        } and "qkv_projection" not in fp16_fields:
             continue
         if attention is AttentionBackend.TRITON_STREAMING_DH64 and (
             runtime is not RuntimeBackend.STREAMED
-            or precision_plan
-            not in {
-                PrecisionPlan.FP16_ATTENTION_BRANCH,
-                PrecisionPlan.FP16_CORE,
-            }
+            or "attention_output_projection" not in fp16_fields
         ):
             continue
         if qkv_materialization is QKVMaterialization.TRITON_NATIVE_BHSD and (
-            precision_plan
-            not in {
-                PrecisionPlan.FP16_QKV_ATTENTION,
-                PrecisionPlan.FP16_ATTENTION_BRANCH,
-                PrecisionPlan.FP16_CORE,
-            }
+            "qkv_projection" not in fp16_fields
             or runtime is RuntimeBackend.COMPILED_FORWARD
         ):
             continue
@@ -1202,12 +1179,7 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         ):
             continue
         if ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU and (
-            precision_plan
-            not in {
-                PrecisionPlan.FP16_FFN_OUTPUT,
-                PrecisionPlan.FP16_FFN_BRANCH,
-                PrecisionPlan.FP16_CORE,
-            }
+            "ffn_output_projection" not in fp16_fields
             or runtime is RuntimeBackend.COMPILED_FORWARD
         ):
             continue
@@ -1218,11 +1190,7 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             if (
                 attention_output_bridge is AttentionOutputBridge.TRITON_BHSD_PROJECTION
                 and (
-                    precision_plan
-                    not in {
-                        PrecisionPlan.FP16_ATTENTION_BRANCH,
-                        PrecisionPlan.FP16_CORE,
-                    }
+                    "attention_output_projection" not in fp16_fields
                     or runtime is RuntimeBackend.COMPILED_FORWARD
                 )
             ):

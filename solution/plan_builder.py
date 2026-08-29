@@ -1092,15 +1092,18 @@ class PlanBuilder:
             ffn_output_projection,
             inner_context,
         )
-        ffn_activation_output_dtype = (
-            "float16"
-            if config.program.ffn
-            in {
-                FFNBackend.TRITON_EXACT_GELU,
-                FFNBackend.TRITON_LINEAR_EXACT_GELU,
-            }
-            else ffn_input_projection_dtype
-        )
+        if config.program.precision_plan in {
+            PrecisionPlan.FP16_FFN_INPUT_FP32_GELU,
+            PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT,
+        }:
+            ffn_activation_output_dtype = "float32"
+        elif config.program.ffn in {
+            FFNBackend.TRITON_EXACT_GELU,
+            FFNBackend.TRITON_LINEAR_EXACT_GELU,
+        }:
+            ffn_activation_output_dtype = "float16"
+        else:
+            ffn_activation_output_dtype = ffn_input_projection_dtype
         attention_compute_dtype = (
             "float16"
             if attention_backend
