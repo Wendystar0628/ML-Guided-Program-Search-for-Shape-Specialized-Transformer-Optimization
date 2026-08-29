@@ -7,6 +7,7 @@
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+.benchmarks/
 .mypy_cache/
 .pyright/
 .hypothesis/

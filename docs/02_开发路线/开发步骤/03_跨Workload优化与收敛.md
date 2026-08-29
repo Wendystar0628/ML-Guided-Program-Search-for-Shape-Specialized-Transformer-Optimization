@@ -11,7 +11,7 @@
 5. 将所有通过 Smoke 的候选去重后交给 Formal 复测。
 6. 由 Formal 端到端计时决定赢家，不用 Smoke 延迟提前裁掉正确候选。
 7. 把通过正确性、实际执行和收益门禁的赢家写入当前 GPU Bundle。
-8. 运行完整 1–13 Shape Dispatch Sweep，观察 Paired 结果、几何平均和路由回归。
+8. 通过该 Bundle 的 `run_verified.py` 运行完整 1–13 Shape Dispatch Sweep，发布最终结果并观察 Paired 几何平均和路由回归。
 
 这条链可以跟随当前瓶颈在步骤 2 与步骤 3 之间往返，不需要等待所有 Shape 共同完成才开始有价值的局部优化。
 
@@ -106,8 +106,9 @@ Bundle 以完整事务发布。任一文件生成或校验失败时，保留原 
 2. 运行新设备 Probe。
 3. 用白盒成本模型产生粗候选顺序。
 4. 对 Shape 1–13 运行有界 Smoke 和动态 Formal；Shape 14 使用独立 Batch-streamed Target-only Benchmark，不混入普通设备校准。
-5. 自动创建该设备的 Bundle、发布精确路由并更新该设备的单一最终性能文件。
-6. 以后运行相同栈和 Shape 时直接命中；身份改变时回到 `eager-sdpa` 和新校准。
+5. Formal Calibration 自动创建该设备的 Bundle并发布精确路由。
+6. 使用新 Bundle 的 `run_verified.py` 复测并更新该设备的单一最终性能文件。
+7. 以后运行相同栈和 Shape 时直接命中；身份改变时回到 `eager-sdpa` 和新校准。
 
 已验证 GPU 的路由只能作为相似机制的初始顺序参考，不能成为新 GPU 的胜者或 Speedup 结论。
 
@@ -130,7 +131,7 @@ Bundle 以完整事务发布。任一文件生成或校验失败时，保留原 
 | `runner/tuning.py` | 显式候选的串行测量 |
 | `runner/route_promotion.py` | Formal 晋升门禁 |
 | `runner/routing_contracts.py` | Hardware Identity 与 Route Key |
-| `route_contracts.py` | Route v5、Manifest v4、Bundle 加载与严格校验 |
+| `route_contracts.py` | Route v6、Manifest v5、Bundle 加载与严格校验 |
 | `solution/dispatch.py` | Bundle 加载、精确匹配与 `eager-sdpa` Fallback |
 | `runner/verified_hardware.py` | Bundle 身份检查、运行与发布编排 |
 | `verified_hardware/<device_id>/` | 单设备 Profile、Route、Manifest 与精简证据 |

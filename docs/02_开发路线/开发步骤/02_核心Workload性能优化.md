@@ -34,17 +34,9 @@ Shape 分析计算：
 
 ## 3. 候选与 Policy
 
-| Policy | 执行意图 | 主要适用信号 |
-| --- | --- | --- |
-| `eager-sdpa` | 使用隐式 Causal SDPA 的通用 Eager Execution Plan | 默认运行和未命中路由 |
-| `graph` | 在 `eager-sdpa` 路径外捕获固定 Shape 完整 Forward 并 Replay | 计算量小、Launch/Framework Gap 高 |
-| `graph-fused-norm` | Residual/LayerNorm 融合加完整模型 CUDA Graph Replay | Token 数不超过 2048、`D=FFN=128` 的 FP32 Shape |
-| `mixed-fp16-efficient` | 在 FP32 模型内执行 FP16 Efficient Attention | `S>=1024`、`head_dim=32/64` 的 Causal Shape |
-| `mixed-fp16-cudnn` | 在 FP32 模型内执行 FP16 cuDNN Attention | `S>=1024`、`head_dim=64`、cuDNN SDPA 可用的 Causal Shape |
-| `mixed-fp16-core-efficient` | FP32 外部状态下组合 FP16 Projection、Attention 和 FFN Core | 大 Batch、宽模型或长序列中线性层与 Attention 共同占主导的 Shape |
-| `mixed-fp16-core-efficient-triton-norm` | Mixed-FP16 Core 加自主 Triton Residual/LayerNorm | 严格绑定实测胜出的超大 Batch、`D=128` Shape |
-| `graph-mixed-fp16-efficient` | Mixed Attention 加完整模型 CUDA Graph Replay | `S=128`、`B=64/128`、`D=32/128` 的 FP32 Shape |
-| `graph-mixed-fp16-efficient-compiled-norm` | Mixed Attention、Compiled Norm 与完整 Graph Replay | Launch 与独立算子流量同时显著的小型 Shape |
+候选围绕少量可组合机制构建：通用 SDPA、CUDA Graph、Compiled/Triton Norm、Mixed-FP16 或 FP16 Shadow Core、Batch-tiled Graph、Compiled Forward，以及严格 Shape Guard 的专用 Triton Attention/Norm。具体组合随实测结果演进，因此完整 Policy ID 只在 `policy_registry.py` 维护，完整 Candidate ID、适用范围和执行证据只在 `runner/candidates.py` 维护。
+
+Hardware Router 只根据 Shape、设备能力和瓶颈信号缩小候选范围；它不把理论排序当作赢家。每个组合仍需真实命中预期 Execution Plan、通过官方 Comparator，并在完整 Forward Formal 测量中胜出后才可部署。
 
 `safe` 是官方等价的内部保守路径，只用于接口诊断、内部 Reference 和特化路径 Fallback；它不可部署，也不参与路由晋升。
 
@@ -92,7 +84,7 @@ Candidate Registry 说明 Policy 映射、Shape Applicability、Hardware Capabil
 
 - `official_08` 用于观察宽 QKV/Output/FFN GEMM 与 Exact GELU；
 - 保留 cuBLAS/cuBLASLt 作为 GEMM 吞吐基线，重点比较 Layout、Epilogue、临时张量和局部 Compile；
-- Residual/Norm 局部融合与 GEMM/FFN 分开评估；当前只在 `graph-fused-norm` 的小 Shape 组合路径中使用；
+- Residual/Norm 局部融合与 GEMM/FFN 分开评估；Compiled、Triton Mixed Norm 和 Initial Norm 均由严格 Guard 与完整 Forward 实测决定是否组合；
 - 一般不重写通用 GEMM，除非 Profile 和理论分析同时说明库 Kernel 存在大幅空间。
 
 ### Head Dim 和布局
