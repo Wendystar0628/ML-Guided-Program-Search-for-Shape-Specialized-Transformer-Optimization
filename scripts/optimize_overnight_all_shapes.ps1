@@ -63,8 +63,16 @@ function Invoke-OptimizationPass {
         '--max-iterations', 1,
         '--seed', $PassSeed
     )
-    $outputLines = @(& $python @arguments 2>&1 | Tee-Object -FilePath $passLog)
-    $exitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell wraps native stderr as NativeCommandError. Search
+        # warnings belong in the pass log and must not terminate the night run.
+        $ErrorActionPreference = 'Continue'
+        $outputLines = @(& $python @arguments 2>&1 | Tee-Object -FilePath $passLog)
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $stopLine = $outputLines |
         Where-Object { "$_" -like 'stopped: *' } |
         Select-Object -Last 1
