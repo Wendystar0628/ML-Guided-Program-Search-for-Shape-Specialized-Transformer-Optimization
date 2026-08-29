@@ -1,0 +1,253 @@
+{
+  "schema_version": 3,
+  "artifact_kind": "historical_benchmark_reference",
+  "provenance": {
+    "source_commit": "c12893d6198bfe5d5aaa6b740565bca86ee25cee",
+    "measured_at": "2026-08-29T06:05:10.205868+00:00"
+  },
+  "hardware": {
+    "device": "cuda:0",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "torch": "2.12.1+cu132",
+    "cuda_runtime": "13.2",
+    "gpu": "NVIDIA GeForce RTX 4080",
+    "compute_capability": "8.9",
+    "total_memory_bytes": 17170956288,
+    "driver": "610.88"
+  },
+  "workload": {
+    "set_id": "official_transformer_v1",
+    "variant": {
+      "dtype": "float32",
+      "padding_ratio": 0.0,
+      "input_scale": 1.0
+    }
+  },
+  "summary": {
+    "resident_formal_case_count": 13,
+    "resident_geomean_speedup": 16.997856353878394,
+    "streamed_provisional_case_count": 1,
+    "provisional_case_ids": [
+      "official_14"
+    ]
+  },
+  "measurement_protocols": {
+    "resident_formal": {
+      "preset": "formal",
+      "accuracy_trials": 5,
+      "warmup": 20,
+      "repeats": 100,
+      "rounds": 3
+    },
+    "streamed_provisional": {
+      "preset": "formal",
+      "accuracy_trials": 1,
+      "warmup": 2,
+      "repeats": 1,
+      "rounds": 3
+    }
+  },
+  "result_layout": "runner.benchmark.BenchmarkResult.to_dict",
+  "historical_fields_unavailable": [
+    "max_tolerance_ratio",
+    "execution_matches"
+  ],
+  "results": [
+    {
+      "case_id": "official_01",
+      "config_id": "cfg-cd928c8159e466ab3f3d85f5a54499fe24ea7205a81e55a6a01b33b2cfc4f82b",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.33587199449539185,
+      "p90_ms": 0.34416639804840093,
+      "baseline_median_ms": 4.5024800300598145,
+      "speedup": 13.40534520249079,
+      "peak_memory_bytes": 86573056,
+      "execution_matches": null,
+      "achieved_tflops": 22.403122318384412,
+      "project_estimated_mfu": 0.25947133303310344
+    },
+    {
+      "case_id": "official_02",
+      "config_id": "cfg-8eb0b3641f9035974d98bec5f7586016933afad6aee3b661fd9cdbcbe4b901fb",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.13312000036239624,
+      "p90_ms": 0.15063039958477023,
+      "baseline_median_ms": 4.809760093688965,
+      "speedup": 36.13101022081748,
+      "peak_memory_bytes": 19685376,
+      "execution_matches": null,
+      "achieved_tflops": 0.8831999975956404,
+      "project_estimated_mfu": 0.018780088299974684
+    },
+    {
+      "case_id": "official_03",
+      "config_id": "cfg-8eb0b3641f9035974d98bec5f7586016933afad6aee3b661fd9cdbcbe4b901fb",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.13926400244235992,
+      "p90_ms": 0.14028799533843994,
+      "baseline_median_ms": 4.685935974121094,
+      "speedup": 33.647862275540724,
+      "peak_memory_bytes": 22831104,
+      "execution_matches": null,
+      "achieved_tflops": 3.3769411172470583,
+      "project_estimated_mfu": 0.07180621890666088
+    },
+    {
+      "case_id": "official_04",
+      "config_id": "cfg-8eb0b3641f9035974d98bec5f7586016933afad6aee3b661fd9cdbcbe4b901fb",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.22118400037288666,
+      "p90_ms": 0.22220799326896667,
+      "baseline_median_ms": 4.607919931411743,
+      "speedup": 20.83297129830099,
+      "peak_memory_bytes": 35420160,
+      "execution_matches": null,
+      "achieved_tflops": 8.504888874550783,
+      "project_estimated_mfu": 0.18084529492793608
+    },
+    {
+      "case_id": "official_05",
+      "config_id": "cfg-219b453ad637faa3b82865b98c6de924ddb128bdc328fd9b084c081fc7ec4ea4",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.4689919948577881,
+      "p90_ms": 0.47319039702415466,
+      "baseline_median_ms": 4.357055902481079,
+      "speedup": 9.290256444147333,
+      "peak_memory_bytes": 53002240,
+      "execution_matches": null,
+      "achieved_tflops": 32.088314762309196,
+      "project_estimated_mfu": 0.3716445273938318
+    },
+    {
+      "case_id": "official_06",
+      "config_id": "cfg-4591c514d7b73e39c06ed77a3c68cb12e14f8c747b9a12ae50b01aea5b1439b0",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 38.951934814453125,
+      "p90_ms": 39.37609405517578,
+      "baseline_median_ms": 480.94309997558594,
+      "speedup": 12.34709141578076,
+      "peak_memory_bytes": 1350305792,
+      "execution_matches": null,
+      "achieved_tflops": 30.18375969256732,
+      "project_estimated_mfu": 0.3495861091181191
+    },
+    {
+      "case_id": "official_07",
+      "config_id": "cfg-fe9a27247708b787c2c58aba4d8b6343d5126bba6bbba7e9b6abe38b2dd67622",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.1955839991569519,
+      "p90_ms": 0.19671040624380115,
+      "baseline_median_ms": 4.544880151748657,
+      "speedup": 23.23748451478124,
+      "peak_memory_bytes": 33982208,
+      "execution_matches": null,
+      "achieved_tflops": 3.4419267164068112,
+      "project_estimated_mfu": 0.039864144855177135
+    },
+    {
+      "case_id": "official_08",
+      "config_id": "cfg-43928033d18ab6a1f42b28b3c8ea790f6015bf929ec78fecbeeddbcfc89684d9",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 6.157311916351318,
+      "p90_ms": 6.367641448974609,
+      "baseline_median_ms": 14.104576110839844,
+      "speedup": 2.290703524923566,
+      "peak_memory_bytes": 293972992,
+      "execution_matches": null,
+      "achieved_tflops": 68.3697544628305,
+      "project_estimated_mfu": 0.7918535228037765
+    },
+    {
+      "case_id": "official_09",
+      "config_id": "cfg-cd928c8159e466ab3f3d85f5a54499fe24ea7205a81e55a6a01b33b2cfc4f82b",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.3256320059299469,
+      "p90_ms": 0.33710080087184907,
+      "baseline_median_ms": 4.184544086456299,
+      "speedup": 12.850530691864847,
+      "peak_memory_bytes": 86573056,
+      "execution_matches": null,
+      "achieved_tflops": 23.10762222070628,
+      "project_estimated_mfu": 0.26763079965473324
+    },
+    {
+      "case_id": "official_10",
+      "config_id": "cfg-cd928c8159e466ab3f3d85f5a54499fe24ea7205a81e55a6a01b33b2cfc4f82b",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.31539198756217957,
+      "p90_ms": 0.32880640029907227,
+      "baseline_median_ms": 4.551664113998413,
+      "speedup": 14.431768381880824,
+      "peak_memory_bytes": 86573056,
+      "execution_matches": null,
+      "achieved_tflops": 23.857871070730763,
+      "project_estimated_mfu": 0.2763201272607633
+    },
+    {
+      "case_id": "official_11",
+      "config_id": "cfg-bf3e1188692090ce5994e20d0db9c02aef57634acee67466b5494ab33051e0a6",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.2754560112953186,
+      "p90_ms": 0.39301119744777724,
+      "baseline_median_ms": 7.535104036331177,
+      "speedup": 27.3550175975384,
+      "peak_memory_bytes": 19310592,
+      "execution_matches": null,
+      "achieved_tflops": 27.31681672371577,
+      "project_estimated_mfu": 0.31638138420138967
+    },
+    {
+      "case_id": "official_12",
+      "config_id": "cfg-8eb0b3641f9035974d98bec5f7586016933afad6aee3b661fd9cdbcbe4b901fb",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 0.19865599274635315,
+      "p90_ms": 0.19968000054359436,
+      "baseline_median_ms": 4.655296087265015,
+      "speedup": 23.433957480502308,
+      "peak_memory_bytes": 35420160,
+      "execution_matches": null,
+      "achieved_tflops": 8.455917834529245,
+      "project_estimated_mfu": 0.17980399006125838
+    },
+    {
+      "case_id": "official_13",
+      "config_id": "cfg-f0fa16ed6aa8574bf77a29f3dbabac6fc0ad83ce504336fdc83e44e1aeae9462",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 2.9025280475616455,
+      "p90_ms": 3.27383029460907,
+      "baseline_median_ms": 116.45550537109375,
+      "speedup": 40.12209476112579,
+      "peak_memory_bytes": 212302848,
+      "execution_matches": null,
+      "achieved_tflops": 41.4556521695229,
+      "project_estimated_mfu": 0.48013634784093256
+    },
+    {
+      "case_id": "official_14",
+      "config_id": "cfg-26d3cf916d74de55a0f6aaba04b42ac27f815d4a69dbba40129a52ba5c793088",
+      "passed": true,
+      "max_tolerance_ratio": null,
+      "median_ms": 17085.4111328125,
+      "p90_ms": 17086.25478515625,
+      "baseline_median_ms": null,
+      "speedup": null,
+      "peak_memory_bytes": 7845867008,
+      "execution_matches": null,
+      "achieved_tflops": 81.42992481627091,
+      "project_estimated_mfu": 0.9431154658082899
+    }
+  ]
+}

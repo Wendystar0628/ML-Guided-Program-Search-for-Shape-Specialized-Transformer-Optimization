@@ -47,31 +47,26 @@ class BenchmarkResult:
             return None
         return self.baseline.median_ms / self.optimized.median_ms
 
+    @property
+    def execution_matches(self) -> bool:
+        return self.expected_execution_signature == self.actual_execution_signature
+
     def to_dict(self) -> dict[str, Any]:
+        """Return the compact persisted result; configs and traces live elsewhere."""
+
         return {
             "case_id": self.case_id,
             "config_id": self.config.config_id,
-            "config": self.config.to_dict(),
-            "correctness": {
-                "passed": self.passed,
-                "max_tolerance_ratio": self.max_tolerance_ratio,
-            },
-            "latency_ms": {
-                "optimized_median": self.optimized.median_ms,
-                "optimized_p90": self.optimized.p90_ms,
-                "baseline_median": (
-                    None if self.baseline is None else self.baseline.median_ms
-                ),
-                "baseline_p90": (
-                    None if self.baseline is None else self.baseline.p90_ms
-                ),
-                "speedup": self.speedup,
-            },
+            "passed": self.passed,
+            "max_tolerance_ratio": self.max_tolerance_ratio,
+            "median_ms": self.optimized.median_ms,
+            "p90_ms": self.optimized.p90_ms,
+            "baseline_median_ms": (
+                None if self.baseline is None else self.baseline.median_ms
+            ),
+            "speedup": self.speedup,
             "peak_memory_bytes": self.peak_memory_bytes,
-            "execution": {
-                "expected": self.expected_execution_signature,
-                "actual": self.actual_execution_signature,
-            },
+            "execution_matches": self.execution_matches,
         }
 
 

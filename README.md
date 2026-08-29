@@ -20,6 +20,8 @@ the logical batch cannot reside in memory at once.
 - `runner/`: direct measurement, profiling, hardware probe, and CLI.
 - `official/`: upstream benchmark semantics and workload shapes.
 - `deployments/deployed_configs.json`: measured per-device winners.
+- `results/final/nvidia_geforce_rtx_4080.json`: historical best RTX 4080 result
+  used as the comparison reference for future searches.
 - `results/intermediate/`: disposable runs, profiles, and Optuna studies.
 
 ## Commands

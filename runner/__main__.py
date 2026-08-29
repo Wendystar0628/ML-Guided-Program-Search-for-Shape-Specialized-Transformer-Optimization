@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -138,16 +139,13 @@ def _config(
     return ConfigSpec.from_dict(load_json(path))
 
 
-def _print_result(value: dict[str, object]) -> None:
-    correctness = value["correctness"]
-    latency = value["latency_ms"]
-    assert isinstance(correctness, dict) and isinstance(latency, dict)
-    print(f"{value['case_id']}: {'PASS' if correctness['passed'] else 'FAIL'}")
-    print(f"  optimized median: {latency['optimized_median']:.6f} ms")
-    print(f"  optimized p90:    {latency['optimized_p90']:.6f} ms")
-    if latency["baseline_median"] is not None:
-        print(f"  baseline median:  {latency['baseline_median']:.6f} ms")
-        print(f"  speedup:          {latency['speedup']:.4f}x")
+def _print_result(value: dict[str, Any]) -> None:
+    print(f"{value['case_id']}: {'PASS' if value['passed'] else 'FAIL'}")
+    print(f"  optimized median: {value['median_ms']:.6f} ms")
+    print(f"  optimized p90:    {value['p90_ms']:.6f} ms")
+    if value["baseline_median_ms"] is not None:
+        print(f"  baseline median:  {value['baseline_median_ms']:.6f} ms")
+        print(f"  speedup:          {value['speedup']:.4f}x")
 
 
 def _run(args: argparse.Namespace, project_root: Path) -> int:
