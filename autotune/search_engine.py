@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 import random
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
 from optuna.study import Study
+from optuna.trial import TrialState
 
 from solution.config import ConfigSpec, portable_streamed_config
 
@@ -125,12 +127,16 @@ class SearchResult:
     selected_measurement: TrialMeasurement | None
     branch_count: int
     completed_level1: int
-    enhanced_configs: tuple[ConfigSpec, ...]
+    enhanced_measurements: tuple[TrialMeasurement, ...]
     locked_challenger: ConfigSpec | None
     formal_challenger_measurement: TrialMeasurement | None
     formal_comparison: PairedMeasurement | None
     stop_reason: str
     new_level1_trials: int = 0
+    feasible_level1: int = 0
+    best_screen_config_id: str | None = None
+    best_screen_median_ms: float | None = None
+    screen_failure_counts: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         formal = self.formal_challenger_measurement
@@ -158,6 +164,26 @@ class SearchResult:
                 raise ValueError("selected config and measurement identities disagree")
         if self.new_level1_trials < 0:
             raise ValueError("new_level1_trials must not be negative")
+        if not 0 <= self.feasible_level1 <= self.completed_level1:
+            raise ValueError("feasible_level1 must be within completed_level1")
+        if self.best_screen_median_ms is not None and (
+            not math.isfinite(self.best_screen_median_ms)
+            or self.best_screen_median_ms <= 0.0
+        ):
+            raise ValueError("best_screen_median_ms must be finite and positive")
+        if (self.best_screen_config_id is None) != (
+            self.best_screen_median_ms is None
+        ):
+            raise ValueError("best Screen identity and latency must be set together")
+        for measurement in self.enhanced_measurements:
+            if measurement.fidelity is not Fidelity.ENHANCED:
+                raise ValueError("enhanced measurements must use Enhanced fidelity")
+        normalized_failures = tuple(
+            sorted((str(kind), int(count)) for kind, count in self.screen_failure_counts)
+        )
+        if any(not kind or count <= 0 for kind, count in normalized_failures):
+            raise ValueError("screen failure counts must be positive")
+        object.__setattr__(self, "screen_failure_counts", normalized_failures)
 
     @property
     def deployment_approved(self) -> bool:
@@ -234,6 +260,18 @@ def _completed_config_ids(
         completed.config.config_id
         for completed in backend.completed_trials(study, branch)
     }
+
+
+def _screen_failure_kind(measurement: TrialMeasurement) -> str:
+    """Return one useful primary reason for an infeasible Screen result."""
+
+    if measurement.constraints.accuracy > 0.0:
+        return "accuracy_constraint"
+    if measurement.constraints.execution_path > 0.0:
+        return "execution_path_constraint"
+    if measurement.failure_kind not in {None, "constraint_violation"}:
+        return measurement.failure_kind
+    return "runtime_constraint"
 
 
 class SearchEngine:
@@ -417,18 +455,84 @@ class SearchEngine:
             )
             for branch in plan.search_space.branches
         )
+        (
+            feasible_level1,
+            best_screen_config_id,
+            best_screen_median_ms,
+            screen_failure_counts,
+        ) = self._screen_summary(plan, run_state, backend)
         return SearchResult(
             incumbent_config=request.incumbent,
             selected_config=selected_config,
             selected_measurement=selected_measurement,
             branch_count=len(plan.search_space.branches),
             completed_level1=completed_level1,
-            enhanced_configs=promoted,
+            enhanced_measurements=tuple(
+                measurement for _, measurement in enhanced
+            ),
             locked_challenger=locked_challenger,
             formal_challenger_measurement=formal_challenger_measurement,
             formal_comparison=formal_comparison,
             stop_reason=stop_reason,
             new_level1_trials=run_state.budget.new_level1_trials,
+            feasible_level1=feasible_level1,
+            best_screen_config_id=best_screen_config_id,
+            best_screen_median_ms=best_screen_median_ms,
+            screen_failure_counts=screen_failure_counts,
+        )
+
+    @staticmethod
+    def _screen_summary(
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+    ) -> tuple[int, str | None, float | None, tuple[tuple[str, int], ...]]:
+        """Summarize Screen evidence without duplicating individual Trials."""
+
+        feasible: list[CompletedTrial] = []
+        failures: Counter[str] = Counter()
+        for branch in plan.search_space.branches:
+            study = state.studies[branch.branch_id]
+            completed_trials = backend.completed_trials(study, branch)
+            best_feasible: dict[str, CompletedTrial] = {}
+            for completed in completed_trials:
+                measurement = completed.measurement
+                if measurement.feasible:
+                    previous = best_feasible.get(completed.config.config_id)
+                    if (
+                        previous is None
+                        or measurement.objective_ms
+                        < previous.measurement.objective_ms
+                    ):
+                        best_feasible[completed.config.config_id] = completed
+                    continue
+                failures[_screen_failure_kind(measurement)] += 1
+            feasible.extend(best_feasible.values())
+            for trial in study.get_trials(
+                deepcopy=False,
+                states=(TrialState.FAIL,),
+            ):
+                if "duplicate_config_id" in trial.user_attrs:
+                    failures["duplicate_proposal"] += 1
+                elif error_type := trial.user_attrs.get("infrastructure_error"):
+                    failures[f"infrastructure:{error_type}"] += 1
+                else:
+                    failures["failed_trial"] += 1
+
+        best = min(
+            feasible,
+            key=lambda item: item.measurement.objective_ms,
+            default=None,
+        )
+        return (
+            len(feasible),
+            None if best is None else best.config.config_id,
+            (
+                None
+                if best is None
+                else best.measurement.median_ms or best.measurement.objective_ms
+            ),
+            tuple(sorted(failures.items())),
         )
 
     def _enqueue_initial_configs(

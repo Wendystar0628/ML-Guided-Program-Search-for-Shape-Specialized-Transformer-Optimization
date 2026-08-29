@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -29,6 +29,9 @@ from deployment.registry import (
     resolve_deployed_config,
 )
 from solution.config import ConfigSpec, portable_config, portable_streamed_config
+
+if TYPE_CHECKING:
+    from autotune.search_sweep import SearchSweepRequest
 
 
 def _positive_float(value: str) -> float:
@@ -224,19 +227,46 @@ def _probe(args: argparse.Namespace) -> int:
 
 
 def _search(args: argparse.Namespace, project_root: Path) -> int:
+    from autotune.run_log import SearchRunLog
     from autotune.search_sweep import SearchSweep, SearchSweepRequest
 
-    result = SearchSweep().run(
-        SearchSweepRequest(
-            project_root=project_root,
-            case_ids=tuple(args.case_id),
-            device=args.device,
-            storage_root=args.storage,
-            budget_seconds=args.budget_seconds,
-            max_trials=args.max_trials,
-            seed=args.seed,
-            variant=_variant(args),
-        )
+    request = SearchSweepRequest(
+        project_root=project_root,
+        case_ids=tuple(args.case_id),
+        device=args.device,
+        storage_root=args.storage,
+        budget_seconds=args.budget_seconds,
+        max_trials=args.max_trials,
+        seed=args.seed,
+        variant=_variant(args),
+    )
+    target = (
+        request.case_ids[0]
+        if len(request.case_ids) == 1
+        else f"{len(request.case_ids)}-shapes"
+    )
+    run_log = SearchRunLog(
+        root=(request.storage_root or project_root / "search_state") / "runs",
+        mode="search",
+        target=target,
+        request=_run_log_request(request),
+    )
+    print(f"run log: {run_log.path}")
+    try:
+        result = SearchSweep(observer=run_log.record_shape).run(request)
+    except KeyboardInterrupt:
+        run_log.finish(status="interrupted", exit_code=130)
+        raise
+    except Exception as exc:
+        run_log.fail(exc)
+        raise
+    run_log.finish(
+        status=(
+            "interrupted"
+            if result.exit_code == 130
+            else "finished"
+        ),
+        exit_code=result.exit_code,
     )
     for item in result.shape_results:
         selected = item.selected_config
@@ -245,6 +275,38 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
         print(f"  level-1 trials: {item.search_result.completed_level1}")
         print(f"  deployment updated: {item.deployment_updated}")
     return result.exit_code
+
+
+def _run_log_request(
+    request: SearchSweepRequest,
+    *,
+    group: str | None = None,
+) -> dict[str, Any]:
+    device_name = None
+    compute_capability = None
+    try:
+        device = torch.device(request.device)
+        if device.type == "cuda" and torch.cuda.is_available():
+            device_name = torch.cuda.get_device_name(device)
+            major, minor = torch.cuda.get_device_capability(device)
+            compute_capability = f"{major}.{minor}"
+    except (RuntimeError, ValueError):
+        pass
+    storage_root = request.storage_root or request.project_root / "search_state"
+    value: dict[str, Any] = {
+        "case_ids": list(request.case_ids),
+        "device": request.device,
+        "device_name": device_name,
+        "compute_capability": compute_capability,
+        "variant": request.variant.to_dict(),
+        "seed": request.seed,
+        "budget_seconds_per_shape": request.budget_seconds,
+        "max_trials_per_shape": request.max_trials,
+        "study_database": str(storage_root / "search.sqlite3"),
+    }
+    if group is not None:
+        value["group"] = group
+    return value
 
 
 def _optimization_case_ids(project_root: Path, group: str) -> tuple[str, ...]:
@@ -265,7 +327,33 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         OptimizationLoop,
         OptimizationLoopPolicy,
     )
-    from autotune.search_sweep import SearchSweepRequest
+    from autotune.run_log import SearchRunLog
+    from autotune.search_sweep import SearchSweep, SearchSweepRequest
+
+    request = SearchSweepRequest(
+        project_root=project_root,
+        case_ids=_optimization_case_ids(project_root, args.group),
+        device=args.device,
+        storage_root=args.storage,
+        budget_seconds=args.budget_seconds,
+        max_trials=args.max_trials,
+        seed=args.seed,
+        variant=_variant(args),
+    )
+    log_request = _run_log_request(request, group=args.group)
+    log_request.update(
+        {
+            "max_iterations": args.max_iterations,
+            "no_deployment_patience": args.no_deployment_patience,
+        }
+    )
+    run_log = SearchRunLog(
+        root=(request.storage_root or project_root / "search_state") / "runs",
+        mode="optimize",
+        target=args.group,
+        request=log_request,
+    )
+    print(f"run log: {run_log.path}")
 
     def print_iteration(iteration: OptimizationIteration) -> None:
         print(f"iteration {iteration.index}")
@@ -277,23 +365,35 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         print(f"  deployments: {iteration.deployment_updates}")
         print(f"  shapes with new search evidence: {iteration.shapes_with_search_progress}")
         print(f"  no-deployment streak: {iteration.no_deployment_streak}")
+        run_log.record_iteration(iteration)
 
-    result = OptimizationLoop().run(
-        SearchSweepRequest(
-            project_root=project_root,
-            case_ids=_optimization_case_ids(project_root, args.group),
-            device=args.device,
-            storage_root=args.storage,
-            budget_seconds=args.budget_seconds,
-            max_trials=args.max_trials,
-            seed=args.seed,
-            variant=_variant(args),
+    try:
+        result = OptimizationLoop(
+            SearchSweep(observer=run_log.record_shape)
+        ).run(
+            request,
+            OptimizationLoopPolicy(
+                no_deployment_patience=args.no_deployment_patience,
+                max_iterations=args.max_iterations,
+            ),
+            observer=print_iteration,
+        )
+    except KeyboardInterrupt:
+        run_log.finish(status="interrupted", exit_code=130)
+        raise
+    except Exception as exc:
+        run_log.fail(exc)
+        raise
+    run_log.finish(
+        status=(
+            "interrupted"
+            if result.exit_code == 130
+            else "finished"
         ),
-        OptimizationLoopPolicy(
-            no_deployment_patience=args.no_deployment_patience,
-            max_iterations=args.max_iterations,
-        ),
-        observer=print_iteration,
+        stop_reason=result.stop_reason,
+        exit_code=result.exit_code,
+        iterations=result.iterations_run,
+        total_deployment_updates=result.total_deployment_updates,
     )
     print(f"stopped: {result.stop_reason}")
     print(f"iterations: {result.iterations_run}")

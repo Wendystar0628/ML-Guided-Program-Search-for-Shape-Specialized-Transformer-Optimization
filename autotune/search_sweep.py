@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -246,6 +247,9 @@ class SearchSweepResult:
         )
 
 
+ShapeObserver = Callable[[ShapeSearchResult], None]
+
+
 @dataclass(frozen=True, slots=True)
 class _WarmStartCandidate:
     shape: ShapeFingerprint
@@ -352,6 +356,9 @@ def _shape_key(shape: TransformerShape, variant: RunVariant) -> ShapeFingerprint
 class SearchSweep:
     """Run one bounded search pass across an explicit group of shapes."""
 
+    def __init__(self, observer: ShapeObserver | None = None) -> None:
+        self.observer = observer
+
     def run(self, request: SearchSweepRequest) -> SearchSweepResult:
         device = torch.device(request.device)
         if device.type != "cuda" or not torch.cuda.is_available():
@@ -444,7 +451,10 @@ class SearchSweep:
                     shape=shape_key,
                     config=selected,
                 )
-            results.append(ShapeSearchResult(case_id, search_result, updated))
+            shape_result = ShapeSearchResult(case_id, search_result, updated)
+            results.append(shape_result)
+            if self.observer is not None:
+                self.observer(shape_result)
             if search_result.stop_reason == "interrupted":
                 break
             transferable = _transferable_formal_config(search_result)
@@ -468,6 +478,7 @@ __all__ = [
     "SearchSweep",
     "SearchSweepRequest",
     "SearchSweepResult",
+    "ShapeObserver",
     "ShapeSearchResult",
     "execution_context",
 ]

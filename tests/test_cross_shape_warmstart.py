@@ -45,10 +45,15 @@ def _hardware() -> EnvironmentFingerprint:
     )
 
 
-def _measurement(config: ConfigSpec, latency_ms: float) -> TrialMeasurement:
+def _measurement(
+    config: ConfigSpec,
+    latency_ms: float,
+    *,
+    fidelity: Fidelity = Fidelity.FORMAL,
+) -> TrialMeasurement:
     return TrialMeasurement(
         config_id=config.config_id,
-        fidelity=Fidelity.FORMAL,
+        fidelity=fidelity,
         scope=EvaluationScope.RESIDENT,
         objective_ms=latency_ms,
         median_ms=latency_ms,
@@ -79,7 +84,9 @@ def _completed_result(
         selected_measurement=measurement,
         branch_count=1,
         completed_level1=1,
-        enhanced_configs=(config,),
+        enhanced_measurements=(
+            _measurement(config, latency_ms, fidelity=Fidelity.ENHANCED),
+        ),
         locked_challenger=config,
         formal_challenger_measurement=measurement,
         formal_comparison=comparison,
@@ -130,7 +137,10 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
         selected_measurement=winner_measurement,
         branch_count=2,
         completed_level1=2,
-        enhanced_configs=(winner, registry_config),
+        enhanced_measurements=(
+            _measurement(winner, 1.0, fidelity=Fidelity.ENHANCED),
+            _measurement(registry_config, 1.1, fidelity=Fidelity.ENHANCED),
+        ),
         locked_challenger=winner,
         formal_challenger_measurement=winner_measurement,
         formal_comparison=PairedMeasurement(
@@ -200,7 +210,8 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
     monkeypatch.setattr(search_sweep, "BenchmarkEvaluator", lambda **kwargs: object())
     monkeypatch.setattr(search_sweep, "SearchEngine", _SearchEngine)
 
-    result = search_sweep.SearchSweep().run(
+    observed_shapes = []
+    result = search_sweep.SearchSweep(observed_shapes.append).run(
         search_sweep.SearchSweepRequest(
             project_root=search_sweep.Path("."),
             case_ids=("first", "second"),
@@ -216,6 +227,7 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
     )
     assert observed_requests[0].case_id == "first"
     assert observed_requests[1].case_id == "second"
+    assert [item.case_id for item in observed_shapes] == ["first", "second"]
 
 
 def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) -> None:
@@ -240,7 +252,7 @@ def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) 
                 selected_measurement=None,
                 branch_count=1,
                 completed_level1=0,
-                enhanced_configs=(),
+                enhanced_measurements=(),
                 locked_challenger=None,
                 formal_challenger_measurement=None,
                 formal_comparison=None,

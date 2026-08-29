@@ -43,13 +43,17 @@ autotune/
   search_engine.py          one-shape staged search
   search_sweep.py           one sweep across a shape group
   optimization_loop.py      repeated sweeps and convergence stopping
+  run_log.py                compact append-only search decision history
   evaluation.py             trial and promotion measurements
   optuna_backend.py         Optuna TPE adapter
   study_storage.py          local study identity and SQLite location
 ```
 
 The main entry point is [`cli.py`](cli.py). Generated Optuna state lives in
-`search_state/search.sqlite3`; it is local working data and is not committed.
+`search_state/search.sqlite3`. Human-readable search and optimization milestones
+are appended to one JSONL file per invocation under `search_state/runs/`. Both
+are local working data and are not committed. The JSONL stays intentionally
+small; use the SQLite database only when an individual Trial needs inspection.
 Direct benchmark output defaults to `benchmark_runs/`. Deployed winners are
 stored in `deployment/deployed_configs.json` and match the complete measured
 software and hardware environment.
