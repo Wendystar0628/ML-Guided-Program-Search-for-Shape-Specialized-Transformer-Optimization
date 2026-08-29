@@ -202,6 +202,20 @@ def _screening_trial_total(branches: tuple[BranchSpace, ...]) -> int:
     return sum(_screening_trial_target(branch) for branch in branches)
 
 
+_MAX_CONSECUTIVE_DUPLICATE_ASKS = 8
+
+
+def _completed_config_ids(
+    backend: OptunaBackend,
+    study: Study,
+    branch: BranchSpace,
+) -> set[str]:
+    return {
+        completed.config.config_id
+        for completed in backend.completed_trials(study, branch)
+    }
+
+
 class SearchEngine:
     """Run generated program search without owning GPU measurement mechanics."""
 
@@ -463,10 +477,7 @@ class SearchEngine:
         for branch in (*mandatory, *optional):
             study = state.studies[branch.branch_id]
             target = _screening_trial_target(branch)
-            completed_ids = {
-                completed.config.config_id
-                for completed in backend.completed_trials(study, branch)
-            }
+            completed_ids = _completed_config_ids(backend, study, branch)
             while len(completed_ids) < target:
                 if not state.budget.can_start(
                     deadline=deadline,
@@ -474,10 +485,7 @@ class SearchEngine:
                 ):
                     return False
                 self._ask_and_measure(plan, state, backend, branch)
-                completed_ids = {
-                    completed.config.config_id
-                    for completed in backend.completed_trials(study, branch)
-                }
+                completed_ids = _completed_config_ids(backend, study, branch)
         return True
 
     def _select_survivors(
@@ -489,10 +497,7 @@ class SearchEngine:
         ranked: list[tuple[CompletedTrial, BranchSpace]] = []
         for branch in plan.search_space.branches:
             study = state.studies[branch.branch_id]
-            completed_ids = {
-                completed.config.config_id
-                for completed in backend.completed_trials(study, branch)
-            }
+            completed_ids = _completed_config_ids(backend, study, branch)
             if len(completed_ids) < _screening_trial_target(branch):
                 continue
             best = backend.best_feasible(study, branch)
@@ -529,26 +534,63 @@ class SearchEngine:
         deadline: float,
     ) -> None:
         budget = plan.request.budget
+        no_progress = {branch.branch_id: 0 for branch in survivors}
         for branch in survivors:
             target = min(budget.min_trials_per_branch, branch.cardinality)
             study = state.studies[branch.branch_id]
-            while len(backend.completed_trials(study, branch)) < target:
+            completed_ids = _completed_config_ids(backend, study, branch)
+            while len(completed_ids) < target:
                 if not state.budget.can_start(
                     deadline=deadline,
                     max_trials=budget.max_trials,
                 ):
                     break
-                self._ask_and_measure(plan, state, backend, branch)
+                if self._ask_and_measure(plan, state, backend, branch):
+                    no_progress[branch.branch_id] = 0
+                    completed_ids = _completed_config_ids(backend, study, branch)
+                else:
+                    no_progress[branch.branch_id] += 1
+                    if no_progress[branch.branch_id] >= _MAX_CONSECUTIVE_DUPLICATE_ASKS:
+                        break
 
-        active = [branch for branch in survivors if branch.cardinality > 1]
+        active = [
+            branch
+            for branch in survivors
+            if len(
+                _completed_config_ids(
+                    backend,
+                    state.studies[branch.branch_id],
+                    branch,
+                )
+            )
+            < branch.cardinality
+            and no_progress[branch.branch_id] < _MAX_CONSECUTIVE_DUPLICATE_ASKS
+        ]
         cursor = 0
         while active and state.budget.can_start(
             deadline=deadline,
             max_trials=budget.max_trials,
         ):
-            branch = active[cursor % len(active)]
-            self._ask_and_measure(plan, state, backend, branch)
-            cursor += 1
+            index = cursor % len(active)
+            branch = active[index]
+            if self._ask_and_measure(plan, state, backend, branch):
+                no_progress[branch.branch_id] = 0
+            else:
+                no_progress[branch.branch_id] += 1
+            completed_ids = _completed_config_ids(
+                backend,
+                state.studies[branch.branch_id],
+                branch,
+            )
+            if (
+                len(completed_ids) >= branch.cardinality
+                or no_progress[branch.branch_id] >= _MAX_CONSECUTIVE_DUPLICATE_ASKS
+            ):
+                active.pop(index)
+                if active:
+                    cursor %= len(active)
+            else:
+                cursor += 1
 
     def _run_local_neighbourhood(
         self,
@@ -589,7 +631,7 @@ class SearchEngine:
         state: _RunState,
         backend: OptunaBackend,
         branch: BranchSpace,
-    ) -> None:
+    ) -> bool:
         study = state.studies[branch.branch_id]
         trial, config = backend.ask(study, branch)
         previous = backend.measurement_for(study, branch, config.config_id)
@@ -600,8 +642,10 @@ class SearchEngine:
                 else self._measure_screen(plan.request, config)
             )
             backend.tell(study, trial, config, measurement)
+            return previous is None
         except Exception as exc:  # noqa: BLE001 - persist infrastructure Trial failure
             backend.fail_infrastructure(study, trial, exc)
+            return False
         finally:
             state.budget.new_level1_trials += 1
 

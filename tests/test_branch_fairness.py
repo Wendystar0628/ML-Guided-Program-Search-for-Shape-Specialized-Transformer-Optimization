@@ -24,9 +24,13 @@ from autotune.space import BranchSpace, ParameterDomain, StructureSpec
 from autotune.storage import SearchStorage, StudyIdentity
 from solution.config import (
     AttentionBackend,
+    AttentionOutputBridge,
     ConfigSpec,
+    FFNBackend,
     InitialNormBackend,
-    LinearBackend,
+    PrecisionPlan,
+    ProjectionBackend,
+    QKVMaterialization,
     ResidualNormBackend,
     RuntimeBackend,
 )
@@ -51,7 +55,7 @@ class _Evaluator:
 
     def evaluate(self, config: ConfigSpec, fidelity: Fidelity) -> TrialMeasurement:
         tile = config.schedule.batch_tile_size
-        if config.program.linear is LinearBackend.INPUT_DTYPE:
+        if config.program.qkv_projection is ProjectionBackend.INPUT_DTYPE:
             latency = 1.0 if tile == 64 else 100.0
         else:
             latency = 2.0
@@ -88,20 +92,31 @@ class _SearchSpace:
 
 
 def _branch(
-    linear: LinearBackend,
+    precision_plan: PrecisionPlan,
     *,
     choices: tuple[int, ...] = (32, 64, 128),
     scope: str = "resident",
 ) -> BranchSpace:
+    projection_pattern = (
+        "all_input" if precision_plan is PrecisionPlan.INPUT_DTYPE else "all_autocast"
+    )
     return BranchSpace(
         structure=StructureSpec(
             attention=AttentionBackend.REFERENCE_STREAMING,
-            linear=linear,
+            precision_plan=precision_plan,
+            qkv_materialization=QKVMaterialization.VIEW,
+            attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+            ffn=FFNBackend.TORCH,
             residual_norm=ResidualNormBackend.TORCH,
             initial_norm=InitialNormBackend.TORCH,
             runtime=RuntimeBackend.BATCH_TILED_CUDA_GRAPH,
         ),
         domains=(
+            ParameterDomain(
+                "projection_pattern",
+                (projection_pattern,),
+                default=projection_pattern,
+            ),
             ParameterDomain(
                 "batch_tile_size",
                 choices,
@@ -172,8 +187,8 @@ def test_screening_uses_three_unique_configs_and_best_feasible_latency(
     tmp_path,
 ) -> None:
     branches = (
-        _branch(LinearBackend.INPUT_DTYPE),
-        _branch(LinearBackend.AUTOCAST_FP16),
+        _branch(PrecisionPlan.INPUT_DTYPE),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION),
     )
     request = _request(max_trials=6)
     plan = _plan(request, branches)
@@ -220,8 +235,8 @@ def test_plan_rejects_trial_cap_below_fair_screening_total(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     branches = (
-        _branch(LinearBackend.INPUT_DTYPE),
-        _branch(LinearBackend.AUTOCAST_FP16),
+        _branch(PrecisionPlan.INPUT_DTYPE),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION),
     )
     search_space = _SearchSpace(
         branches, frozenset(branch.branch_id for branch in branches)
@@ -246,8 +261,8 @@ def test_plan_keeps_unique_warm_start_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     branches = (
-        _branch(LinearBackend.INPUT_DTYPE),
-        _branch(LinearBackend.AUTOCAST_FP16),
+        _branch(PrecisionPlan.INPUT_DTYPE),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION),
     )
     incumbent = branches[0].representative_configs(limit=1)[0]
     transfer = branches[1].representative_configs(limit=1)[0]
@@ -286,7 +301,7 @@ def test_time_limited_partial_screen_has_no_winner(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    branch = _branch(LinearBackend.INPUT_DTYPE)
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
     request = _request(max_trials=3, max_seconds=1e-9)
     plan = _plan(request, (branch,))
     engine = SearchEngine(
@@ -308,7 +323,7 @@ def test_tpe_startup_is_dynamic_and_uses_an_absolute_history_threshold(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    normal = _branch(LinearBackend.INPUT_DTYPE, choices=tuple(range(1, 17)))
+    normal = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 17)))
     huge = BranchSpace(
         structure=normal.structure,
         domains=(
@@ -379,7 +394,7 @@ def test_tpe_startup_is_dynamic_and_uses_an_absolute_history_threshold(
 
 
 def test_unknown_benchmark_errors_propagate_after_screening(tmp_path) -> None:
-    branch = _branch(LinearBackend.INPUT_DTYPE)
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
     request = _request(max_trials=3)
     plan = _plan(request, (branch,))
     engine = SearchEngine(

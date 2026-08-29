@@ -9,9 +9,12 @@ import torch
 
 from .config import (
     AttentionBackend,
+    AttentionOutputBridge,
     ConfigSpec,
+    FFNBackend,
     InitialNormBackend,
-    LinearBackend,
+    PrecisionPlan,
+    ProjectionBackend,
     ResidualNormBackend,
     RuntimeBackend,
 )
@@ -180,8 +183,10 @@ class PlanBuilder:
 
         self._validate_context(context, capabilities, reject)
         inner_context = self._validate_runtime(config, context, capabilities, reject)
-        self._validate_linear(config, inner_context, reject)
+        self._validate_projections(config, inner_context, reject)
         self._validate_attention(config, inner_context, capabilities, reject)
+        self._validate_attention_bridge(config, reject)
+        self._validate_ffn(config, inner_context, capabilities, reject)
         self._validate_residual_norm(config, inner_context, capabilities, reject)
         self._validate_initial_norm(config, inner_context, capabilities, reject)
 
@@ -302,21 +307,32 @@ class PlanBuilder:
         raise AssertionError(f"unhandled runtime backend: {runtime}")
 
     @staticmethod
-    def _validate_linear(
+    def _validate_projections(
         config: ConfigSpec,
         context: ExecutionContext,
         reject: Any,
     ) -> None:
-        if config.program.linear is LinearBackend.INPUT_DTYPE:
-            return
-        if context.device.type != "cuda":
-            reject("requires_cuda", "program.linear", "FP16 linear requires CUDA")
-        if not context.inference:
-            reject(
-                "requires_inference",
-                "program.linear",
-                "FP16 linear is available only for inference",
-            )
+        for field_name in (
+            "qkv_projection",
+            "attention_output_projection",
+            "ffn_input_projection",
+            "ffn_output_projection",
+        ):
+            backend = getattr(config.program, field_name)
+            if backend is ProjectionBackend.INPUT_DTYPE:
+                continue
+            if context.device.type != "cuda":
+                reject(
+                    "requires_cuda",
+                    f"program.{field_name}",
+                    "FP16 projection requires CUDA",
+                )
+            if not context.inference:
+                reject(
+                    "requires_inference",
+                    f"program.{field_name}",
+                    "FP16 projection is available only for inference",
+                )
 
     @staticmethod
     def _validate_attention(
@@ -327,11 +343,9 @@ class PlanBuilder:
     ) -> None:
         backend = config.program.attention
         head_dim = context.head_dim
-        qkv_dtype = (
-            "float16"
-            if config.program.linear
-            in {LinearBackend.AUTOCAST_FP16, LinearBackend.FP16_SHADOW}
-            else context.dtype_name
+        qkv_dtype = PlanBuilder._projection_dtype(
+            config.program.qkv_projection,
+            context,
         )
         if backend is AttentionBackend.REFERENCE_STREAMING:
             if context.dtype not in {torch.float16, torch.bfloat16, torch.float32}:
@@ -435,8 +449,8 @@ class PlanBuilder:
         if qkv_dtype != "float16":
             reject(
                 "requires_fp16_qkv",
-                "program.linear",
-                "Triton attention requires a linear branch that produces FP16 QKV",
+                "program.qkv_projection",
+                "Triton attention requires an FP16 QKV projection",
             )
         if context.seq_len % launch.block_m:
             reject(
@@ -495,6 +509,59 @@ class PlanBuilder:
                 )
             return
         raise AssertionError(f"unhandled attention backend: {backend}")
+
+    @staticmethod
+    def _validate_attention_bridge(config: ConfigSpec, reject: Any) -> None:
+        backend = config.program.attention
+        bridge = config.program.attention_output_bridge
+        direct_backends = {
+            AttentionBackend.TRITON_SHAPE13,
+            AttentionBackend.TRITON_DH8,
+        }
+        if bridge is AttentionOutputBridge.ATTENTION_DIRECT_BSD:
+            if backend not in direct_backends:
+                reject(
+                    "backend_incompatible",
+                    "program.attention_output_bridge",
+                    "direct BSD output is implemented only by specialized Triton attention",
+                )
+            return
+        if backend is AttentionBackend.TRITON_DH8:
+            reject(
+                "backend_incompatible",
+                "program.attention_output_bridge",
+                "Dh8 attention produces BSD directly",
+            )
+
+    @staticmethod
+    def _validate_ffn(
+        config: ConfigSpec,
+        context: ExecutionContext,
+        hardware: HardwareCapabilities,
+        reject: Any,
+    ) -> None:
+        if config.program.ffn is FFNBackend.TORCH:
+            return
+        if context.device.type != "cuda":
+            reject("requires_cuda", "program.ffn", "compiled FFN requires CUDA")
+        if not context.inference:
+            reject(
+                "requires_inference",
+                "program.ffn",
+                "compiled FFN is available only for inference",
+            )
+        if not hardware.torch_compile:
+            reject(
+                "backend_unavailable",
+                "program.ffn",
+                "torch.compile is unavailable",
+            )
+        if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
+            reject(
+                "nested_compilation",
+                "program.ffn",
+                "compiled FFN cannot be nested in compiled forward",
+            )
 
     @staticmethod
     def _validate_residual_norm(
@@ -583,11 +650,18 @@ class PlanBuilder:
                     "program.residual_norm",
                     "mixed Triton norm template requires D128",
                 )
-            if config.program.linear is LinearBackend.INPUT_DTYPE:
+            fp16_outputs = {
+                ProjectionBackend.AUTOCAST_FP16,
+                ProjectionBackend.FP16_SHADOW,
+            }
+            if (
+                config.program.attention_output_projection not in fp16_outputs
+                or config.program.ffn_output_projection not in fp16_outputs
+            ):
                 reject(
                     "requires_fp16_update",
-                    "program.linear",
-                    "mixed Triton norm requires FP16 branch updates",
+                    "program.precision_plan",
+                    "mixed Triton norm requires FP16 attention and FFN updates",
                 )
             if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
                 reject(
@@ -644,11 +718,11 @@ class PlanBuilder:
                 "schedule.runtime",
                 "Triton initial norm is not nested in compiled forward",
             )
-        if config.program.linear is LinearBackend.INPUT_DTYPE:
+        if config.program.precision_plan is not PrecisionPlan.FP16_CORE:
             reject(
-                "linear_incompatible",
-                "program.linear",
-                "Triton initial norm requires FP16 linears",
+                "precision_incompatible",
+                "program.precision_plan",
+                "Triton initial norm requires the full FP16 core plan",
             )
         if config.program.residual_norm is not ResidualNormBackend.TRITON_MIXED:
             reject(
@@ -664,7 +738,26 @@ class PlanBuilder:
         inner_context: ExecutionContext,
     ) -> ExecutionPlan:
         attention_backend = config.program.attention
-        linear_backend = config.program.linear
+        qkv_projection = config.program.qkv_projection
+        attention_output_projection = config.program.attention_output_projection
+        ffn_input_projection = config.program.ffn_input_projection
+        ffn_output_projection = config.program.ffn_output_projection
+        qkv_projection_dtype = PlanBuilder._projection_dtype(
+            qkv_projection,
+            inner_context,
+        )
+        attention_output_projection_dtype = PlanBuilder._projection_dtype(
+            attention_output_projection,
+            inner_context,
+        )
+        ffn_input_projection_dtype = PlanBuilder._projection_dtype(
+            ffn_input_projection,
+            inner_context,
+        )
+        ffn_output_projection_dtype = PlanBuilder._projection_dtype(
+            ffn_output_projection,
+            inner_context,
+        )
         attention_compute_dtype = (
             "float16"
             if attention_backend
@@ -674,31 +767,38 @@ class PlanBuilder:
                 AttentionBackend.TRITON_SHAPE13,
                 AttentionBackend.TRITON_DH8,
             }
-            else (
-                "float16"
-                if linear_backend
-                in {LinearBackend.AUTOCAST_FP16, LinearBackend.FP16_SHADOW}
-                else inner_context.dtype_name
-            )
-        )
-        linear_compute_dtype = (
-            "float16"
-            if linear_backend
-            in {LinearBackend.AUTOCAST_FP16, LinearBackend.FP16_SHADOW}
-            else inner_context.dtype_name
+            else (qkv_projection_dtype)
         )
         layers = max(0, int(inner_context.num_layers or 0))
         expected = ExpectedExecutionTrace(
             runtime_backend=config.schedule.runtime,
             attention_backend=attention_backend,
-            linear_backend=linear_backend,
+            qkv_projection_backend=qkv_projection,
+            attention_output_projection_backend=attention_output_projection,
+            ffn_input_projection_backend=ffn_input_projection,
+            ffn_output_projection_backend=ffn_output_projection,
+            precision_plan=config.program.precision_plan,
+            qkv_materialization=config.program.qkv_materialization,
+            attention_output_bridge=config.program.attention_output_bridge,
+            attention_output_layout=config.attention_output_layout,
+            ffn_backend=config.program.ffn,
             residual_norm_backend=config.program.residual_norm,
             initial_norm_backend=config.program.initial_norm,
             attention_compute_dtype=attention_compute_dtype,
-            linear_compute_dtype=linear_compute_dtype,
-            attention_output_layout=config.attention_output_layout,
+            qkv_projection_compute_dtype=qkv_projection_dtype,
+            attention_output_projection_compute_dtype=(
+                attention_output_projection_dtype
+            ),
+            ffn_input_projection_compute_dtype=ffn_input_projection_dtype,
+            ffn_output_projection_compute_dtype=ffn_output_projection_dtype,
             attention_calls=layers,
-            linear_calls=4 * layers,
+            qkv_projection_calls=layers,
+            qkv_materialization_calls=layers,
+            attention_output_bridge_calls=layers,
+            attention_output_projection_calls=layers,
+            ffn_calls=layers,
+            ffn_input_projection_calls=layers,
+            ffn_output_projection_calls=layers,
             residual_norm_calls=2 * layers,
             initial_norm_calls=1 if layers else 0,
             runtime_calls=1,
@@ -712,9 +812,21 @@ class PlanBuilder:
             inner_context=inner_context,
             attention_backend=attention_backend,
             attention_compute_dtype=attention_compute_dtype,
+            qkv_projection_backend=qkv_projection,
+            qkv_projection_compute_dtype=qkv_projection_dtype,
+            qkv_materialization=config.program.qkv_materialization,
+            attention_output_bridge=config.program.attention_output_bridge,
             attention_output_layout=config.attention_output_layout,
-            linear_backend=linear_backend,
-            linear_compute_dtype=linear_compute_dtype,
+            attention_output_projection_backend=attention_output_projection,
+            attention_output_projection_compute_dtype=(
+                attention_output_projection_dtype
+            ),
+            ffn_backend=config.program.ffn,
+            ffn_input_projection_backend=ffn_input_projection,
+            ffn_input_projection_compute_dtype=ffn_input_projection_dtype,
+            ffn_output_projection_backend=ffn_output_projection,
+            ffn_output_projection_compute_dtype=ffn_output_projection_dtype,
+            precision_plan=config.program.precision_plan,
             residual_norm_backend=config.program.residual_norm,
             initial_norm_backend=config.program.initial_norm,
             runtime_backend=config.schedule.runtime,
@@ -727,6 +839,18 @@ class PlanBuilder:
             initial_norm_launch=config.schedule.initial_norm_launch,
             expected_trace=expected,
         )
+
+    @staticmethod
+    def _projection_dtype(
+        backend: ProjectionBackend,
+        context: ExecutionContext,
+    ) -> str:
+        if backend in {
+            ProjectionBackend.AUTOCAST_FP16,
+            ProjectionBackend.FP16_SHADOW,
+        }:
+            return "float16"
+        return context.dtype_name
 
 
 __all__ = [

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
 
 
 class AttentionBackend(StrEnum):
@@ -22,12 +22,43 @@ class AttentionBackend(StrEnum):
     TRITON_DH8 = "triton_dh8"
 
 
-class LinearBackend(StrEnum):
-    """Linear execution and weight-storage choices."""
+class ProjectionBackend(StrEnum):
+    """Per-role projection execution and weight-storage choices."""
 
     INPUT_DTYPE = "input_dtype"
     AUTOCAST_FP16 = "autocast_fp16"
     FP16_SHADOW = "fp16_shadow"
+
+
+class PrecisionPlan(StrEnum):
+    """Finite projection/cast graphs exposed to program search."""
+
+    INPUT_DTYPE = "input_dtype"
+    FP16_QKV_ATTENTION = "fp16_qkv_attention"
+    FP16_ATTENTION_BRANCH = "fp16_attention_branch"
+    FP16_FFN_BRANCH = "fp16_ffn_branch"
+    FP16_CORE = "fp16_core"
+
+
+class QKVMaterialization(StrEnum):
+    """Materialization choices between packed QKV and attention."""
+
+    VIEW = "view"
+    CONTIGUOUS = "contiguous"
+
+
+class AttentionOutputBridge(StrEnum):
+    """Implemented bridges from attention output to the output projection."""
+
+    TORCH_BHSD_TO_BSD = "torch_bhsd_to_bsd"
+    ATTENTION_DIRECT_BSD = "attention_direct_bsd"
+
+
+class FFNBackend(StrEnum):
+    """Execution choices for the two-projection Exact-GELU FFN."""
+
+    TORCH = "torch"
+    COMPILED = "compiled"
 
 
 class ResidualNormBackend(StrEnum):
@@ -61,6 +92,26 @@ class AttentionOutputLayout(StrEnum):
 
     BHSD = "bhsd"
     BSD = "bsd"
+
+
+_PROJECTION_FIELDS = (
+    "qkv_projection",
+    "attention_output_projection",
+    "ffn_input_projection",
+    "ffn_output_projection",
+)
+
+_PRECISION_FP16_PROJECTIONS = {
+    PrecisionPlan.INPUT_DTYPE: frozenset(),
+    PrecisionPlan.FP16_QKV_ATTENTION: frozenset({"qkv_projection"}),
+    PrecisionPlan.FP16_ATTENTION_BRANCH: frozenset(
+        {"qkv_projection", "attention_output_projection"}
+    ),
+    PrecisionPlan.FP16_FFN_BRANCH: frozenset(
+        {"ffn_input_projection", "ffn_output_projection"}
+    ),
+    PrecisionPlan.FP16_CORE: frozenset(_PROJECTION_FIELDS),
+}
 
 
 COMPILED_FORWARD_MODES = frozenset(
@@ -190,17 +241,54 @@ class ProgramConfig:
     """High-level execution structure independently sampled from scheduling."""
 
     attention: AttentionBackend
-    linear: LinearBackend
+    qkv_projection: ProjectionBackend
+    attention_output_projection: ProjectionBackend
+    ffn_input_projection: ProjectionBackend
+    ffn_output_projection: ProjectionBackend
+    precision_plan: PrecisionPlan
+    qkv_materialization: QKVMaterialization
+    attention_output_bridge: AttentionOutputBridge
+    ffn: FFNBackend
     residual_norm: ResidualNormBackend
     initial_norm: InitialNormBackend = InitialNormBackend.TORCH
 
     _FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"attention", "linear", "residual_norm", "initial_norm"}
+        {
+            "attention",
+            "qkv_projection",
+            "attention_output_projection",
+            "ffn_input_projection",
+            "ffn_output_projection",
+            "precision_plan",
+            "qkv_materialization",
+            "attention_output_bridge",
+            "ffn",
+            "residual_norm",
+            "initial_norm",
+        }
     )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attention", AttentionBackend(self.attention))
-        object.__setattr__(self, "linear", LinearBackend(self.linear))
+        for field_name in _PROJECTION_FIELDS:
+            object.__setattr__(
+                self,
+                field_name,
+                ProjectionBackend(getattr(self, field_name)),
+            )
+        precision_plan = PrecisionPlan(self.precision_plan)
+        object.__setattr__(self, "precision_plan", precision_plan)
+        object.__setattr__(
+            self,
+            "qkv_materialization",
+            QKVMaterialization(self.qkv_materialization),
+        )
+        object.__setattr__(
+            self,
+            "attention_output_bridge",
+            AttentionOutputBridge(self.attention_output_bridge),
+        )
+        object.__setattr__(self, "ffn", FFNBackend(self.ffn))
         object.__setattr__(
             self,
             "residual_norm",
@@ -208,10 +296,36 @@ class ProgramConfig:
         )
         object.__setattr__(self, "initial_norm", InitialNormBackend(self.initial_norm))
 
+        fp16_fields = _PRECISION_FP16_PROJECTIONS[precision_plan]
+        fp16_backends = {
+            ProjectionBackend.AUTOCAST_FP16,
+            ProjectionBackend.FP16_SHADOW,
+        }
+        for field_name in _PROJECTION_FIELDS:
+            backend = getattr(self, field_name)
+            if field_name in fp16_fields:
+                if backend not in fp16_backends:
+                    raise ValueError(
+                        f"{field_name} must use an FP16 backend for "
+                        f"precision_plan={precision_plan.value}"
+                    )
+            elif backend is not ProjectionBackend.INPUT_DTYPE:
+                raise ValueError(
+                    f"{field_name} must use input_dtype for "
+                    f"precision_plan={precision_plan.value}"
+                )
+
     def to_dict(self) -> dict[str, str]:
         return {
             "attention": self.attention.value,
-            "linear": self.linear.value,
+            "qkv_projection": self.qkv_projection.value,
+            "attention_output_projection": (self.attention_output_projection.value),
+            "ffn_input_projection": self.ffn_input_projection.value,
+            "ffn_output_projection": self.ffn_output_projection.value,
+            "precision_plan": self.precision_plan.value,
+            "qkv_materialization": self.qkv_materialization.value,
+            "attention_output_bridge": self.attention_output_bridge.value,
+            "ffn": self.ffn.value,
             "residual_norm": self.residual_norm.value,
             "initial_norm": self.initial_norm.value,
         }
@@ -388,9 +502,12 @@ class ConfigSpec:
 
     @property
     def attention_output_layout(self) -> AttentionOutputLayout:
-        """Derive layout from the implementation instead of sampling duplicates."""
+        """Derive the raw attention output layout from the selected bridge."""
 
-        if self.program.attention is AttentionBackend.TRITON_DH8:
+        if (
+            self.program.attention_output_bridge
+            is AttentionOutputBridge.ATTENTION_DIRECT_BSD
+        ):
             return AttentionOutputLayout.BSD
         return AttentionOutputLayout.BHSD
 
@@ -435,7 +552,14 @@ def portable_config() -> ConfigSpec:
     return ConfigSpec(
         program=ProgramConfig(
             attention=AttentionBackend.REFERENCE_STREAMING,
-            linear=LinearBackend.INPUT_DTYPE,
+            qkv_projection=ProjectionBackend.INPUT_DTYPE,
+            attention_output_projection=ProjectionBackend.INPUT_DTYPE,
+            ffn_input_projection=ProjectionBackend.INPUT_DTYPE,
+            ffn_output_projection=ProjectionBackend.INPUT_DTYPE,
+            precision_plan=PrecisionPlan.INPUT_DTYPE,
+            qkv_materialization=QKVMaterialization.VIEW,
+            attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+            ffn=FFNBackend.TORCH,
             residual_norm=ResidualNormBackend.TORCH,
             initial_norm=InitialNormBackend.TORCH,
         ),
@@ -460,11 +584,15 @@ __all__ = [
     "CONFIG_SCHEMA_VERSION",
     "DEFAULT_COMPILED_FORWARD_MODE",
     "AttentionBackend",
+    "AttentionOutputBridge",
     "AttentionOutputLayout",
     "ConfigSpec",
+    "FFNBackend",
     "InitialNormBackend",
-    "LinearBackend",
+    "PrecisionPlan",
     "ProgramConfig",
+    "ProjectionBackend",
+    "QKVMaterialization",
     "ResidualNormBackend",
     "RuntimeBackend",
     "ScheduleConfig",

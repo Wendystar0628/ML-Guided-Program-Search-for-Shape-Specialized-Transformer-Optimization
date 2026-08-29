@@ -12,10 +12,14 @@ from torch import nn
 
 from .config import (
     AttentionBackend,
+    AttentionOutputBridge,
     AttentionOutputLayout,
     ConfigSpec,
+    FFNBackend,
     InitialNormBackend,
-    LinearBackend,
+    PrecisionPlan,
+    ProjectionBackend,
+    QKVMaterialization,
     ResidualNormBackend,
     RuntimeBackend,
     portable_config,
@@ -27,12 +31,14 @@ from .operators import (
     TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
+    TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND,
     causal_sdpa,
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
     prevalidated_mixed_fp16_efficient_attention,
     prevalidated_triton_dh8_causal_attention_bsd,
     prevalidated_triton_shape13_causal_attention,
+    prevalidated_triton_shape13_causal_attention_bsd,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
@@ -43,7 +49,12 @@ from .operators import (
 )
 from .plan import ExecutionContext, ExecutionPlan
 from .plan_builder import PlanBuilder
-from .runtimes import BatchTiledGraphReplay, CompiledForward, CudaGraphReplay
+from .runtimes import (
+    BatchTiledGraphReplay,
+    CompiledFFN,
+    CompiledForward,
+    CudaGraphReplay,
+)
 
 
 @dataclass(slots=True)
@@ -54,13 +65,26 @@ class _ExecutionObservation:
     residual_norm_backends: list[str] = field(default_factory=list)
     initial_norm_backends: list[str] = field(default_factory=list)
     attention_compute_dtypes: list[str] = field(default_factory=list)
-    linear_backends: list[str] = field(default_factory=list)
-    linear_compute_dtypes: list[str] = field(default_factory=list)
+    qkv_projection_backends: list[str] = field(default_factory=list)
+    qkv_projection_compute_dtypes: list[str] = field(default_factory=list)
+    qkv_materializations: list[str] = field(default_factory=list)
+    attention_output_bridges: list[str] = field(default_factory=list)
+    attention_output_layouts: list[str] = field(default_factory=list)
+    attention_output_projection_backends: list[str] = field(default_factory=list)
+    attention_output_projection_compute_dtypes: list[str] = field(default_factory=list)
+    ffn_backends: list[str] = field(default_factory=list)
+    ffn_input_projection_backends: list[str] = field(default_factory=list)
+    ffn_input_projection_compute_dtypes: list[str] = field(default_factory=list)
+    ffn_output_projection_backends: list[str] = field(default_factory=list)
+    ffn_output_projection_compute_dtypes: list[str] = field(default_factory=list)
     layer_input_dtypes: list[str] = field(default_factory=list)
     layer_output_dtypes: list[str] = field(default_factory=list)
+    attention_launches: list[dict[str, int] | None] = field(default_factory=list)
+    residual_norm_launches: list[dict[str, int] | None] = field(default_factory=list)
+    initial_norm_launches: list[dict[str, int] | None] = field(default_factory=list)
 
     @staticmethod
-    def _uniform(values: list[str]) -> str | None:
+    def _uniform(values: list[Any]) -> Any | None:
         if not values:
             return None
         first = values[0]
@@ -72,27 +96,107 @@ class _ExecutionObservation:
             and len(self.residual_norm_backends) == 2 * expected_layers
             and len(self.initial_norm_backends) == (1 if expected_layers else 0)
             and len(self.attention_compute_dtypes) == expected_layers
-            and len(self.linear_backends) == 4 * expected_layers
-            and len(self.linear_compute_dtypes) == 4 * expected_layers
+            and len(self.qkv_projection_backends) == expected_layers
+            and len(self.qkv_projection_compute_dtypes) == expected_layers
+            and len(self.qkv_materializations) == expected_layers
+            and len(self.attention_output_bridges) == expected_layers
+            and len(self.attention_output_layouts) == expected_layers
+            and len(self.attention_output_projection_backends) == expected_layers
+            and len(self.attention_output_projection_compute_dtypes) == expected_layers
+            and len(self.ffn_backends) == expected_layers
+            and len(self.ffn_input_projection_backends) == expected_layers
+            and len(self.ffn_input_projection_compute_dtypes) == expected_layers
+            and len(self.ffn_output_projection_backends) == expected_layers
+            and len(self.ffn_output_projection_compute_dtypes) == expected_layers
             and len(self.layer_input_dtypes) == expected_layers
             and len(self.layer_output_dtypes) == expected_layers
+            and len(self.attention_launches) == expected_layers
+            and len(self.residual_norm_launches) == 2 * expected_layers
+            and len(self.initial_norm_launches) == (1 if expected_layers else 0)
         )
+        precision_plan = _infer_precision_plan(
+            self._uniform(self.qkv_projection_backends),
+            self._uniform(self.attention_output_projection_backends),
+            self._uniform(self.ffn_input_projection_backends),
+            self._uniform(self.ffn_output_projection_backends),
+        )
+        complete = complete and precision_plan is not None
         return {
             "config_id": self.config_id,
             "runtime_backend": self.runtime_backend,
             "attention_backend": self._uniform(self.attention_backends),
-            "linear_backend": self._uniform(self.linear_backends),
+            "qkv_projection_backend": self._uniform(self.qkv_projection_backends),
+            "attention_output_projection_backend": self._uniform(
+                self.attention_output_projection_backends
+            ),
+            "ffn_input_projection_backend": self._uniform(
+                self.ffn_input_projection_backends
+            ),
+            "ffn_output_projection_backend": self._uniform(
+                self.ffn_output_projection_backends
+            ),
+            "precision_plan": precision_plan,
+            "qkv_materialization": self._uniform(self.qkv_materializations),
+            "attention_output_bridge": self._uniform(self.attention_output_bridges),
+            "attention_output_layout": self._uniform(self.attention_output_layouts),
+            "ffn_backend": self._uniform(self.ffn_backends),
             "residual_norm_backend": self._uniform(self.residual_norm_backends),
             "initial_norm_backend": self._uniform(self.initial_norm_backends),
             "attention_compute_dtype": self._uniform(self.attention_compute_dtypes),
-            "linear_compute_dtype": self._uniform(self.linear_compute_dtypes),
+            "qkv_projection_compute_dtype": self._uniform(
+                self.qkv_projection_compute_dtypes
+            ),
+            "attention_output_projection_compute_dtype": self._uniform(
+                self.attention_output_projection_compute_dtypes
+            ),
+            "ffn_input_projection_compute_dtype": self._uniform(
+                self.ffn_input_projection_compute_dtypes
+            ),
+            "ffn_output_projection_compute_dtype": self._uniform(
+                self.ffn_output_projection_compute_dtypes
+            ),
             "attention_calls": len(self.attention_backends),
-            "linear_calls": len(self.linear_backends),
+            "qkv_projection_calls": len(self.qkv_projection_backends),
+            "qkv_materialization_calls": len(self.qkv_materializations),
+            "attention_output_bridge_calls": len(self.attention_output_bridges),
+            "attention_output_projection_calls": len(
+                self.attention_output_projection_backends
+            ),
+            "ffn_calls": len(self.ffn_backends),
+            "ffn_input_projection_calls": len(self.ffn_input_projection_backends),
+            "ffn_output_projection_calls": len(self.ffn_output_projection_backends),
             "residual_norm_calls": len(self.residual_norm_backends),
             "initial_norm_calls": len(self.initial_norm_backends),
             "runtime_calls": 1,
+            "attention_launch": self._uniform(self.attention_launches),
+            "residual_norm_launch": self._uniform(self.residual_norm_launches),
+            "initial_norm_launch": self._uniform(self.initial_norm_launches),
             "complete": complete,
         }
+
+
+def _infer_precision_plan(
+    qkv: str | None,
+    attention_output: str | None,
+    ffn_input: str | None,
+    ffn_output: str | None,
+) -> str | None:
+    fp16 = {
+        ProjectionBackend.AUTOCAST_FP16.value,
+        ProjectionBackend.FP16_SHADOW.value,
+    }
+    mask = tuple(
+        item in fp16 for item in (qkv, attention_output, ffn_input, ffn_output)
+    )
+    plans = {
+        (False, False, False, False): PrecisionPlan.INPUT_DTYPE,
+        (True, False, False, False): PrecisionPlan.FP16_QKV_ATTENTION,
+        (True, True, False, False): PrecisionPlan.FP16_ATTENTION_BRANCH,
+        (False, False, True, True): PrecisionPlan.FP16_FFN_BRANCH,
+        (True, True, True, True): PrecisionPlan.FP16_CORE,
+    }
+    plan = plans.get(mask)
+    return None if plan is None else plan.value
 
 
 def _strict_backend_marker(
@@ -145,6 +249,28 @@ class _FP16ShadowLinear(nn.Linear):
             raise RuntimeError("FP16 shadow weights must be materialized before use")
         return F.linear(value.to(torch.float16), weight, self._fp16_shadow_bias)
 
+    def forward_backend(
+        self,
+        value: torch.Tensor,
+        backend: ProjectionBackend,
+    ) -> torch.Tensor:
+        """Execute one projection role with an explicit precision boundary."""
+
+        if backend is ProjectionBackend.INPUT_DTYPE:
+            if value.dtype != self.weight.dtype:
+                value = value.to(self.weight.dtype)
+            return self(value)
+        if backend is ProjectionBackend.AUTOCAST_FP16:
+            with torch.autocast(
+                device_type=value.device.type,
+                dtype=torch.float16,
+                enabled=True,
+            ):
+                return self(value)
+        if backend is ProjectionBackend.FP16_SHADOW:
+            return self.forward_fp16_shadow(value)
+        raise AssertionError(f"unhandled projection backend: {backend}")
+
 
 class _SelfAttention(nn.Module):
     """Packed QKV projection followed by the planned causal attention path."""
@@ -169,47 +295,74 @@ class _SelfAttention(nn.Module):
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = value.shape
-        autocast_core = plan.linear_backend is LinearBackend.AUTOCAST_FP16
-        shadow_core = plan.linear_backend is LinearBackend.FP16_SHADOW
-        with torch.autocast(
-            device_type=value.device.type,
-            dtype=torch.float16,
-            enabled=autocast_core,
-        ):
-            packed_qkv = (
-                self.qkv_proj.forward_fp16_shadow(value)
-                if shadow_core
-                else self.qkv_proj(value)
+        packed_qkv = self.qkv_proj.forward_backend(
+            value,
+            plan.qkv_projection_backend,
+        )
+        query, key, projected_value = split_qkv(
+            packed_qkv,
+            self.num_heads,
+            contiguous=(plan.qkv_materialization is QKVMaterialization.CONTIGUOUS),
+        )
+        if observation is not None:
+            packed_storage = packed_qkv.untyped_storage().data_ptr()
+            shares_packed = all(
+                tensor.untyped_storage().data_ptr() == packed_storage
+                for tensor in (query, key, projected_value)
             )
-            query, key, projected_value = split_qkv(
-                packed_qkv,
-                self.num_heads,
+            materialization = (
+                QKVMaterialization.VIEW
+                if shares_packed
+                else QKVMaterialization.CONTIGUOUS
             )
-            if plan.attention_backend is AttentionBackend.TRITON_DH8:
-                launch = plan.attention_launch
-                if launch is None:
-                    raise RuntimeError("Triton Dh8 plan is missing launch parameters")
-                context, actual_marker = prevalidated_triton_dh8_causal_attention_bsd(
-                    query,
-                    key,
-                    projected_value,
-                    scale=self.scale,
-                    block_m=launch.block_m,
-                    block_n=launch.block_n,
-                    num_warps=launch.num_warps,
-                    num_stages=launch.num_stages,
-                )
-                actual_attention_backend = _strict_backend_marker(
-                    actual_marker,
-                    expected_marker=TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
-                    planned_backend=plan.attention_backend.value,
-                )
-            elif plan.attention_backend is AttentionBackend.TRITON_SHAPE13:
-                launch = plan.attention_launch
-                if launch is None:
-                    raise RuntimeError(
-                        "Triton Shape 13 plan is missing launch parameters"
+            if materialization is not plan.qkv_materialization:
+                raise RuntimeError("QKV materialization does not match the plan")
+            if materialization is QKVMaterialization.CONTIGUOUS and not all(
+                tensor.is_contiguous() for tensor in (query, key, projected_value)
+            ):
+                raise RuntimeError("materialized QKV tensors must be contiguous")
+            observation.qkv_materializations.append(materialization.value)
+        if plan.attention_backend is AttentionBackend.TRITON_DH8:
+            launch = plan.attention_launch
+            if launch is None:
+                raise RuntimeError("Triton Dh8 plan is missing launch parameters")
+            context, actual_marker = prevalidated_triton_dh8_causal_attention_bsd(
+                query,
+                key,
+                projected_value,
+                scale=self.scale,
+                block_m=launch.block_m,
+                block_n=launch.block_n,
+                num_warps=launch.num_warps,
+                num_stages=launch.num_stages,
+            )
+            actual_attention_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
+                planned_backend=plan.attention_backend.value,
+            )
+        elif plan.attention_backend is AttentionBackend.TRITON_SHAPE13:
+            launch = plan.attention_launch
+            if launch is None:
+                raise RuntimeError("Triton Shape 13 plan is missing launch parameters")
+            if (
+                plan.attention_output_bridge
+                is AttentionOutputBridge.ATTENTION_DIRECT_BSD
+            ):
+                context, actual_marker = (
+                    prevalidated_triton_shape13_causal_attention_bsd(
+                        query,
+                        key,
+                        projected_value,
+                        scale=self.scale,
+                        block_m=launch.block_m,
+                        block_n=launch.block_n,
+                        num_warps=launch.num_warps,
+                        num_stages=launch.num_stages,
                     )
+                )
+                expected_marker = TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND
+            else:
                 context, actual_marker = prevalidated_triton_shape13_causal_attention(
                     query,
                     key,
@@ -220,13 +373,37 @@ class _SelfAttention(nn.Module):
                     num_warps=launch.num_warps,
                     num_stages=launch.num_stages,
                 )
-                actual_attention_backend = _strict_backend_marker(
-                    actual_marker,
-                    expected_marker=TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
-                    planned_backend=plan.attention_backend.value,
+                expected_marker = TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND
+            actual_attention_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=expected_marker,
+                planned_backend=plan.attention_backend.value,
+            )
+        elif plan.attention_backend is AttentionBackend.FP16_CUDNN_SDPA:
+            context, actual_marker = mixed_fp16_cudnn_attention(
+                query,
+                key,
+                projected_value,
+                valid_token_mask,
+                scale=self.scale,
+                causal=causal,
+                training=self.training,
+            )
+            actual_attention_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=MIXED_FP16_CUDNN_BACKEND,
+                planned_backend=plan.attention_backend.value,
+            )
+        elif plan.attention_backend is AttentionBackend.FP16_EFFICIENT_SDPA:
+            if plan.use_compiled_forward:
+                context, actual_marker = prevalidated_mixed_fp16_efficient_attention(
+                    query,
+                    key,
+                    projected_value,
+                    scale=self.scale,
                 )
-            elif plan.attention_backend is AttentionBackend.FP16_CUDNN_SDPA:
-                context, actual_marker = mixed_fp16_cudnn_attention(
+            else:
+                context, actual_marker = mixed_fp16_efficient_attention(
                     query,
                     key,
                     projected_value,
@@ -235,76 +412,59 @@ class _SelfAttention(nn.Module):
                     causal=causal,
                     training=self.training,
                 )
-                actual_attention_backend = _strict_backend_marker(
-                    actual_marker,
-                    expected_marker=MIXED_FP16_CUDNN_BACKEND,
-                    planned_backend=plan.attention_backend.value,
-                )
-            elif plan.attention_backend is AttentionBackend.FP16_EFFICIENT_SDPA:
-                if plan.use_compiled_forward:
-                    context, actual_marker = (
-                        prevalidated_mixed_fp16_efficient_attention(
-                            query,
-                            key,
-                            projected_value,
-                            scale=self.scale,
-                        )
-                    )
-                else:
-                    context, actual_marker = mixed_fp16_efficient_attention(
-                        query,
-                        key,
-                        projected_value,
-                        valid_token_mask,
-                        scale=self.scale,
-                        causal=causal,
-                        training=self.training,
-                    )
-                actual_attention_backend = _strict_backend_marker(
-                    actual_marker,
-                    expected_marker=MIXED_FP16_EFFICIENT_BACKEND,
-                    planned_backend=plan.attention_backend.value,
-                )
-            elif plan.attention_backend is AttentionBackend.CAUSAL_SDPA:
-                context = causal_sdpa(
-                    query,
-                    key,
-                    projected_value,
-                    valid_token_mask,
-                    scale=self.scale,
-                    causal=causal,
-                )
-                actual_attention_backend = plan.attention_backend.value
-            elif plan.attention_backend is AttentionBackend.REFERENCE_STREAMING:
-                context = reference_causal_attention(
-                    query,
-                    key,
-                    projected_value,
-                    valid_token_mask,
-                    scale=self.scale,
-                    causal=causal,
-                )
-                actual_attention_backend = plan.attention_backend.value
-            else:
-                raise AssertionError(
-                    f"unhandled attention backend: {plan.attention_backend}"
-                )
-            if plan.attention_output_layout is AttentionOutputLayout.BHSD:
-                context = (
-                    context.transpose(1, 2)
-                    .contiguous()
-                    .view(batch_size, sequence_length, self.d_model)
-                )
-            elif plan.attention_output_layout is not AttentionOutputLayout.BSD:
-                raise RuntimeError(
-                    f"unsupported attention output layout: "
-                    f"{plan.attention_output_layout}"
-                )
-            output = (
-                self.out_proj.forward_fp16_shadow(context)
-                if shadow_core
-                else self.out_proj(context)
+            actual_attention_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=MIXED_FP16_EFFICIENT_BACKEND,
+                planned_backend=plan.attention_backend.value,
             )
+        elif plan.attention_backend is AttentionBackend.CAUSAL_SDPA:
+            context = causal_sdpa(
+                query,
+                key,
+                projected_value,
+                valid_token_mask,
+                scale=self.scale,
+                causal=causal,
+            )
+            actual_attention_backend = plan.attention_backend.value
+        elif plan.attention_backend is AttentionBackend.REFERENCE_STREAMING:
+            context = reference_causal_attention(
+                query,
+                key,
+                projected_value,
+                valid_token_mask,
+                scale=self.scale,
+                causal=causal,
+            )
+            actual_attention_backend = plan.attention_backend.value
+        else:
+            raise AssertionError(
+                f"unhandled attention backend: {plan.attention_backend}"
+            )
+        actual_layout = (
+            AttentionOutputLayout.BHSD
+            if context.ndim == 4
+            else AttentionOutputLayout.BSD
+        )
+        if actual_layout is not plan.attention_output_layout:
+            raise RuntimeError("attention output layout does not match the plan")
+        if plan.attention_output_bridge is AttentionOutputBridge.TORCH_BHSD_TO_BSD:
+            if actual_layout is not AttentionOutputLayout.BHSD:
+                raise RuntimeError("Torch bridge requires BHSD attention output")
+            context = (
+                context.transpose(1, 2)
+                .contiguous()
+                .view(batch_size, sequence_length, self.d_model)
+            )
+            actual_bridge = AttentionOutputBridge.TORCH_BHSD_TO_BSD
+        else:
+            if actual_layout is not AttentionOutputLayout.BSD:
+                raise RuntimeError("direct bridge requires BSD attention output")
+            actual_bridge = AttentionOutputBridge.ATTENTION_DIRECT_BSD
+        output = self.out_proj.forward_backend(
+            context,
+            plan.attention_output_projection_backend,
+        )
         if observation is not None:
             observation.attention_backends.append(actual_attention_backend)
             observation.attention_compute_dtypes.append(
@@ -318,12 +478,24 @@ class _SelfAttention(nn.Module):
                 }
                 else str(query.dtype).removeprefix("torch.")
             )
-            observation.linear_backends.extend([plan.linear_backend.value] * 2)
-            observation.linear_compute_dtypes.extend(
-                [
-                    str(packed_qkv.dtype).removeprefix("torch."),
-                    str(output.dtype).removeprefix("torch."),
-                ]
+            observation.qkv_projection_backends.append(
+                plan.qkv_projection_backend.value
+            )
+            observation.qkv_projection_compute_dtypes.append(
+                str(packed_qkv.dtype).removeprefix("torch.")
+            )
+            observation.attention_output_layouts.append(actual_layout.value)
+            observation.attention_output_bridges.append(actual_bridge.value)
+            observation.attention_output_projection_backends.append(
+                plan.attention_output_projection_backend.value
+            )
+            observation.attention_output_projection_compute_dtypes.append(
+                str(output.dtype).removeprefix("torch.")
+            )
+            observation.attention_launches.append(
+                None
+                if plan.attention_launch is None
+                else plan.attention_launch.to_dict()
             )
         mixed_residual_stream = (
             plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
@@ -343,6 +515,7 @@ class _TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.ffn_in = _FP16ShadowLinear(d_model, ffn_dim)
         self.ffn_out = _FP16ShadowLinear(ffn_dim, d_model)
+        self.compiled_ffn = CompiledFFN()
 
     def attention_update(
         self,
@@ -370,32 +543,53 @@ class _TransformerBlock(nn.Module):
     ) -> torch.Tensor:
         """Compute the FFN branch from an already normalized value."""
 
-        autocast_core = plan.linear_backend is LinearBackend.AUTOCAST_FP16
-        shadow_core = plan.linear_backend is LinearBackend.FP16_SHADOW
-        with torch.autocast(
-            device_type=normalized.device.type,
-            dtype=torch.float16,
-            enabled=autocast_core,
-        ):
-            projected = (
-                self.ffn_in.forward_fp16_shadow(normalized)
-                if shadow_core
-                else self.ffn_in(normalized)
+        def exact_ffn(value: torch.Tensor) -> torch.Tensor:
+            projected_value = self.ffn_in.forward_backend(
+                value,
+                plan.ffn_input_projection_backend,
+            )
+            hidden_value = F.gelu(projected_value, approximate="none")
+            return self.ffn_out.forward_backend(
+                hidden_value,
+                plan.ffn_output_projection_backend,
+            )
+
+        if observation is not None:
+            projected = self.ffn_in.forward_backend(
+                normalized,
+                plan.ffn_input_projection_backend,
             )
             hidden = F.gelu(projected, approximate="none")
+            observed_update = self.ffn_out.forward_backend(
+                hidden,
+                plan.ffn_output_projection_backend,
+            )
+            observation.ffn_input_projection_backends.append(
+                plan.ffn_input_projection_backend.value
+            )
+            observation.ffn_input_projection_compute_dtypes.append(
+                str(projected.dtype).removeprefix("torch.")
+            )
+            observation.ffn_output_projection_backends.append(
+                plan.ffn_output_projection_backend.value
+            )
+            observation.ffn_output_projection_compute_dtypes.append(
+                str(observed_update.dtype).removeprefix("torch.")
+            )
+        if plan.ffn_backend is FFNBackend.COMPILED:
+            ffn_update = self.compiled_ffn.run(
+                exact_ffn,
+                normalized,
+                plan_key=plan.config_id,
+            )
+            actual_ffn_backend = FFNBackend.COMPILED
+        else:
             ffn_update = (
-                self.ffn_out.forward_fp16_shadow(hidden)
-                if shadow_core
-                else self.ffn_out(hidden)
+                observed_update if observation is not None else exact_ffn(normalized)
             )
+            actual_ffn_backend = FFNBackend.TORCH
         if observation is not None:
-            observation.linear_backends.extend([plan.linear_backend.value] * 2)
-            observation.linear_compute_dtypes.extend(
-                [
-                    str(projected.dtype).removeprefix("torch."),
-                    str(ffn_update.dtype).removeprefix("torch."),
-                ]
-            )
+            observation.ffn_backends.append(actual_ffn_backend.value)
         mixed_residual_stream = (
             plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
         )
@@ -432,7 +626,6 @@ class UserOptimizedTransformer(nn.Module):
         self._classified_mask: torch.Tensor | None = None
         self._classified_mask_version: int | None = None
         self._classified_mask_is_all_valid = False
-        self._fp16_shadow_weights_ready = False
         self._plan_builder = PlanBuilder()
         self._explicit_config: ConfigSpec | None = None
         self._active_config = portable_config()
@@ -448,6 +641,8 @@ class UserOptimizedTransformer(nn.Module):
         self._classified_mask = None
         self._classified_mask_version = None
         self._classified_mask_is_all_valid = False
+        for layer in self.layers:
+            layer.compiled_ffn.clear()
 
     def _apply(self, function: Any, recurse: bool = True) -> UserOptimizedTransformer:
         result = super()._apply(function, recurse=recurse)
@@ -458,15 +653,22 @@ class UserOptimizedTransformer(nn.Module):
             self._resolve_default_config()
         return result
 
-    def _materialize_fp16_shadow_weights(self) -> None:
-        """Build all derived FP16 linear tensors once, outside compiled forward."""
+    def _materialize_fp16_shadow_weights(self, plan: ExecutionPlan) -> None:
+        """Build derived FP16 weights only for roles selected by the plan."""
 
-        if self._fp16_shadow_weights_ready:
-            return
-        for module in self.modules():
-            if isinstance(module, _FP16ShadowLinear):
-                module.materialize_fp16_shadow()
-        self._fp16_shadow_weights_ready = True
+        for layer in self.layers:
+            selections = (
+                (plan.qkv_projection_backend, layer.attention.qkv_proj),
+                (
+                    plan.attention_output_projection_backend,
+                    layer.attention.out_proj,
+                ),
+                (plan.ffn_input_projection_backend, layer.ffn_in),
+                (plan.ffn_output_projection_backend, layer.ffn_out),
+            )
+            for backend, module in selections:
+                if backend is ProjectionBackend.FP16_SHADOW:
+                    module.materialize_fp16_shadow()
 
     def _clear_fp16_shadow_weights(self) -> None:
         """Invalidate every derived shadow while preserving FP32 parameters."""
@@ -474,7 +676,6 @@ class UserOptimizedTransformer(nn.Module):
         for module in self.modules():
             if isinstance(module, _FP16ShadowLinear):
                 module.clear_fp16_shadow()
-        self._fp16_shadow_weights_ready = False
 
     def _resolve_default_config(self, value: torch.Tensor | None = None) -> None:
         """Resolve one exact deployed config, otherwise select the portable config."""
@@ -691,12 +892,14 @@ class UserOptimizedTransformer(nn.Module):
                     observation.initial_norm_backends.append(
                         InitialNormBackend.TRITON_FP16.value
                     )
+                    observation.initial_norm_launches.append(launch.to_dict())
             else:
                 normalized = self.layers[0].norm1(value)
                 if observation is not None:
                     observation.initial_norm_backends.append(
                         InitialNormBackend.TORCH.value
                     )
+                    observation.initial_norm_launches.append(None)
             if (
                 plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
                 and not plan.use_triton_initial_fp16_norm
@@ -820,6 +1023,11 @@ class UserOptimizedTransformer(nn.Module):
             )
         if observation is not None:
             observation.residual_norm_backends.append(actual_backend)
+            observation.residual_norm_launches.append(
+                None
+                if plan.residual_norm_launch is None
+                else plan.residual_norm_launch.to_dict()
+            )
         return value, normalized
 
     def _effective_valid_token_mask(
@@ -873,8 +1081,14 @@ class UserOptimizedTransformer(nn.Module):
             valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._cached_execution_plan(x, valid_token_mask)
 
-        if plan.linear_backend is LinearBackend.FP16_SHADOW:
-            self._materialize_fp16_shadow_weights()
+        projection_backends = (
+            plan.qkv_projection_backend,
+            plan.attention_output_projection_backend,
+            plan.ffn_input_projection_backend,
+            plan.ffn_output_projection_backend,
+        )
+        if ProjectionBackend.FP16_SHADOW in projection_backends:
+            self._materialize_fp16_shadow_weights(plan)
 
         if plan.use_batch_tiled_cuda_graph:
             if plan.batch_tile_size is None:

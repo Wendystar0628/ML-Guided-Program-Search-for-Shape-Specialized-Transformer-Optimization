@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - exercised without the optional runtime
 
 
 TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND = "triton_shape13_causal_attention"
+TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND = "triton_shape13_causal_attention_bsd"
 _BATCH_SIZE = 64
 _NUM_HEADS = 4
 _SEQUENCE_LENGTH = 1024
@@ -314,6 +315,56 @@ if (
         )
         return output
 
+    @triton_op(
+        "shape_aware_transformer::shape13_causal_attention_bsd",
+        mutates_args={},
+    )
+    def _shape13_causal_attention_bsd_op(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        scale: float,
+        block_m: int,
+        block_n: int,
+        num_warps: int,
+        num_stages: int,
+    ) -> torch.Tensor:
+        output = torch.empty(
+            (_BATCH_SIZE, _SEQUENCE_LENGTH, _NUM_HEADS * _HEAD_DIM),
+            dtype=query.dtype,
+            device=query.device,
+        )
+        grid = (
+            _SEQUENCE_LENGTH // block_m,
+            _BATCH_SIZE * _NUM_HEADS,
+        )
+        # Present contiguous BSD storage as logical BHSD strides to the shared kernel.
+        output_strides = (
+            output.stride(0),
+            _HEAD_DIM,
+            output.stride(1),
+            output.stride(2),
+        )
+        wrap_triton(_shape13_causal_attention_kernel)[grid](
+            query,
+            key,
+            value,
+            output,
+            scale,
+            *query.stride(),
+            *key.stride(),
+            *value.stride(),
+            *output_strides,
+            NUM_HEADS=_NUM_HEADS,
+            SEQ_LEN=_SEQUENCE_LENGTH,
+            HEAD_DIM=_HEAD_DIM,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            num_warps=num_warps,
+            num_stages=num_stages,
+        )
+        return output
+
 else:
 
     def _shape13_causal_attention_op(
@@ -328,6 +379,19 @@ else:
     ) -> torch.Tensor:
         del query, key, value, scale, block_m, block_n, num_warps, num_stages
         raise RuntimeError("Triton Shape 13 attention is unavailable")
+
+    def _shape13_causal_attention_bsd_op(
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        scale: float,
+        block_m: int,
+        block_n: int,
+        num_warps: int,
+        num_stages: int,
+    ) -> torch.Tensor:
+        del query, key, value, scale, block_m, block_n, num_warps, num_stages
+        raise RuntimeError("Triton Shape 13 BSD attention is unavailable")
 
 
 def triton_shape13_causal_attention_available() -> bool:
@@ -416,6 +480,37 @@ def prevalidated_triton_shape13_causal_attention(
     return output, TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND
 
 
+def prevalidated_triton_shape13_causal_attention_bsd(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    *,
+    scale: float | None = None,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
+) -> tuple[torch.Tensor, str]:
+    """Run the immutable-plan specialization with direct contiguous BSD output."""
+
+    _validate_launch_config(block_m, block_n, num_warps, num_stages)
+    resolved_scale = 1.0 / math.sqrt(_HEAD_DIM) if scale is None else float(scale)
+    try:
+        output = _shape13_causal_attention_bsd_op(
+            query,
+            key,
+            value,
+            resolved_scale,
+            block_m,
+            block_n,
+            num_warps,
+            num_stages,
+        )
+    except Exception as exc:
+        raise RuntimeError("Triton Shape 13 BSD attention execution failed") from exc
+    return output, TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND
+
+
 def triton_shape13_causal_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -459,10 +554,56 @@ def triton_shape13_causal_attention(
     )
 
 
+def triton_shape13_causal_attention_bsd(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    valid_token_mask: torch.Tensor | None = None,
+    *,
+    scale: float | None = None,
+    causal: bool = True,
+    training: bool = False,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
+) -> tuple[torch.Tensor, str]:
+    """Run direct-BSD Shape 13 attention with the shared eligibility guard."""
+
+    if not can_use_triton_shape13_causal_attention(
+        query,
+        key,
+        value,
+        valid_token_mask,
+        causal=causal,
+        training=training,
+        block_m=block_m,
+        block_n=block_n,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    ):
+        raise RuntimeError(
+            "Triton Shape 13 BSD attention is ineligible for the requested inputs"
+        )
+    return prevalidated_triton_shape13_causal_attention_bsd(
+        query,
+        key,
+        value,
+        scale=scale,
+        block_m=block_m,
+        block_n=block_n,
+        num_warps=num_warps,
+        num_stages=num_stages,
+    )
+
+
 __all__ = [
     "TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND",
+    "TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND",
     "can_use_triton_shape13_causal_attention",
     "prevalidated_triton_shape13_causal_attention",
+    "prevalidated_triton_shape13_causal_attention_bsd",
     "triton_shape13_causal_attention",
     "triton_shape13_causal_attention_available",
+    "triton_shape13_causal_attention_bsd",
 ]

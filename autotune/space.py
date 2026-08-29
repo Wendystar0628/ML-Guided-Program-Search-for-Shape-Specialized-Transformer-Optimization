@@ -13,10 +13,14 @@ from typing import Any, Protocol
 from solution.config import (
     COMPILED_FORWARD_MODES,
     AttentionBackend,
+    AttentionOutputBridge,
     ConfigSpec,
+    FFNBackend,
     InitialNormBackend,
-    LinearBackend,
+    PrecisionPlan,
     ProgramConfig,
+    ProjectionBackend,
+    QKVMaterialization,
     ResidualNormBackend,
     RuntimeBackend,
     ScheduleConfig,
@@ -25,6 +29,114 @@ from solution.config import (
 )
 
 Scalar = str | int | float | bool
+ProjectionTuple = tuple[
+    ProjectionBackend,
+    ProjectionBackend,
+    ProjectionBackend,
+    ProjectionBackend,
+]
+
+_PROJECTION_FIELDS = (
+    "qkv_projection",
+    "attention_output_projection",
+    "ffn_input_projection",
+    "ffn_output_projection",
+)
+_FP16_PROJECTION_FIELDS = {
+    PrecisionPlan.INPUT_DTYPE: (),
+    PrecisionPlan.FP16_QKV_ATTENTION: ("qkv_projection",),
+    PrecisionPlan.FP16_ATTENTION_BRANCH: (
+        "qkv_projection",
+        "attention_output_projection",
+    ),
+    PrecisionPlan.FP16_FFN_BRANCH: (
+        "ffn_input_projection",
+        "ffn_output_projection",
+    ),
+    PrecisionPlan.FP16_CORE: _PROJECTION_FIELDS,
+}
+
+
+def _projection_patterns(
+    precision_plan: PrecisionPlan,
+) -> tuple[tuple[str, ProjectionTuple], ...]:
+    """Return a bounded categorical set of complete per-role implementations."""
+
+    active_fields = _FP16_PROJECTION_FIELDS[precision_plan]
+    if not active_fields:
+        return (
+            (
+                "all_input",
+                (
+                    ProjectionBackend.INPUT_DTYPE,
+                    ProjectionBackend.INPUT_DTYPE,
+                    ProjectionBackend.INPUT_DTYPE,
+                    ProjectionBackend.INPUT_DTYPE,
+                ),
+            ),
+        )
+
+    def backends(*, shadow_fields: frozenset[str]) -> ProjectionTuple:
+        values = tuple(
+            (
+                ProjectionBackend.INPUT_DTYPE
+                if field_name not in active_fields
+                else ProjectionBackend.FP16_SHADOW
+                if field_name in shadow_fields
+                else ProjectionBackend.AUTOCAST_FP16
+            )
+            for field_name in _PROJECTION_FIELDS
+        )
+        assert len(values) == 4
+        return values  # type: ignore[return-value]
+
+    candidates = [
+        ("all_autocast", backends(shadow_fields=frozenset())),
+        ("all_shadow", backends(shadow_fields=frozenset(active_fields))),
+    ]
+    candidates.extend(
+        (
+            f"shadow_{field_name}",
+            backends(shadow_fields=frozenset({field_name})),
+        )
+        for field_name in active_fields
+    )
+    unique: list[tuple[str, ProjectionTuple]] = []
+    seen: set[ProjectionTuple] = set()
+    for name, values in candidates:
+        if values in seen:
+            continue
+        seen.add(values)
+        unique.append((name, values))
+    return tuple(unique)
+
+
+def _projection_pattern_choices(precision_plan: PrecisionPlan) -> tuple[str, ...]:
+    return tuple(name for name, _ in _projection_patterns(precision_plan))
+
+
+def _projection_backends(
+    precision_plan: PrecisionPlan,
+    pattern: Scalar,
+) -> ProjectionTuple:
+    if not isinstance(pattern, str):
+        raise TypeError("projection_pattern must be a string")
+    for name, values in _projection_patterns(precision_plan):
+        if pattern == name:
+            return values
+    raise ValueError(
+        f"projection_pattern {pattern!r} is invalid for {precision_plan.value}"
+    )
+
+
+def _projection_pattern_for(
+    precision_plan: PrecisionPlan,
+    values: ProjectionTuple,
+) -> str | None:
+    for name, candidate in _projection_patterns(precision_plan):
+        if candidate == values:
+            return name
+    return None
 
 
 class TrialLike(Protocol):
@@ -120,14 +232,32 @@ class StructureSpec:
     """Fixed high-level branch with only its active low-level knobs exposed."""
 
     attention: AttentionBackend
-    linear: LinearBackend
+    precision_plan: PrecisionPlan
+    qkv_materialization: QKVMaterialization
+    attention_output_bridge: AttentionOutputBridge
+    ffn: FFNBackend
     residual_norm: ResidualNormBackend
     initial_norm: InitialNormBackend
     runtime: RuntimeBackend
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "attention", AttentionBackend(self.attention))
-        object.__setattr__(self, "linear", LinearBackend(self.linear))
+        object.__setattr__(
+            self,
+            "precision_plan",
+            PrecisionPlan(self.precision_plan),
+        )
+        object.__setattr__(
+            self,
+            "qkv_materialization",
+            QKVMaterialization(self.qkv_materialization),
+        )
+        object.__setattr__(
+            self,
+            "attention_output_bridge",
+            AttentionOutputBridge(self.attention_output_bridge),
+        )
+        object.__setattr__(self, "ffn", FFNBackend(self.ffn))
         object.__setattr__(
             self,
             "residual_norm",
@@ -143,7 +273,10 @@ class StructureSpec:
     def to_dict(self) -> dict[str, str]:
         return {
             "attention": self.attention.value,
-            "linear": self.linear.value,
+            "precision_plan": self.precision_plan.value,
+            "qkv_materialization": self.qkv_materialization.value,
+            "attention_output_bridge": self.attention_output_bridge.value,
+            "ffn": self.ffn.value,
             "residual_norm": self.residual_norm.value,
             "initial_norm": self.initial_norm.value,
             "runtime": self.runtime.value,
@@ -157,10 +290,26 @@ class StructureSpec:
     def portable(self) -> bool:
         return self == StructureSpec(
             attention=AttentionBackend.REFERENCE_STREAMING,
-            linear=LinearBackend.INPUT_DTYPE,
+            precision_plan=PrecisionPlan.INPUT_DTYPE,
+            qkv_materialization=QKVMaterialization.VIEW,
+            attention_output_bridge=(AttentionOutputBridge.TORCH_BHSD_TO_BSD),
+            ffn=FFNBackend.TORCH,
             residual_norm=ResidualNormBackend.TORCH,
             initial_norm=InitialNormBackend.TORCH,
             runtime=RuntimeBackend.EAGER,
+        )
+
+    @classmethod
+    def from_config(cls, config: ConfigSpec) -> StructureSpec:
+        return cls(
+            attention=config.program.attention,
+            precision_plan=config.program.precision_plan,
+            qkv_materialization=config.program.qkv_materialization,
+            attention_output_bridge=config.program.attention_output_bridge,
+            ffn=config.program.ffn,
+            residual_norm=config.program.residual_norm,
+            initial_norm=config.program.initial_norm,
+            runtime=config.schedule.runtime,
         )
 
 
@@ -225,7 +374,21 @@ class BranchSpace:
 
     @property
     def branch_id(self) -> str:
-        return self.structure.branch_id
+        return "branch-" + _digest(
+            {
+                "structure": self.structure.to_dict(),
+                "scope": self.scope,
+                "domains": [
+                    {
+                        "name": domain.name,
+                        "choices": list(domain.choices),
+                        "default": domain.default,
+                        "ordered": domain.ordered,
+                    }
+                    for domain in self.domains
+                ],
+            }
+        )
 
     @property
     def cardinality(self) -> int:
@@ -275,6 +438,16 @@ class BranchSpace:
         for domain in self.domains:
             if parameters[domain.name] not in domain.choices:
                 raise ValueError(f"parameter {domain.name!r} is outside its domain")
+
+        (
+            qkv_projection,
+            attention_output_projection,
+            ffn_input_projection,
+            ffn_output_projection,
+        ) = _projection_backends(
+            self.structure.precision_plan,
+            parameters["projection_pattern"],
+        )
 
         attention_launch = None
         if self.structure.attention in {
@@ -327,7 +500,14 @@ class BranchSpace:
         return ConfigSpec(
             program=ProgramConfig(
                 attention=self.structure.attention,
-                linear=self.structure.linear,
+                qkv_projection=qkv_projection,
+                attention_output_projection=attention_output_projection,
+                ffn_input_projection=ffn_input_projection,
+                ffn_output_projection=ffn_output_projection,
+                precision_plan=self.structure.precision_plan,
+                qkv_materialization=self.structure.qkv_materialization,
+                attention_output_bridge=self.structure.attention_output_bridge,
+                ffn=self.structure.ffn,
                 residual_norm=self.structure.residual_norm,
                 initial_norm=self.structure.initial_norm,
             ),
@@ -335,16 +515,20 @@ class BranchSpace:
         )
 
     def parameters_for(self, config: ConfigSpec) -> dict[str, Scalar] | None:
-        if config.program != ProgramConfig(
-            attention=self.structure.attention,
-            linear=self.structure.linear,
-            residual_norm=self.structure.residual_norm,
-            initial_norm=self.structure.initial_norm,
-        ):
+        if StructureSpec.from_config(config) != self.structure:
             return None
-        if config.schedule.runtime is not self.structure.runtime:
+        projection_pattern = _projection_pattern_for(
+            self.structure.precision_plan,
+            (
+                config.program.qkv_projection,
+                config.program.attention_output_projection,
+                config.program.ffn_input_projection,
+                config.program.ffn_output_projection,
+            ),
+        )
+        if projection_pattern is None:
             return None
-        values: dict[str, Scalar] = {}
+        values: dict[str, Scalar] = {"projection_pattern": projection_pattern}
         if config.schedule.attention_launch is not None:
             values.update(
                 attention_tile=(
@@ -414,7 +598,14 @@ def _domains_for_structure(
     structure: StructureSpec,
     context: SearchContext,
 ) -> tuple[ParameterDomain, ...]:
-    domains: list[ParameterDomain] = []
+    projection_choices = _projection_pattern_choices(structure.precision_plan)
+    domains: list[ParameterDomain] = [
+        ParameterDomain(
+            "projection_pattern",
+            projection_choices,
+            projection_choices[0],
+        )
+    ]
     if structure.attention in {
         AttentionBackend.TRITON_SHAPE13,
         AttentionBackend.TRITON_DH8,
@@ -505,12 +696,25 @@ def _domains_for_structure(
     return tuple(domains)
 
 
+def _attention_output_bridge_choices(
+    attention: AttentionBackend,
+) -> tuple[AttentionOutputBridge, ...]:
+    if attention is AttentionBackend.TRITON_DH8:
+        return (AttentionOutputBridge.ATTENTION_DIRECT_BSD,)
+    if attention is AttentionBackend.TRITON_SHAPE13:
+        return tuple(AttentionOutputBridge)
+    return (AttentionOutputBridge.TORCH_BHSD_TO_BSD,)
+
+
 def _structure_specs(scope: str) -> tuple[StructureSpec, ...]:
     if scope not in {"resident", "streamed"}:
         raise ValueError("scope must be resident or streamed")
     portable = StructureSpec(
         attention=AttentionBackend.REFERENCE_STREAMING,
-        linear=LinearBackend.INPUT_DTYPE,
+        precision_plan=PrecisionPlan.INPUT_DTYPE,
+        qkv_materialization=QKVMaterialization.VIEW,
+        attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+        ffn=FFNBackend.TORCH,
         residual_norm=ResidualNormBackend.TORCH,
         initial_norm=InitialNormBackend.TORCH,
         runtime=RuntimeBackend.EAGER,
@@ -525,27 +729,65 @@ def _structure_specs(scope: str) -> tuple[StructureSpec, ...]:
             if runtime is not RuntimeBackend.STREAMED
         )
     )
-    for attention, linear, residual_norm, initial_norm, runtime in itertools.product(
+    for (
+        attention,
+        precision_plan,
+        qkv_materialization,
+        ffn,
+        residual_norm,
+        initial_norm,
+        runtime,
+    ) in itertools.product(
         AttentionBackend,
-        LinearBackend,
+        PrecisionPlan,
+        QKVMaterialization,
+        FFNBackend,
         ResidualNormBackend,
         InitialNormBackend,
         runtimes,
     ):
-        structure = StructureSpec(
-            attention=attention,
-            linear=linear,
-            residual_norm=residual_norm,
-            initial_norm=initial_norm,
-            runtime=runtime,
-        )
-        if structure.portable:
+        if attention in {
+            AttentionBackend.TRITON_SHAPE13,
+            AttentionBackend.TRITON_DH8,
+        } and precision_plan not in {
+            PrecisionPlan.FP16_QKV_ATTENTION,
+            PrecisionPlan.FP16_ATTENTION_BRANCH,
+            PrecisionPlan.FP16_CORE,
+        }:
             continue
-        # For resident execution, reference streaming is a single explicit
-        # control. In streamed execution it remains a valid inner program.
-        if scope == "resident" and attention is AttentionBackend.REFERENCE_STREAMING:
+        if (
+            residual_norm is ResidualNormBackend.TRITON_MIXED
+            and precision_plan is not PrecisionPlan.FP16_CORE
+        ):
             continue
-        values.append(structure)
+        if initial_norm is InitialNormBackend.TRITON_FP16 and (
+            precision_plan is not PrecisionPlan.FP16_CORE
+            or residual_norm is not ResidualNormBackend.TRITON_MIXED
+        ):
+            continue
+        if ffn is FFNBackend.COMPILED and runtime is RuntimeBackend.COMPILED_FORWARD:
+            continue
+        for attention_output_bridge in _attention_output_bridge_choices(attention):
+            structure = StructureSpec(
+                attention=attention,
+                precision_plan=precision_plan,
+                qkv_materialization=qkv_materialization,
+                attention_output_bridge=attention_output_bridge,
+                ffn=ffn,
+                residual_norm=residual_norm,
+                initial_norm=initial_norm,
+                runtime=runtime,
+            )
+            if structure.portable:
+                continue
+            # For resident execution, reference streaming is a single explicit
+            # control. In streamed execution it remains a valid inner program.
+            if (
+                scope == "resident"
+                and attention is AttentionBackend.REFERENCE_STREAMING
+            ):
+                continue
+            values.append(structure)
     return tuple(values)
 
 
@@ -688,13 +930,7 @@ class ProgramSearchSpace:
             if portable is not None:
                 required.append(portable)
         for config in required_configs:
-            structure = StructureSpec(
-                attention=config.program.attention,
-                linear=config.program.linear,
-                residual_norm=config.program.residual_norm,
-                initial_norm=config.program.initial_norm,
-                runtime=config.schedule.runtime,
-            )
+            structure = StructureSpec.from_config(config)
             branch = BranchSpace(
                 structure=structure,
                 domains=_domains_for_structure(structure, context),

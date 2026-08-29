@@ -9,10 +9,14 @@ import torch
 
 from .config import (
     AttentionBackend,
+    AttentionOutputBridge,
     AttentionOutputLayout,
     ConfigSpec,
+    FFNBackend,
     InitialNormBackend,
-    LinearBackend,
+    PrecisionPlan,
+    ProjectionBackend,
+    QKVMaterialization,
     ResidualNormBackend,
     RuntimeBackend,
     TritonAttentionParams,
@@ -65,14 +69,30 @@ class ExpectedExecutionTrace:
 
     runtime_backend: RuntimeBackend
     attention_backend: AttentionBackend
-    linear_backend: LinearBackend
+    qkv_projection_backend: ProjectionBackend
+    attention_output_projection_backend: ProjectionBackend
+    ffn_input_projection_backend: ProjectionBackend
+    ffn_output_projection_backend: ProjectionBackend
+    precision_plan: PrecisionPlan
+    qkv_materialization: QKVMaterialization
+    attention_output_bridge: AttentionOutputBridge
+    attention_output_layout: AttentionOutputLayout
+    ffn_backend: FFNBackend
     residual_norm_backend: ResidualNormBackend
     initial_norm_backend: InitialNormBackend
     attention_compute_dtype: str
-    linear_compute_dtype: str
-    attention_output_layout: AttentionOutputLayout
+    qkv_projection_compute_dtype: str
+    attention_output_projection_compute_dtype: str
+    ffn_input_projection_compute_dtype: str
+    ffn_output_projection_compute_dtype: str
     attention_calls: int
-    linear_calls: int
+    qkv_projection_calls: int
+    qkv_materialization_calls: int
+    attention_output_bridge_calls: int
+    attention_output_projection_calls: int
+    ffn_calls: int
+    ffn_input_projection_calls: int
+    ffn_output_projection_calls: int
     residual_norm_calls: int
     initial_norm_calls: int
     runtime_calls: int
@@ -84,16 +104,58 @@ class ExpectedExecutionTrace:
         return {
             "runtime_backend": self.runtime_backend.value,
             "attention_backend": self.attention_backend.value,
-            "linear_backend": self.linear_backend.value,
+            "qkv_projection_backend": self.qkv_projection_backend.value,
+            "attention_output_projection_backend": (
+                self.attention_output_projection_backend.value
+            ),
+            "ffn_input_projection_backend": (self.ffn_input_projection_backend.value),
+            "ffn_output_projection_backend": (self.ffn_output_projection_backend.value),
+            "precision_plan": self.precision_plan.value,
+            "qkv_materialization": self.qkv_materialization.value,
+            "attention_output_bridge": self.attention_output_bridge.value,
+            "attention_output_layout": self.attention_output_layout.value,
+            "ffn_backend": self.ffn_backend.value,
             "residual_norm_backend": self.residual_norm_backend.value,
             "initial_norm_backend": self.initial_norm_backend.value,
             "attention_compute_dtype": self.attention_compute_dtype,
-            "linear_compute_dtype": self.linear_compute_dtype,
+            "qkv_projection_compute_dtype": (self.qkv_projection_compute_dtype),
+            "attention_output_projection_compute_dtype": (
+                self.attention_output_projection_compute_dtype
+            ),
+            "ffn_input_projection_compute_dtype": (
+                self.ffn_input_projection_compute_dtype
+            ),
+            "ffn_output_projection_compute_dtype": (
+                self.ffn_output_projection_compute_dtype
+            ),
             "attention_calls": self.attention_calls,
-            "linear_calls": self.linear_calls,
+            "qkv_projection_calls": self.qkv_projection_calls,
+            "qkv_materialization_calls": self.qkv_materialization_calls,
+            "attention_output_bridge_calls": self.attention_output_bridge_calls,
+            "attention_output_projection_calls": (
+                self.attention_output_projection_calls
+            ),
+            "ffn_calls": self.ffn_calls,
+            "ffn_input_projection_calls": self.ffn_input_projection_calls,
+            "ffn_output_projection_calls": self.ffn_output_projection_calls,
             "residual_norm_calls": self.residual_norm_calls,
             "initial_norm_calls": self.initial_norm_calls,
             "runtime_calls": self.runtime_calls,
+            "attention_launch": (
+                None
+                if self.attention_launch is None
+                else self.attention_launch.to_dict()
+            ),
+            "residual_norm_launch": (
+                None
+                if self.residual_norm_launch is None
+                else self.residual_norm_launch.to_dict()
+            ),
+            "initial_norm_launch": (
+                None
+                if self.initial_norm_launch is None
+                else self.initial_norm_launch.to_dict()
+            ),
             "complete": True,
         }
 
@@ -107,9 +169,19 @@ class ExecutionPlan:
     inner_context: ExecutionContext
     attention_backend: AttentionBackend
     attention_compute_dtype: str
+    qkv_projection_backend: ProjectionBackend
+    qkv_projection_compute_dtype: str
+    qkv_materialization: QKVMaterialization
+    attention_output_bridge: AttentionOutputBridge
     attention_output_layout: AttentionOutputLayout
-    linear_backend: LinearBackend
-    linear_compute_dtype: str
+    attention_output_projection_backend: ProjectionBackend
+    attention_output_projection_compute_dtype: str
+    ffn_backend: FFNBackend
+    ffn_input_projection_backend: ProjectionBackend
+    ffn_input_projection_compute_dtype: str
+    ffn_output_projection_backend: ProjectionBackend
+    ffn_output_projection_compute_dtype: str
+    precision_plan: PrecisionPlan
     residual_norm_backend: ResidualNormBackend
     initial_norm_backend: InitialNormBackend
     runtime_backend: RuntimeBackend
@@ -168,11 +240,29 @@ class ExecutionPlan:
         return {
             "config": self.config.to_dict(),
             "qkv_projection": "packed",
+            "qkv_projection_backend": self.qkv_projection_backend.value,
+            "qkv_projection_compute_dtype": (self.qkv_projection_compute_dtype),
+            "qkv_materialization": self.qkv_materialization.value,
             "attention_backend": self.attention_backend.value,
             "attention_compute_dtype": self.attention_compute_dtype,
+            "attention_output_bridge": self.attention_output_bridge.value,
             "attention_output_layout": self.attention_output_layout.value,
-            "linear_backend": self.linear_backend.value,
-            "linear_compute_dtype": self.linear_compute_dtype,
+            "attention_output_projection_backend": (
+                self.attention_output_projection_backend.value
+            ),
+            "attention_output_projection_compute_dtype": (
+                self.attention_output_projection_compute_dtype
+            ),
+            "ffn_backend": self.ffn_backend.value,
+            "ffn_input_projection_backend": (self.ffn_input_projection_backend.value),
+            "ffn_input_projection_compute_dtype": (
+                self.ffn_input_projection_compute_dtype
+            ),
+            "ffn_output_projection_backend": (self.ffn_output_projection_backend.value),
+            "ffn_output_projection_compute_dtype": (
+                self.ffn_output_projection_compute_dtype
+            ),
+            "precision_plan": self.precision_plan.value,
             "residual_norm_backend": self.residual_norm_backend.value,
             "initial_norm_backend": self.initial_norm_backend.value,
             "runtime_backend": self.runtime_backend.value,
