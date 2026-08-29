@@ -27,20 +27,34 @@ from .config import (
 from .operators import (
     MIXED_FP16_CUDNN_BACKEND,
     MIXED_FP16_EFFICIENT_BACKEND,
+    TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
+    TRITON_D32_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
     TRITON_EXACT_GELU_BACKEND,
+    TRITON_LINEAR_EXACT_GELU_BACKEND,
+    TRITON_MASKED_LAYER_NORM_BACKEND,
+    TRITON_MASKED_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND,
+    TRITON_QKV_NATIVE_BHSD_BACKEND,
     TRITON_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND,
+    TRITON_STREAMING_DH64_CAUSAL_ATTENTION_BSD_BACKEND,
     causal_sdpa,
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
     prevalidated_mixed_fp16_efficient_attention,
+    prevalidated_triton_attention_output_projection,
+    prevalidated_triton_d32_residual_layer_norm,
     prevalidated_triton_dh8_causal_attention_bsd,
     prevalidated_triton_exact_gelu,
+    prevalidated_triton_linear_exact_gelu,
+    prevalidated_triton_masked_layer_norm,
+    prevalidated_triton_masked_residual_layer_norm,
+    prevalidated_triton_qkv_native_bhsd,
     prevalidated_triton_shape13_causal_attention,
     prevalidated_triton_shape13_causal_attention_bsd,
+    prevalidated_triton_streaming_dh64_causal_attention_bsd,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
@@ -83,9 +97,14 @@ class _ExecutionObservation:
     layer_input_dtypes: list[str] = field(default_factory=list)
     layer_output_dtypes: list[str] = field(default_factory=list)
     attention_launches: list[dict[str, int] | None] = field(default_factory=list)
+    qkv_launches: list[dict[str, int] | None] = field(default_factory=list)
+    attention_output_projection_launches: list[dict[str, int] | None] = field(
+        default_factory=list
+    )
     residual_norm_launches: list[dict[str, int] | None] = field(default_factory=list)
     initial_norm_launches: list[dict[str, int] | None] = field(default_factory=list)
     ffn_launches: list[dict[str, int] | None] = field(default_factory=list)
+    ffn_input_launches: list[dict[str, int] | None] = field(default_factory=list)
 
     @staticmethod
     def _uniform(values: list[Any]) -> Any | None:
@@ -116,9 +135,12 @@ class _ExecutionObservation:
             and len(self.layer_input_dtypes) == expected_layers
             and len(self.layer_output_dtypes) == expected_layers
             and len(self.attention_launches) == expected_layers
+            and len(self.qkv_launches) == expected_layers
+            and len(self.attention_output_projection_launches) == expected_layers
             and len(self.residual_norm_launches) == 2 * expected_layers
             and len(self.initial_norm_launches) == (1 if expected_layers else 0)
             and len(self.ffn_launches) == expected_layers
+            and len(self.ffn_input_launches) == expected_layers
         )
         precision_plan = _infer_precision_plan(
             self._uniform(self.qkv_projection_backends),
@@ -178,9 +200,14 @@ class _ExecutionObservation:
             "initial_norm_calls": len(self.initial_norm_backends),
             "runtime_calls": 1,
             "attention_launch": self._uniform(self.attention_launches),
+            "qkv_launch": self._uniform(self.qkv_launches),
+            "attention_output_projection_launch": self._uniform(
+                self.attention_output_projection_launches
+            ),
             "residual_norm_launch": self._uniform(self.residual_norm_launches),
             "initial_norm_launch": self._uniform(self.initial_norm_launches),
             "ffn_launch": self._uniform(self.ffn_launches),
+            "ffn_input_launch": self._uniform(self.ffn_input_launches),
             "complete": complete,
         }
 
@@ -260,6 +287,14 @@ class _FP16ShadowLinear(nn.Linear):
             raise RuntimeError("FP16 shadow weights must be materialized before use")
         return F.linear(value.to(torch.float16), weight, self._fp16_shadow_bias)
 
+    def fp16_shadow_parameters(self) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Return materialized inference parameters for fused primitives."""
+
+        weight = self._fp16_shadow_weight
+        if weight is None:
+            raise RuntimeError("FP16 shadow weights must be materialized before use")
+        return weight, self._fp16_shadow_bias
+
     def forward_backend(
         self,
         value: torch.Tensor,
@@ -306,16 +341,44 @@ class _SelfAttention(nn.Module):
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = value.shape
-        packed_qkv = self.qkv_proj.forward_backend(
-            value,
-            plan.qkv_projection_backend,
-        )
-        query, key, projected_value = split_qkv(
-            packed_qkv,
-            self.num_heads,
-            contiguous=(plan.qkv_materialization is QKVMaterialization.CONTIGUOUS),
-        )
-        if observation is not None:
+        if plan.qkv_materialization is QKVMaterialization.TRITON_NATIVE_BHSD:
+            launch = plan.qkv_launch
+            if launch is None:
+                raise RuntimeError(
+                    "Triton native-layout QKV plan is missing launch parameters"
+                )
+            weight, bias = self.qkv_proj.fp16_shadow_parameters()
+            if bias is None:
+                raise RuntimeError("Triton native-layout QKV requires a bias")
+            query, key, projected_value, actual_marker = (
+                prevalidated_triton_qkv_native_bhsd(
+                    value.to(torch.float16),
+                    weight,
+                    bias,
+                    num_heads=self.num_heads,
+                    block_m=launch.block_m,
+                    block_n=launch.block_n,
+                    block_k=launch.block_k,
+                    num_warps=launch.num_warps,
+                )
+            )
+            _strict_backend_marker(
+                actual_marker,
+                expected_marker=TRITON_QKV_NATIVE_BHSD_BACKEND,
+                planned_backend=plan.qkv_materialization.value,
+            )
+            materialization = QKVMaterialization.TRITON_NATIVE_BHSD
+            qkv_compute_dtype = str(query.dtype).removeprefix("torch.")
+        else:
+            packed_qkv = self.qkv_proj.forward_backend(
+                value,
+                plan.qkv_projection_backend,
+            )
+            query, key, projected_value = split_qkv(
+                packed_qkv,
+                self.num_heads,
+                contiguous=(plan.qkv_materialization is QKVMaterialization.CONTIGUOUS),
+            )
             packed_storage = packed_qkv.untyped_storage().data_ptr()
             shares_packed = all(
                 tensor.untyped_storage().data_ptr() == packed_storage
@@ -332,8 +395,36 @@ class _SelfAttention(nn.Module):
                 tensor.is_contiguous() for tensor in (query, key, projected_value)
             ):
                 raise RuntimeError("materialized QKV tensors must be contiguous")
+            qkv_compute_dtype = str(packed_qkv.dtype).removeprefix("torch.")
+        if observation is not None:
             observation.qkv_materializations.append(materialization.value)
-        if plan.attention_backend is AttentionBackend.TRITON_DH8:
+            observation.qkv_launches.append(
+                None if plan.qkv_launch is None else plan.qkv_launch.to_dict()
+            )
+        if plan.attention_backend is AttentionBackend.TRITON_STREAMING_DH64:
+            launch = plan.attention_launch
+            if launch is None:
+                raise RuntimeError(
+                    "Triton streaming Dh64 plan is missing launch parameters"
+                )
+            context, actual_marker = (
+                prevalidated_triton_streaming_dh64_causal_attention_bsd(
+                    query,
+                    key,
+                    projected_value,
+                    scale=self.scale,
+                    block_m=launch.block_m,
+                    block_n=launch.block_n,
+                    num_warps=launch.num_warps,
+                    num_stages=launch.num_stages,
+                )
+            )
+            actual_attention_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=(TRITON_STREAMING_DH64_CAUSAL_ATTENTION_BSD_BACKEND),
+                planned_backend=plan.attention_backend.value,
+            )
+        elif plan.attention_backend is AttentionBackend.TRITON_DH8:
             launch = plan.attention_launch
             if launch is None:
                 raise RuntimeError("Triton Dh8 plan is missing launch parameters")
@@ -468,14 +559,47 @@ class _SelfAttention(nn.Module):
                 .view(batch_size, sequence_length, self.d_model)
             )
             actual_bridge = AttentionOutputBridge.TORCH_BHSD_TO_BSD
+            output = self.out_proj.forward_backend(
+                context,
+                plan.attention_output_projection_backend,
+            )
+        elif (
+            plan.attention_output_bridge is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+        ):
+            if actual_layout is not AttentionOutputLayout.BHSD:
+                raise RuntimeError(
+                    "Triton output projection requires BHSD attention output"
+                )
+            launch = plan.attention_output_projection_launch
+            if launch is None:
+                raise RuntimeError(
+                    "Triton attention-output projection is missing launch parameters"
+                )
+            weight, bias = self.out_proj.fp16_shadow_parameters()
+            output, actual_marker = prevalidated_triton_attention_output_projection(
+                context,
+                weight,
+                bias,
+                block_m=launch.block_m,
+                block_n=launch.block_n,
+                block_k=launch.block_k,
+                num_warps=launch.num_warps,
+                num_stages=launch.num_stages,
+            )
+            _strict_backend_marker(
+                actual_marker,
+                expected_marker=TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
+                planned_backend=plan.attention_output_bridge.value,
+            )
+            actual_bridge = AttentionOutputBridge.TRITON_BHSD_PROJECTION
         else:
             if actual_layout is not AttentionOutputLayout.BSD:
                 raise RuntimeError("direct bridge requires BSD attention output")
             actual_bridge = AttentionOutputBridge.ATTENTION_DIRECT_BSD
-        output = self.out_proj.forward_backend(
-            context,
-            plan.attention_output_projection_backend,
-        )
+            output = self.out_proj.forward_backend(
+                context,
+                plan.attention_output_projection_backend,
+            )
         if observation is not None:
             observation.attention_backends.append(actual_attention_backend)
             observation.attention_compute_dtypes.append(
@@ -486,15 +610,14 @@ class _SelfAttention(nn.Module):
                     AttentionBackend.FP16_CUDNN_SDPA,
                     AttentionBackend.TRITON_SHAPE13,
                     AttentionBackend.TRITON_DH8,
+                    AttentionBackend.TRITON_STREAMING_DH64,
                 }
                 else str(query.dtype).removeprefix("torch.")
             )
             observation.qkv_projection_backends.append(
                 plan.qkv_projection_backend.value
             )
-            observation.qkv_projection_compute_dtypes.append(
-                str(packed_qkv.dtype).removeprefix("torch.")
-            )
+            observation.qkv_projection_compute_dtypes.append(qkv_compute_dtype)
             observation.attention_output_layouts.append(actual_layout.value)
             observation.attention_output_bridges.append(actual_bridge.value)
             observation.attention_output_projection_backends.append(
@@ -502,6 +625,11 @@ class _SelfAttention(nn.Module):
             )
             observation.attention_output_projection_compute_dtypes.append(
                 str(output.dtype).removeprefix("torch.")
+            )
+            observation.attention_output_projection_launches.append(
+                None
+                if plan.attention_output_projection_launch is None
+                else plan.attention_output_projection_launch.to_dict()
             )
             observation.attention_launches.append(
                 None
@@ -513,7 +641,7 @@ class _SelfAttention(nn.Module):
         )
         if output.dtype != value.dtype and not mixed_residual_stream:
             output = output.to(value.dtype)
-        if valid_token_mask is not None:
+        if valid_token_mask is not None and not plan.use_masked_residual_norm:
             output.masked_fill_(~valid_token_mask[..., None], 0)
         return output
 
@@ -568,11 +696,55 @@ class _TransformerBlock(nn.Module):
         projected: torch.Tensor | None = None
         hidden: torch.Tensor | None = None
         observed_update: torch.Tensor | None = None
-        if observation is not None or plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU:
+        ffn_input_compute_dtype: str | None = None
+        if plan.ffn_backend is FFNBackend.TRITON_LINEAR_EXACT_GELU:
+            launch = plan.ffn_input_launch
+            if launch is None:
+                raise RuntimeError(
+                    "Triton Linear + Exact-GELU plan is missing launch parameters"
+                )
+            if plan.ffn_input_projection_backend is ProjectionBackend.INPUT_DTYPE:
+                weight = self.ffn_in.weight
+                bias = self.ffn_in.bias
+                fused_input = normalized.to(weight.dtype)
+            elif plan.ffn_input_projection_backend is ProjectionBackend.FP16_SHADOW:
+                weight, bias = self.ffn_in.fp16_shadow_parameters()
+                fused_input = normalized.to(torch.float16)
+            else:
+                raise RuntimeError(
+                    "Triton Linear + Exact-GELU requires explicit input or shadow weights"
+                )
+            if bias is None:
+                raise RuntimeError("Triton Linear + Exact-GELU requires a bias")
+            hidden, actual_marker = prevalidated_triton_linear_exact_gelu(
+                fused_input,
+                weight,
+                bias,
+                block_m=launch.block_m,
+                block_n=launch.block_n,
+                block_k=launch.block_k,
+                num_warps=launch.num_warps,
+                num_stages=launch.num_stages,
+            )
+            ffn_input_compute_dtype = str(fused_input.dtype).removeprefix("torch.")
+            _strict_backend_marker(
+                actual_marker,
+                expected_marker=TRITON_LINEAR_EXACT_GELU_BACKEND,
+                planned_backend=plan.ffn_backend.value,
+            )
+            projected = hidden
+            observed_update = self.ffn_out.forward_backend(
+                hidden,
+                plan.ffn_output_projection_backend,
+            )
+        elif (
+            observation is not None or plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU
+        ):
             projected = self.ffn_in.forward_backend(
                 normalized,
                 plan.ffn_input_projection_backend,
             )
+            ffn_input_compute_dtype = str(projected.dtype).removeprefix("torch.")
             if plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU:
                 launch = plan.ffn_launch
                 if launch is None:
@@ -599,11 +771,12 @@ class _TransformerBlock(nn.Module):
         if observation is not None:
             assert projected is not None and hidden is not None
             assert observed_update is not None
+            assert ffn_input_compute_dtype is not None
             observation.ffn_input_projection_backends.append(
                 plan.ffn_input_projection_backend.value
             )
             observation.ffn_input_projection_compute_dtypes.append(
-                str(projected.dtype).removeprefix("torch.")
+                ffn_input_compute_dtype
             )
             observation.ffn_activation_output_dtypes.append(
                 str(hidden.dtype).removeprefix("torch.")
@@ -617,6 +790,11 @@ class _TransformerBlock(nn.Module):
             observation.ffn_launches.append(
                 None if plan.ffn_launch is None else plan.ffn_launch.to_dict()
             )
+            observation.ffn_input_launches.append(
+                None
+                if plan.ffn_input_launch is None
+                else plan.ffn_input_launch.to_dict()
+            )
         if plan.ffn_backend is FFNBackend.COMPILED:
             ffn_update = self.compiled_ffn.run(
                 exact_ffn,
@@ -628,6 +806,10 @@ class _TransformerBlock(nn.Module):
             assert observed_update is not None
             ffn_update = observed_update
             actual_ffn_backend = FFNBackend.TRITON_EXACT_GELU
+        elif plan.ffn_backend is FFNBackend.TRITON_LINEAR_EXACT_GELU:
+            assert observed_update is not None
+            ffn_update = observed_update
+            actual_ffn_backend = FFNBackend.TRITON_LINEAR_EXACT_GELU
         else:
             ffn_update = (
                 observed_update if observation is not None else exact_ffn(normalized)
@@ -927,12 +1109,27 @@ class UserOptimizedTransformer(nn.Module):
                     raise RuntimeError(
                         "Triton initial norm plan is missing launch parameters"
                     )
-                normalized = triton_initial_fp16_layer_norm(
-                    value,
-                    self.layers[0].norm1,
-                    block_rows=launch.block_rows,
-                    num_warps=launch.num_warps,
-                )
+                if plan.use_masked_initial_norm and valid_token_mask is not None:
+                    normalized, actual_marker = prevalidated_triton_masked_layer_norm(
+                        value,
+                        valid_token_mask,
+                        self.layers[0].norm1,
+                        output_dtype=torch.float16,
+                        block_rows=launch.block_rows,
+                        num_warps=launch.num_warps,
+                    )
+                    _strict_backend_marker(
+                        actual_marker,
+                        expected_marker=TRITON_MASKED_LAYER_NORM_BACKEND,
+                        planned_backend=plan.initial_norm_backend.value,
+                    )
+                else:
+                    normalized = triton_initial_fp16_layer_norm(
+                        value,
+                        self.layers[0].norm1,
+                        block_rows=launch.block_rows,
+                        num_warps=launch.num_warps,
+                    )
                 if observation is not None:
                     observation.initial_norm_backends.append(
                         InitialNormBackend.TRITON_FP16.value
@@ -991,7 +1188,9 @@ class UserOptimizedTransformer(nn.Module):
                         str(normalized.dtype).removeprefix("torch.")
                     )
             value = normalized
-        if valid_token_mask is not None:
+        if valid_token_mask is not None and not (
+            plan.use_masked_residual_norm and self.layers
+        ):
             value.masked_fill_(~valid_token_mask[..., None], 0)
         if observation is not None:
             self._last_execution_observation = observation.describe(len(self.layers))
@@ -1010,7 +1209,60 @@ class UserOptimizedTransformer(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply one residual boundary and its following LayerNorm."""
 
-        if plan.residual_norm_backend is ResidualNormBackend.COMPILED:
+        if plan.use_masked_residual_norm and valid_token_mask is not None:
+            launch = plan.residual_norm_launch
+            if launch is None:
+                raise RuntimeError(
+                    "Triton masked residual norm plan is missing launch parameters"
+                )
+            output_dtype = (
+                torch.float16
+                if plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
+                and not final_boundary
+                else torch.float32
+            )
+            value, normalized, actual_marker = (
+                prevalidated_triton_masked_residual_layer_norm(
+                    value,
+                    update,
+                    valid_token_mask,
+                    layer_norm,
+                    output_dtype=output_dtype,
+                    block_rows=launch.block_rows,
+                    num_warps=launch.num_warps,
+                )
+            )
+            actual_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=TRITON_MASKED_RESIDUAL_LAYER_NORM_BACKEND,
+                planned_backend=plan.residual_norm_backend.value,
+            )
+        elif plan.use_d32_residual_norm:
+            launch = plan.residual_norm_launch
+            if launch is None:
+                raise RuntimeError("Triton D32 plan is missing launch parameters")
+            output_dtype = (
+                torch.float16
+                if plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
+                and not final_boundary
+                else torch.float32
+            )
+            value, normalized, actual_marker = (
+                prevalidated_triton_d32_residual_layer_norm(
+                    value,
+                    update,
+                    layer_norm,
+                    output_dtype=output_dtype,
+                    rows_per_program=launch.block_rows,
+                    num_warps=launch.num_warps,
+                )
+            )
+            actual_backend = _strict_backend_marker(
+                actual_marker,
+                expected_marker=TRITON_D32_RESIDUAL_LAYER_NORM_BACKEND,
+                planned_backend=plan.residual_norm_backend.value,
+            )
+        elif plan.residual_norm_backend is ResidualNormBackend.COMPILED:
             value, normalized, actual_marker = residual_layer_norm(
                 value,
                 update,
@@ -1135,6 +1387,38 @@ class UserOptimizedTransformer(nn.Module):
         if ProjectionBackend.FP16_SHADOW in projection_backends:
             self._materialize_fp16_shadow_weights(plan)
 
+        if plan.use_streamed_execution:
+            microbatch_size = plan.microbatch_size
+            if microbatch_size is None or microbatch_size <= 0:
+                raise RuntimeError("streamed plan is missing its microbatch size")
+            output: torch.Tensor | None = None
+            for start in range(0, x.shape[0], microbatch_size):
+                end = min(start + microbatch_size, x.shape[0])
+                mask_slice = (
+                    None if valid_token_mask is None else valid_token_mask[start:end]
+                )
+                chunk = self._forward_eager(
+                    x[start:end],
+                    mask_slice,
+                    plan,
+                )
+                if output is None:
+                    output = torch.empty(
+                        (x.shape[0], *chunk.shape[1:]),
+                        dtype=chunk.dtype,
+                        device=chunk.device,
+                    )
+                output[start:end].copy_(chunk)
+            if output is None:
+                raise RuntimeError("streamed execution requires a non-empty batch")
+            if (
+                self._execution_observation_enabled
+                and self._last_execution_observation is not None
+            ):
+                self._last_execution_observation["runtime_backend"] = (
+                    RuntimeBackend.STREAMED.value
+                )
+            return output
         if plan.use_batch_tiled_cuda_graph:
             if plan.batch_tile_size is None:
                 raise RuntimeError("batch-tiled plan is missing its tile size")

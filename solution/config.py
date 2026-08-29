@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
-CONFIG_SCHEMA_VERSION = 3
+CONFIG_SCHEMA_VERSION = 4
 
 
 class AttentionBackend(StrEnum):
@@ -20,6 +20,7 @@ class AttentionBackend(StrEnum):
     FP16_CUDNN_SDPA = "fp16_cudnn_sdpa"
     TRITON_SHAPE13 = "triton_shape13"
     TRITON_DH8 = "triton_dh8"
+    TRITON_STREAMING_DH64 = "triton_streaming_dh64"
 
 
 class ProjectionBackend(StrEnum):
@@ -46,6 +47,7 @@ class QKVMaterialization(StrEnum):
 
     VIEW = "view"
     CONTIGUOUS = "contiguous"
+    TRITON_NATIVE_BHSD = "triton_native_bhsd"
 
 
 class AttentionOutputBridge(StrEnum):
@@ -53,6 +55,7 @@ class AttentionOutputBridge(StrEnum):
 
     TORCH_BHSD_TO_BSD = "torch_bhsd_to_bsd"
     ATTENTION_DIRECT_BSD = "attention_direct_bsd"
+    TRITON_BHSD_PROJECTION = "triton_bhsd_projection"
 
 
 class FFNBackend(StrEnum):
@@ -61,6 +64,7 @@ class FFNBackend(StrEnum):
     TORCH = "torch"
     COMPILED = "compiled"
     TRITON_EXACT_GELU = "triton_exact_gelu"
+    TRITON_LINEAR_EXACT_GELU = "triton_linear_exact_gelu"
 
 
 class ResidualNormBackend(StrEnum):
@@ -205,6 +209,96 @@ class TritonAttentionParams:
     def from_dict(cls, payload: object) -> TritonAttentionParams:
         value = _mapping(payload, field="attention_launch")
         _exact_fields(value, cls._FIELDS, field="attention_launch")
+        return cls(**value)
+
+
+@dataclass(frozen=True, slots=True)
+class TritonQKVParams:
+    """Launch parameters for the QKV projection with native BHSD outputs."""
+
+    block_m: int
+    block_n: int
+    block_k: int
+    num_warps: int
+
+    _FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"block_m", "block_n", "block_k", "num_warps"}
+    )
+
+    def __post_init__(self) -> None:
+        for field_name in ("block_m", "block_n", "block_k"):
+            object.__setattr__(
+                self,
+                field_name,
+                _power_of_two(
+                    getattr(self, field_name),
+                    field=f"qkv_launch.{field_name}",
+                ),
+            )
+        if self.num_warps not in {1, 2, 4, 8}:
+            raise ValueError("qkv_launch.num_warps must be one of 1, 2, 4, 8")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "block_m": self.block_m,
+            "block_n": self.block_n,
+            "block_k": self.block_k,
+            "num_warps": self.num_warps,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> TritonQKVParams:
+        value = _mapping(payload, field="qkv_launch")
+        _exact_fields(value, cls._FIELDS, field="qkv_launch")
+        return cls(**value)
+
+
+@dataclass(frozen=True, slots=True)
+class TritonGemmParams:
+    """Launch parameters shared by fused projection and FFN GEMM primitives."""
+
+    block_m: int
+    block_n: int
+    block_k: int
+    num_warps: int
+    num_stages: int
+
+    _FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"block_m", "block_n", "block_k", "num_warps", "num_stages"}
+    )
+
+    def __post_init__(self) -> None:
+        for field_name in ("block_m", "block_n", "block_k"):
+            object.__setattr__(
+                self,
+                field_name,
+                _power_of_two(
+                    getattr(self, field_name),
+                    field=f"gemm_launch.{field_name}",
+                ),
+            )
+        if self.num_warps not in {1, 2, 4, 8}:
+            raise ValueError("gemm_launch.num_warps must be one of 1, 2, 4, 8")
+        if (
+            isinstance(self.num_stages, bool)
+            or not isinstance(self.num_stages, int)
+            or not 1 <= self.num_stages <= 8
+        ):
+            raise ValueError("gemm_launch.num_stages must be in [1, 8]")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "block_m": self.block_m,
+            "block_n": self.block_n,
+            "block_k": self.block_k,
+            "num_warps": self.num_warps,
+            "num_stages": self.num_stages,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> TritonGemmParams:
+        value = _mapping(payload, field="gemm_launch")
+        _exact_fields(value, cls._FIELDS, field="gemm_launch")
         return cls(**value)
 
 
@@ -377,9 +471,12 @@ class ScheduleConfig:
 
     runtime: RuntimeBackend
     attention_launch: TritonAttentionParams | None = None
+    qkv_launch: TritonQKVParams | None = None
+    attention_output_projection_launch: TritonGemmParams | None = None
     residual_norm_launch: TritonNormParams | None = None
     initial_norm_launch: TritonNormParams | None = None
     ffn_launch: TritonFFNParams | None = None
+    ffn_input_launch: TritonGemmParams | None = None
     compile_mode: str | None = None
     batch_tile_size: int | None = None
     microbatch_size: int | None = None
@@ -389,9 +486,12 @@ class ScheduleConfig:
         {
             "runtime",
             "attention_launch",
+            "qkv_launch",
+            "attention_output_projection_launch",
             "residual_norm_launch",
             "initial_norm_launch",
             "ffn_launch",
+            "ffn_input_launch",
             "compile_mode",
             "batch_tile_size",
             "microbatch_size",
@@ -406,6 +506,17 @@ class ScheduleConfig:
             self.attention_launch, TritonAttentionParams
         ):
             raise TypeError("attention_launch must be TritonAttentionParams or None")
+        if self.qkv_launch is not None and not isinstance(
+            self.qkv_launch, TritonQKVParams
+        ):
+            raise TypeError("qkv_launch must be TritonQKVParams or None")
+        for field_name in (
+            "attention_output_projection_launch",
+            "ffn_input_launch",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, TritonGemmParams):
+                raise TypeError(f"{field_name} must be TritonGemmParams or None")
         for field_name in ("residual_norm_launch", "initial_norm_launch"):
             value = getattr(self, field_name)
             if value is not None and not isinstance(value, TritonNormParams):
@@ -454,6 +565,14 @@ class ScheduleConfig:
                 if self.attention_launch is None
                 else self.attention_launch.to_dict()
             ),
+            "qkv_launch": (
+                None if self.qkv_launch is None else self.qkv_launch.to_dict()
+            ),
+            "attention_output_projection_launch": (
+                None
+                if self.attention_output_projection_launch is None
+                else self.attention_output_projection_launch.to_dict()
+            ),
             "residual_norm_launch": (
                 None
                 if self.residual_norm_launch is None
@@ -466,6 +585,11 @@ class ScheduleConfig:
             ),
             "ffn_launch": (
                 None if self.ffn_launch is None else self.ffn_launch.to_dict()
+            ),
+            "ffn_input_launch": (
+                None
+                if self.ffn_input_launch is None
+                else self.ffn_input_launch.to_dict()
             ),
             "compile_mode": self.compile_mode,
             "batch_tile_size": self.batch_tile_size,
@@ -484,6 +608,18 @@ class ScheduleConfig:
                 if value["attention_launch"] is None
                 else TritonAttentionParams.from_dict(value["attention_launch"])
             ),
+            qkv_launch=(
+                None
+                if value["qkv_launch"] is None
+                else TritonQKVParams.from_dict(value["qkv_launch"])
+            ),
+            attention_output_projection_launch=(
+                None
+                if value["attention_output_projection_launch"] is None
+                else TritonGemmParams.from_dict(
+                    value["attention_output_projection_launch"]
+                )
+            ),
             residual_norm_launch=(
                 None
                 if value["residual_norm_launch"] is None
@@ -498,6 +634,11 @@ class ScheduleConfig:
                 None
                 if value["ffn_launch"] is None
                 else TritonFFNParams.from_dict(value["ffn_launch"])
+            ),
+            ffn_input_launch=(
+                None
+                if value["ffn_input_launch"] is None
+                else TritonGemmParams.from_dict(value["ffn_input_launch"])
             ),
             compile_mode=value["compile_mode"],
             batch_tile_size=value["batch_tile_size"],
@@ -529,10 +670,27 @@ class ConfigSpec:
         triton_attention = self.program.attention in {
             AttentionBackend.TRITON_SHAPE13,
             AttentionBackend.TRITON_DH8,
+            AttentionBackend.TRITON_STREAMING_DH64,
         }
         if triton_attention != (self.schedule.attention_launch is not None):
             raise ValueError(
                 "attention_launch must be present exactly for Triton attention"
+            )
+        native_qkv = (
+            self.program.qkv_materialization is QKVMaterialization.TRITON_NATIVE_BHSD
+        )
+        if native_qkv != (self.schedule.qkv_launch is not None):
+            raise ValueError("qkv_launch must be present exactly for Triton native QKV")
+        fused_output_projection = (
+            self.program.attention_output_bridge
+            is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+        )
+        if fused_output_projection != (
+            self.schedule.attention_output_projection_launch is not None
+        ):
+            raise ValueError(
+                "attention_output_projection_launch must be present exactly for "
+                "the Triton BHSD projection bridge"
             )
         triton_residual = self.program.residual_norm in {
             ResidualNormBackend.TRITON,
@@ -550,6 +708,11 @@ class ConfigSpec:
         triton_ffn = self.program.ffn is FFNBackend.TRITON_EXACT_GELU
         if triton_ffn != (self.schedule.ffn_launch is not None):
             raise ValueError("ffn_launch must be present exactly for Triton Exact-GELU")
+        fused_ffn_input = self.program.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU
+        if fused_ffn_input != (self.schedule.ffn_input_launch is not None):
+            raise ValueError(
+                "ffn_input_launch must be present exactly for Triton Linear Exact-GELU"
+            )
 
     @property
     def attention_output_layout(self) -> AttentionOutputLayout:
@@ -649,7 +812,9 @@ __all__ = [
     "ScheduleConfig",
     "TritonAttentionParams",
     "TritonFFNParams",
+    "TritonGemmParams",
     "TritonNormParams",
+    "TritonQKVParams",
     "portable_config",
     "portable_streamed_config",
 ]

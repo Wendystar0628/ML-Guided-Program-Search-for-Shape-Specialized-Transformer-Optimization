@@ -15,6 +15,7 @@ from .config import (
     InitialNormBackend,
     PrecisionPlan,
     ProjectionBackend,
+    QKVMaterialization,
     ResidualNormBackend,
     RuntimeBackend,
 )
@@ -25,6 +26,22 @@ from .operators import (
     triton_mixed_residual_layer_norm_available,
     triton_residual_layer_norm_available,
     triton_shape13_causal_attention_available,
+)
+from .operators.attention.triton_streaming_dh64 import (
+    triton_streaming_dh64_causal_attention_available,
+)
+from .operators.ffn.triton_linear_exact_gelu import (
+    triton_linear_exact_gelu_available,
+)
+from .operators.layer.triton_d32_fusion import (
+    triton_d32_residual_layer_norm_available,
+)
+from .operators.norm.triton_masked import triton_masked_layer_norm_available
+from .operators.projection.triton_attention_output import (
+    triton_attention_output_projection_available,
+)
+from .operators.projection.triton_qkv_layout import (
+    triton_qkv_native_bhsd_available,
 )
 from .plan import (
     ExecutionContext,
@@ -122,6 +139,12 @@ class HardwareCapabilities:
     triton_mixed_residual_norm: bool
     triton_initial_norm: bool
     triton_exact_gelu: bool
+    triton_streaming_dh64_attention: bool = False
+    triton_qkv_native_bhsd: bool = False
+    triton_attention_output_projection: bool = False
+    triton_linear_exact_gelu: bool = False
+    triton_d32_residual_norm: bool = False
+    triton_masked_norm: bool = False
 
     @classmethod
     def detect(cls, device: torch.device) -> HardwareCapabilities:
@@ -162,6 +185,16 @@ class HardwareCapabilities:
             triton_mixed_residual_norm=(triton_mixed_residual_layer_norm_available()),
             triton_initial_norm=triton_initial_fp16_layer_norm_available(),
             triton_exact_gelu=triton_exact_gelu_available(),
+            triton_streaming_dh64_attention=(
+                triton_streaming_dh64_causal_attention_available()
+            ),
+            triton_qkv_native_bhsd=triton_qkv_native_bhsd_available(),
+            triton_attention_output_projection=(
+                triton_attention_output_projection_available()
+            ),
+            triton_linear_exact_gelu=triton_linear_exact_gelu_available(),
+            triton_d32_residual_norm=(triton_d32_residual_layer_norm_available()),
+            triton_masked_norm=triton_masked_layer_norm_available(),
         )
 
 
@@ -187,8 +220,25 @@ class PlanBuilder:
         self._validate_context(context, capabilities, reject)
         inner_context = self._validate_runtime(config, context, capabilities, reject)
         self._validate_projections(config, inner_context, reject)
-        self._validate_attention(config, inner_context, capabilities, reject)
-        self._validate_attention_bridge(config, reject)
+        self._validate_qkv_materialization(
+            config,
+            inner_context,
+            capabilities,
+            reject,
+        )
+        self._validate_attention(
+            config,
+            inner_context,
+            capabilities,
+            reject,
+            outer_context=context,
+        )
+        self._validate_attention_bridge(
+            config,
+            inner_context,
+            capabilities,
+            reject,
+        )
         self._validate_ffn(config, inner_context, capabilities, reject)
         self._validate_residual_norm(config, inner_context, capabilities, reject)
         self._validate_initial_norm(config, inner_context, capabilities, reject)
@@ -197,7 +247,7 @@ class PlanBuilder:
             rejection = CompileRejection(config.config_id, tuple(violations))
             return CompilationResult(config.config_id, None, rejection)
 
-        plan = self._build_plan(config, context, inner_context)
+        plan = self._build_plan(config, context, inner_context, capabilities)
         return CompilationResult(config.config_id, plan, None)
 
     def build(
@@ -298,6 +348,12 @@ class PlanBuilder:
                     "schedule.microbatch_size",
                     "microbatch cannot exceed the logical batch",
                 )
+            elif context.batch_size % microbatch_size:
+                reject(
+                    "microbatch_not_divisor",
+                    "schedule.microbatch_size",
+                    "microbatch must divide the logical batch",
+                )
             return context.with_batch_size(microbatch_size)
         if runtime is RuntimeBackend.COMPILED_FORWARD:
             if not hardware.torch_compile:
@@ -338,11 +394,81 @@ class PlanBuilder:
                 )
 
     @staticmethod
+    def _validate_qkv_materialization(
+        config: ConfigSpec,
+        context: ExecutionContext,
+        hardware: HardwareCapabilities,
+        reject: Any,
+    ) -> None:
+        if (
+            config.program.qkv_materialization
+            is not QKVMaterialization.TRITON_NATIVE_BHSD
+        ):
+            return
+        if config.program.qkv_projection is not ProjectionBackend.FP16_SHADOW:
+            reject(
+                "backend_incompatible",
+                "program.qkv_projection",
+                "native BHSD QKV requires FP16 shadow weights",
+            )
+        if not hardware.triton_qkv_native_bhsd:
+            reject(
+                "backend_unavailable",
+                "program.qkv_materialization",
+                "Triton native-layout QKV projection is unavailable",
+            )
+        if context.device.type != "cuda" or not context.inference:
+            reject(
+                "requires_cuda_inference",
+                "program.qkv_materialization",
+                "native BHSD QKV is available only for CUDA inference",
+            )
+        if context.d_model not in {32, 128, 1024}:
+            reject(
+                "unsupported_shape",
+                "program.qkv_materialization",
+                "native BHSD QKV supports D32, D128, and D1024",
+            )
+        if context.seq_len not in {32, 128, 1024}:
+            reject(
+                "unsupported_shape",
+                "program.qkv_materialization",
+                "native BHSD QKV supports S32, S128, and S1024",
+            )
+        if context.num_heads not in {1, 2, 4, 16}:
+            reject(
+                "unsupported_shape",
+                "program.qkv_materialization",
+                "native BHSD QKV supports 1, 2, 4, or 16 heads",
+            )
+        if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
+            reject(
+                "runtime_incompatible",
+                "schedule.runtime",
+                "native BHSD QKV is not nested in compiled forward",
+            )
+        launch = config.schedule.qkv_launch
+        assert launch is not None
+        if (
+            launch.block_m not in {16, 32, 64, 128}
+            or launch.block_n not in {16, 32, 64, 128}
+            or launch.block_k not in {16, 32, 64}
+            or launch.num_warps not in {2, 4, 8}
+        ):
+            reject(
+                "unsupported_launch_value",
+                "schedule.qkv_launch",
+                "native BHSD QKV launch is outside the implemented template",
+            )
+
+    @staticmethod
     def _validate_attention(
         config: ConfigSpec,
         context: ExecutionContext,
         hardware: HardwareCapabilities,
         reject: Any,
+        *,
+        outer_context: ExecutionContext,
     ) -> None:
         backend = config.program.attention
         head_dim = context.head_dim
@@ -425,6 +551,49 @@ class PlanBuilder:
 
         launch = config.schedule.attention_launch
         assert launch is not None
+        if backend is AttentionBackend.TRITON_STREAMING_DH64:
+            if not hardware.triton_streaming_dh64_attention:
+                reject(
+                    "backend_unavailable",
+                    "program.attention",
+                    "Shape 14 Triton streaming attention is unavailable",
+                )
+            if (
+                context.batch_size not in {1, 2, 4}
+                or context.num_layers != 2
+                or context.ffn_dim != 1024
+                or context.num_heads != 16
+                or context.seq_len != 100000
+                or context.d_model != 1024
+                or context.causal is not True
+                or context.has_valid_token_mask
+                or head_dim != 64
+            ):
+                reject(
+                    "unsupported_shape",
+                    "program.attention",
+                    "Shape 14 Triton attention requires a B1/2/4 microbatch "
+                    "with L2/H16/S100000/Dh64",
+                )
+            if qkv_dtype != "float16":
+                reject(
+                    "requires_fp16_qkv",
+                    "program.qkv_projection",
+                    "Shape 14 Triton attention requires FP16 QKV",
+                )
+            if (
+                launch.block_m not in {16, 32, 64}
+                or launch.block_n not in {16, 32, 64, 128}
+                or launch.num_warps not in {2, 4, 8}
+                or launch.num_stages not in {1, 2, 3, 4}
+                or (launch.block_n == 128 and launch.num_stages == 4)
+            ):
+                reject(
+                    "unsupported_launch_value",
+                    "schedule.attention_launch",
+                    "Shape 14 streaming launch is outside the implemented template",
+                )
+            return
         if launch.block_m not in {16, 32, 64, 128}:
             reject(
                 "unsupported_launch_value",
@@ -514,12 +683,18 @@ class PlanBuilder:
         raise AssertionError(f"unhandled attention backend: {backend}")
 
     @staticmethod
-    def _validate_attention_bridge(config: ConfigSpec, reject: Any) -> None:
+    def _validate_attention_bridge(
+        config: ConfigSpec,
+        context: ExecutionContext,
+        hardware: HardwareCapabilities,
+        reject: Any,
+    ) -> None:
         backend = config.program.attention
         bridge = config.program.attention_output_bridge
         direct_backends = {
             AttentionBackend.TRITON_SHAPE13,
             AttentionBackend.TRITON_DH8,
+            AttentionBackend.TRITON_STREAMING_DH64,
         }
         if bridge is AttentionOutputBridge.ATTENTION_DIRECT_BSD:
             if backend not in direct_backends:
@@ -529,11 +704,67 @@ class PlanBuilder:
                     "direct BSD output is implemented only by specialized Triton attention",
                 )
             return
-        if backend is AttentionBackend.TRITON_DH8:
+        if backend in {
+            AttentionBackend.TRITON_DH8,
+            AttentionBackend.TRITON_STREAMING_DH64,
+        }:
             reject(
                 "backend_incompatible",
                 "program.attention_output_bridge",
-                "Dh8 attention produces BSD directly",
+                "selected attention produces BSD directly",
+            )
+        if bridge is not AttentionOutputBridge.TRITON_BHSD_PROJECTION:
+            return
+        if (
+            config.program.attention_output_projection
+            is not ProjectionBackend.FP16_SHADOW
+        ):
+            reject(
+                "backend_incompatible",
+                "program.attention_output_projection",
+                "Triton BHSD projection requires FP16 shadow weights",
+            )
+        if not hardware.triton_attention_output_projection:
+            reject(
+                "backend_unavailable",
+                "program.attention_output_bridge",
+                "Triton BHSD output projection is unavailable",
+            )
+        if context.device.type != "cuda" or not context.inference:
+            reject(
+                "requires_cuda_inference",
+                "program.attention_output_bridge",
+                "Triton BHSD output projection requires CUDA inference",
+            )
+        if context.seq_len not in {32, 128, 1024} or context.d_model not in {
+            32,
+            128,
+            1024,
+        }:
+            reject(
+                "unsupported_shape",
+                "program.attention_output_bridge",
+                "Triton BHSD output projection supports S/D in {32,128,1024}",
+            )
+        if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
+            reject(
+                "runtime_incompatible",
+                "schedule.runtime",
+                "Triton BHSD output projection is not nested in compiled forward",
+            )
+        launch = config.schedule.attention_output_projection_launch
+        assert launch is not None
+        if (
+            launch.block_m not in {16, 32, 64, 128}
+            or launch.block_n not in {16, 32, 64, 128}
+            or launch.block_k not in {16, 32, 64}
+            or launch.num_warps not in {2, 4, 8}
+            or launch.num_stages not in {1, 2, 3, 4}
+        ):
+            reject(
+                "unsupported_launch_value",
+                "schedule.attention_output_projection_launch",
+                "Triton BHSD projection launch is outside the implemented template",
             )
 
     @staticmethod
@@ -566,6 +797,51 @@ class PlanBuilder:
                     "backend_unavailable",
                     "program.ffn",
                     "torch.compile is unavailable",
+                )
+            return
+        if backend is FFNBackend.TRITON_LINEAR_EXACT_GELU:
+            if not hardware.triton_linear_exact_gelu:
+                reject(
+                    "backend_unavailable",
+                    "program.ffn",
+                    "Triton Linear + Exact-GELU is unavailable",
+                )
+            if config.program.ffn_input_projection not in {
+                ProjectionBackend.INPUT_DTYPE,
+                ProjectionBackend.FP16_SHADOW,
+            } or (
+                config.program.ffn_output_projection
+                is not ProjectionBackend.FP16_SHADOW
+            ):
+                reject(
+                    "backend_incompatible",
+                    "program.ffn_input_projection",
+                    "fused Linear + Exact-GELU requires native or FP16-shadow input "
+                    "weights and FP16-shadow output weights",
+                )
+            if context.d_model not in {32, 128, 1024} or context.ffn_dim not in {
+                32,
+                128,
+                1024,
+            }:
+                reject(
+                    "unsupported_shape",
+                    "program.ffn",
+                    "fused Linear + Exact-GELU supports D/FFN in {32,128,1024}",
+                )
+            launch = config.schedule.ffn_input_launch
+            assert launch is not None
+            if (
+                launch.block_m not in {16, 32, 64, 128}
+                or launch.block_n not in {16, 32, 64, 128}
+                or launch.block_k not in {16, 32, 64, 128}
+                or launch.num_warps not in {1, 2, 4, 8}
+                or launch.num_stages not in {1, 2, 3, 4}
+            ):
+                reject(
+                    "unsupported_launch_value",
+                    "schedule.ffn_input_launch",
+                    "fused Linear + Exact-GELU launch is outside the implemented template",
                 )
             return
         if backend is not FFNBackend.TRITON_EXACT_GELU:
@@ -614,15 +890,6 @@ class PlanBuilder:
         if backend is ResidualNormBackend.TORCH:
             return
         launch = config.schedule.residual_norm_launch
-        if launch is not None and (
-            launch.block_rows not in {1, 2, 4, 8}
-            or launch.num_warps not in {1, 2, 4, 8}
-        ):
-            reject(
-                "unsupported_launch_value",
-                "schedule.residual_norm_launch",
-                "current Triton norm templates support rows/warps in {1, 2, 4, 8}",
-            )
         if context.device.type != "cuda":
             reject("requires_cuda", "program.residual_norm", "backend requires CUDA")
         if context.dtype != torch.float32:
@@ -637,11 +904,11 @@ class PlanBuilder:
                 "program.residual_norm",
                 "backend is available only for inference",
             )
-        if context.has_valid_token_mask:
+        if context.has_valid_token_mask and backend is ResidualNormBackend.COMPILED:
             reject(
                 "mask_not_supported",
                 "program.residual_norm",
-                "fused residual norm does not apply token masking",
+                "compiled residual norm does not apply token masking",
             )
         if backend is ResidualNormBackend.COMPILED:
             if not hardware.torch_compile:
@@ -657,6 +924,29 @@ class PlanBuilder:
                     "compiled residual norm cannot be nested in compiled forward",
                 )
             return
+        exact_d32 = (
+            not context.has_valid_token_mask
+            and context.batch_size == 64
+            and context.seq_len == 128
+            and context.d_model == 32
+            and hardware.triton_d32_residual_norm
+        )
+        allowed_rows = {4, 8, 16} if exact_d32 else {1, 2, 4, 8}
+        if launch is not None and (
+            launch.block_rows not in allowed_rows
+            or launch.num_warps not in {1, 2, 4, 8}
+        ):
+            reject(
+                "unsupported_launch_value",
+                "schedule.residual_norm_launch",
+                "residual norm launch is outside the selected Triton template",
+            )
+        if context.has_valid_token_mask and not hardware.triton_masked_norm:
+            reject(
+                "backend_unavailable",
+                "program.residual_norm",
+                "mask-aware Triton residual norm is unavailable",
+            )
         if backend is ResidualNormBackend.TRITON:
             if not hardware.triton_residual_norm:
                 reject(
@@ -740,6 +1030,12 @@ class PlanBuilder:
                 "program.initial_norm",
                 "Triton initial norm is unavailable",
             )
+        if context.has_valid_token_mask and not hardware.triton_masked_norm:
+            reject(
+                "backend_unavailable",
+                "program.initial_norm",
+                "mask-aware Triton initial norm is unavailable",
+            )
         if context.device.type != "cuda" or context.dtype != torch.float32:
             reject(
                 "requires_cuda_float32",
@@ -776,6 +1072,7 @@ class PlanBuilder:
         config: ConfigSpec,
         outer_context: ExecutionContext,
         inner_context: ExecutionContext,
+        hardware: HardwareCapabilities,
     ) -> ExecutionPlan:
         attention_backend = config.program.attention
         qkv_projection = config.program.qkv_projection
@@ -800,7 +1097,11 @@ class PlanBuilder:
         )
         ffn_activation_output_dtype = (
             "float16"
-            if config.program.ffn is FFNBackend.TRITON_EXACT_GELU
+            if config.program.ffn
+            in {
+                FFNBackend.TRITON_EXACT_GELU,
+                FFNBackend.TRITON_LINEAR_EXACT_GELU,
+            }
             else ffn_input_projection_dtype
         )
         attention_compute_dtype = (
@@ -811,8 +1112,29 @@ class PlanBuilder:
                 AttentionBackend.FP16_CUDNN_SDPA,
                 AttentionBackend.TRITON_SHAPE13,
                 AttentionBackend.TRITON_DH8,
+                AttentionBackend.TRITON_STREAMING_DH64,
             }
             else (qkv_projection_dtype)
+        )
+        use_d32_residual_norm = bool(
+            config.program.residual_norm
+            in {ResidualNormBackend.TRITON, ResidualNormBackend.TRITON_MIXED}
+            and not inner_context.has_valid_token_mask
+            and inner_context.batch_size == 64
+            and inner_context.seq_len == 128
+            and inner_context.d_model == 32
+            and hardware.triton_d32_residual_norm
+        )
+        use_masked_residual_norm = bool(
+            config.program.residual_norm
+            in {ResidualNormBackend.TRITON, ResidualNormBackend.TRITON_MIXED}
+            and inner_context.has_valid_token_mask
+            and hardware.triton_masked_norm
+        )
+        use_masked_initial_norm = bool(
+            config.program.initial_norm is InitialNormBackend.TRITON_FP16
+            and inner_context.has_valid_token_mask
+            and hardware.triton_masked_norm
         )
         layers = max(0, int(inner_context.num_layers or 0))
         expected = ExpectedExecutionTrace(
@@ -849,9 +1171,14 @@ class PlanBuilder:
             initial_norm_calls=1 if layers else 0,
             runtime_calls=1,
             attention_launch=config.schedule.attention_launch,
+            qkv_launch=config.schedule.qkv_launch,
+            attention_output_projection_launch=(
+                config.schedule.attention_output_projection_launch
+            ),
             residual_norm_launch=config.schedule.residual_norm_launch,
             initial_norm_launch=config.schedule.initial_norm_launch,
             ffn_launch=config.schedule.ffn_launch,
+            ffn_input_launch=config.schedule.ffn_input_launch,
         )
         return ExecutionPlan(
             config=config,
@@ -883,9 +1210,17 @@ class PlanBuilder:
             microbatch_size=config.schedule.microbatch_size,
             reuse_unchanged_input=config.schedule.reuse_unchanged_input,
             attention_launch=config.schedule.attention_launch,
+            qkv_launch=config.schedule.qkv_launch,
+            attention_output_projection_launch=(
+                config.schedule.attention_output_projection_launch
+            ),
             residual_norm_launch=config.schedule.residual_norm_launch,
             initial_norm_launch=config.schedule.initial_norm_launch,
             ffn_launch=config.schedule.ffn_launch,
+            ffn_input_launch=config.schedule.ffn_input_launch,
+            use_d32_residual_norm=use_d32_residual_norm,
+            use_masked_residual_norm=use_masked_residual_norm,
+            use_masked_initial_norm=use_masked_initial_norm,
             expected_trace=expected,
         )
 

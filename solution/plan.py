@@ -21,7 +21,9 @@ from .config import (
     RuntimeBackend,
     TritonAttentionParams,
     TritonFFNParams,
+    TritonGemmParams,
     TritonNormParams,
+    TritonQKVParams,
 )
 
 
@@ -99,9 +101,12 @@ class ExpectedExecutionTrace:
     initial_norm_calls: int
     runtime_calls: int
     attention_launch: TritonAttentionParams | None = None
+    qkv_launch: TritonQKVParams | None = None
+    attention_output_projection_launch: TritonGemmParams | None = None
     residual_norm_launch: TritonNormParams | None = None
     initial_norm_launch: TritonNormParams | None = None
     ffn_launch: TritonFFNParams | None = None
+    ffn_input_launch: TritonGemmParams | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -150,6 +155,14 @@ class ExpectedExecutionTrace:
                 if self.attention_launch is None
                 else self.attention_launch.to_dict()
             ),
+            "qkv_launch": (
+                None if self.qkv_launch is None else self.qkv_launch.to_dict()
+            ),
+            "attention_output_projection_launch": (
+                None
+                if self.attention_output_projection_launch is None
+                else self.attention_output_projection_launch.to_dict()
+            ),
             "residual_norm_launch": (
                 None
                 if self.residual_norm_launch is None
@@ -162,6 +175,11 @@ class ExpectedExecutionTrace:
             ),
             "ffn_launch": (
                 None if self.ffn_launch is None else self.ffn_launch.to_dict()
+            ),
+            "ffn_input_launch": (
+                None
+                if self.ffn_input_launch is None
+                else self.ffn_input_launch.to_dict()
             ),
             "complete": True,
         }
@@ -198,9 +216,15 @@ class ExecutionPlan:
     microbatch_size: int | None
     reuse_unchanged_input: bool
     attention_launch: TritonAttentionParams | None
+    qkv_launch: TritonQKVParams | None
+    attention_output_projection_launch: TritonGemmParams | None
     residual_norm_launch: TritonNormParams | None
     initial_norm_launch: TritonNormParams | None
     ffn_launch: TritonFFNParams | None
+    ffn_input_launch: TritonGemmParams | None
+    use_d32_residual_norm: bool
+    use_masked_residual_norm: bool
+    use_masked_initial_norm: bool
     expected_trace: ExpectedExecutionTrace
 
     @property
@@ -235,6 +259,7 @@ class ExecutionPlan:
         elif self.attention_backend in {
             AttentionBackend.TRITON_SHAPE13,
             AttentionBackend.TRITON_DH8,
+            AttentionBackend.TRITON_STREAMING_DH64,
         }:
             causal_mask = "online_causal"
         elif self.attention_backend in {
@@ -280,8 +305,24 @@ class ExecutionPlan:
             "batch_tile_size": self.batch_tile_size,
             "microbatch_size": self.microbatch_size,
             "reuse_unchanged_input": self.reuse_unchanged_input,
+            "use_d32_residual_norm": self.use_d32_residual_norm,
+            "use_masked_residual_norm": self.use_masked_residual_norm,
+            "use_masked_initial_norm": self.use_masked_initial_norm,
+            "qkv_launch": (
+                None if self.qkv_launch is None else self.qkv_launch.to_dict()
+            ),
+            "attention_output_projection_launch": (
+                None
+                if self.attention_output_projection_launch is None
+                else self.attention_output_projection_launch.to_dict()
+            ),
             "ffn_launch": (
                 None if self.ffn_launch is None else self.ffn_launch.to_dict()
+            ),
+            "ffn_input_launch": (
+                None
+                if self.ffn_input_launch is None
+                else self.ffn_input_launch.to_dict()
             ),
             "outer_batch_size": self.outer_context.batch_size,
             "inner_batch_size": self.inner_context.batch_size,

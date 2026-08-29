@@ -350,8 +350,14 @@ def _inner_streamed_config(config: ConfigSpec) -> ConfigSpec:
         schedule=ScheduleConfig(
             runtime=RuntimeBackend.EAGER,
             attention_launch=schedule.attention_launch,
+            qkv_launch=schedule.qkv_launch,
+            attention_output_projection_launch=(
+                schedule.attention_output_projection_launch
+            ),
             residual_norm_launch=schedule.residual_norm_launch,
             initial_norm_launch=schedule.initial_norm_launch,
+            ffn_launch=schedule.ffn_launch,
+            ffn_input_launch=schedule.ffn_input_launch,
         ),
     )
 

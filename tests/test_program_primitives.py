@@ -6,7 +6,12 @@ import pytest
 import torch
 
 import autotune.space as space_module
-from autotune.space import BranchSpace, ParameterDomain, StructureSpec
+from autotune.space import (
+    BranchSpace,
+    ParameterDomain,
+    SearchContext,
+    StructureSpec,
+)
 from official.torch_transformer_benchmark import TransformerConfig
 from solution.config import (
     AttentionBackend,
@@ -21,8 +26,11 @@ from solution.config import (
     ResidualNormBackend,
     RuntimeBackend,
     ScheduleConfig,
+    TritonAttentionParams,
 )
 from solution.model import UserOptimizedTransformer
+from solution.plan import ExecutionContext
+from solution.plan_builder import HardwareCapabilities, PlanBuilder
 
 _PROJECTION_FIELDS = (
     "qkv_projection",
@@ -168,12 +176,35 @@ def test_branch_build_and_parameter_recovery_preserve_new_program_primitives() -
 
 
 def test_structure_generation_prunes_unimplemented_attention_output_bridges() -> None:
-    structures: Iterable[StructureSpec] = space_module._structure_specs("resident")
+    context = SearchContext(
+        execution_context=ExecutionContext(
+            batch_size=64,
+            seq_len=1024,
+            d_model=128,
+            num_heads=4,
+            causal=True,
+            device=torch.device("cuda"),
+            dtype=torch.float32,
+            training=False,
+            grad_enabled=False,
+            input_contiguous=True,
+            has_valid_token_mask=False,
+            mask_compatible=True,
+            ffn_dim=128,
+            num_layers=4,
+        ),
+        scope="resident",
+    )
+    structures: Iterable[StructureSpec] = space_module._structure_specs(context)
     saw_shape13_direct = False
     saw_shape13_torch = False
+    saw_shape13_fused_projection = False
 
     for structure in structures:
-        if structure.attention is AttentionBackend.TRITON_DH8:
+        if structure.attention in {
+            AttentionBackend.TRITON_DH8,
+            AttentionBackend.TRITON_STREAMING_DH64,
+        }:
             assert (
                 structure.attention_output_bridge
                 is AttentionOutputBridge.ATTENTION_DIRECT_BSD
@@ -187,14 +218,19 @@ def test_structure_generation_prunes_unimplemented_attention_output_bridges() ->
                 structure.attention_output_bridge
                 is AttentionOutputBridge.TORCH_BHSD_TO_BSD
             )
-        else:
-            assert (
+            saw_shape13_fused_projection |= (
                 structure.attention_output_bridge
-                is AttentionOutputBridge.TORCH_BHSD_TO_BSD
+                is AttentionOutputBridge.TRITON_BHSD_PROJECTION
             )
+        else:
+            assert structure.attention_output_bridge in {
+                AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+                AttentionOutputBridge.TRITON_BHSD_PROJECTION,
+            }
 
     assert saw_shape13_direct
     assert saw_shape13_torch
+    assert saw_shape13_fused_projection
 
 
 def _tiny_model() -> UserOptimizedTransformer:
@@ -289,3 +325,45 @@ def test_fp16_core_projection_plan_has_a_real_cuda_execution_signature() -> None
     assert actual["attention_output_projection_compute_dtype"] == "float16"
     assert actual["ffn_input_projection_compute_dtype"] == "float16"
     assert actual["ffn_output_projection_compute_dtype"] == "float16"
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_shape14_online_attention_compiles_for_an_eager_microbatch() -> None:
+    config = ConfigSpec(
+        program=_program(
+            PrecisionPlan.FP16_ATTENTION_BRANCH,
+            attention=AttentionBackend.TRITON_STREAMING_DH64,
+            qkv_materialization=QKVMaterialization.CONTIGUOUS,
+            attention_output_bridge=AttentionOutputBridge.ATTENTION_DIRECT_BSD,
+        ),
+        schedule=ScheduleConfig(
+            runtime=RuntimeBackend.EAGER,
+            attention_launch=TritonAttentionParams(64, 64, 4, 2),
+        ),
+    )
+    context = ExecutionContext(
+        batch_size=1,
+        seq_len=100000,
+        d_model=1024,
+        num_heads=16,
+        causal=True,
+        device=torch.device("cuda"),
+        dtype=torch.float32,
+        training=False,
+        grad_enabled=False,
+        input_contiguous=True,
+        has_valid_token_mask=False,
+        mask_compatible=True,
+        ffn_dim=1024,
+        num_layers=2,
+    )
+
+    plan = PlanBuilder().build(
+        config,
+        context,
+        HardwareCapabilities.detect(torch.device("cuda")),
+    )
+
+    assert plan.attention_backend is AttentionBackend.TRITON_STREAMING_DH64
+    assert plan.runtime_backend is RuntimeBackend.EAGER
