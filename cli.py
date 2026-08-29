@@ -17,8 +17,10 @@ from benchmarking.protocols import (
     RunVariant,
     TransformerShape,
     load_json,
+    load_resident_shapes,
     load_shape,
     load_shapes,
+    load_streamed_shapes,
     write_json,
 )
 from deployment.registry import (
@@ -53,6 +55,15 @@ def _variant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input-scale", type=_positive_float, default=1.0)
 
 
+def _search_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--storage", type=Path)
+    parser.add_argument("--budget-seconds", type=_positive_float, default=900.0)
+    parser.add_argument("--max-trials", type=_positive_int)
+    parser.add_argument("--seed", type=int, default=1234)
+    _variant_arguments(parser)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Shape-aware Transformer program search"
@@ -81,12 +92,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     search = commands.add_parser("search", help="run generated branch-local TPE")
     search.add_argument("--case-id", action="append", required=True)
-    search.add_argument("--device", default="cuda:0")
-    search.add_argument("--storage", type=Path)
-    search.add_argument("--budget-seconds", type=_positive_float, default=900.0)
-    search.add_argument("--max-trials", type=_positive_int)
-    search.add_argument("--seed", type=int, default=1234)
-    _variant_arguments(search)
+    _search_arguments(search)
+
+    optimize = commands.add_parser(
+        "optimize",
+        help="repeat full search sweeps until deployment progress stops",
+    )
+    optimize.add_argument("--group", choices=("resident", "shape14"), required=True)
+    optimize.add_argument(
+        "--no-deployment-patience",
+        type=_positive_int,
+        default=8,
+    )
+    optimize.add_argument("--max-iterations", type=_positive_int, default=32)
+    _search_arguments(optimize)
     return parser
 
 
@@ -228,6 +247,59 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
     return result.exit_code
 
 
+def _optimization_case_ids(project_root: Path, group: str) -> tuple[str, ...]:
+    if group == "resident":
+        shapes = load_resident_shapes(project_root)
+    elif group == "shape14":
+        shapes = load_streamed_shapes(project_root)
+    else:
+        raise ContractError(f"unknown shape group: {group}")
+    if not shapes:
+        raise ContractError(f"shape group is empty: {group}")
+    return tuple(shape.case_id for shape in shapes)
+
+
+def _optimize(args: argparse.Namespace, project_root: Path) -> int:
+    from autotune.service import SearchServiceRequest
+    from autotune.workflow import (
+        OptimizationIteration,
+        OptimizationLoopPolicy,
+        OptimizationService,
+    )
+
+    def print_iteration(iteration: OptimizationIteration) -> None:
+        print(f"iteration {iteration.index}")
+        for item in iteration.search_result.shape_results:
+            selected = item.selected_config
+            print(f"  {item.case_id}: {item.search_result.stop_reason}")
+            print(f"    selected: {None if selected is None else selected.config_id}")
+            print(f"    deployment updated: {item.deployment_updated}")
+        print(f"  deployments: {iteration.deployment_updates}")
+        print(f"  no-deployment streak: {iteration.no_deployment_streak}")
+
+    result = OptimizationService().run(
+        SearchServiceRequest(
+            project_root=project_root,
+            case_ids=_optimization_case_ids(project_root, args.group),
+            device=args.device,
+            storage_root=args.storage,
+            budget_seconds=args.budget_seconds,
+            max_trials=args.max_trials,
+            seed=args.seed,
+            variant=_variant(args),
+        ),
+        OptimizationLoopPolicy(
+            no_deployment_patience=args.no_deployment_patience,
+            max_iterations=args.max_iterations,
+        ),
+        observer=print_iteration,
+    )
+    print(f"stopped: {result.stop_reason}")
+    print(f"iterations: {result.iterations_run}")
+    print(f"deployment updates: {result.total_deployment_updates}")
+    return result.exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     project_root = Path(__file__).resolve().parent
@@ -240,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
             return _probe(args)
         if args.command == "search":
             return _search(args, project_root)
+        if args.command == "optimize":
+            return _optimize(args, project_root)
         raise ContractError(f"unsupported command: {args.command}")
     except (ContractError, TypeError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}")

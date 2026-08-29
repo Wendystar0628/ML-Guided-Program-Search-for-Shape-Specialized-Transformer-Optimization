@@ -386,9 +386,7 @@ class SearchService:
             )
             if incumbent is None:
                 incumbent = (
-                    portable_streamed_config()
-                    if shape.streamed
-                    else portable_config()
+                    portable_streamed_config() if shape.streamed else portable_config()
                 )
             scope = (
                 EvaluationScope.STREAMED if shape.streamed else EvaluationScope.RESIDENT
@@ -445,6 +443,8 @@ class SearchService:
                     config=selected,
                 )
             results.append(ShapeSearchResult(case_id, search_result, updated))
+            if search_result.stop_reason == "interrupted":
+                break
             transferable = _transferable_formal_config(search_result)
             if transferable is not None:
                 warm_start_candidates.append(

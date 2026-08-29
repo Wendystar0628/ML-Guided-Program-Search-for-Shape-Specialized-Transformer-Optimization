@@ -30,6 +30,12 @@ from .space import (
     StructureSpec,
 )
 from .storage import SearchStorage, StudyIdentity
+from .workflow import (
+    OptimizationIteration,
+    OptimizationLoopPolicy,
+    OptimizationResult,
+    OptimizationService,
+)
 
 __all__ = [
     "PROMOTION_BLOCK_COUNT",
@@ -45,6 +51,10 @@ __all__ = [
     "Fidelity",
     "FidelityProtocol",
     "OptunaBackend",
+    "OptimizationIteration",
+    "OptimizationLoopPolicy",
+    "OptimizationResult",
+    "OptimizationService",
     "PairedMeasurement",
     "ParameterDomain",
     "ProgramSearchSpace",

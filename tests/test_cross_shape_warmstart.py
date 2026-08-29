@@ -218,6 +218,70 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
     assert observed_requests[1].case_id == "second"
 
 
+def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) -> None:
+    shapes = {
+        "first": _shape("first", batch_size=32, heads=4),
+        "second": _shape("second", batch_size=64, heads=4),
+    }
+    observed_cases: list[str] = []
+
+    class _SearchEngine:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def plan(self, request):
+            return SimpleNamespace(search_space=_AcceptingSearchSpace())
+
+        def run(self, request):
+            observed_cases.append(request.case_id)
+            return SearchResult(
+                incumbent_config=request.incumbent,
+                selected_config=request.incumbent,
+                selected_measurement=None,
+                branch_count=1,
+                completed_level1=0,
+                enhanced_configs=(),
+                locked_challenger=None,
+                formal_challenger_measurement=None,
+                formal_comparison=None,
+                stop_reason="interrupted",
+            )
+
+    monkeypatch.setattr(service.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        service.EnvironmentFingerprint,
+        "detect",
+        classmethod(lambda cls, device, **kwargs: _hardware()),
+    )
+    monkeypatch.setattr(
+        service.HardwareCapabilities,
+        "detect",
+        classmethod(lambda cls, device: object()),
+    )
+    monkeypatch.setattr(
+        service,
+        "load_shape",
+        lambda project_root, case_id: shapes[case_id],
+    )
+    monkeypatch.setattr(service, "resolve_deployed_config", lambda **kwargs: None)
+    monkeypatch.setattr(service, "iter_deployed_configs", lambda **kwargs: ())
+    monkeypatch.setattr(service, "SearchStorage", lambda root: object())
+    monkeypatch.setattr(service, "PlanBuilder", lambda: object())
+    monkeypatch.setattr(service, "BenchmarkEvaluator", lambda **kwargs: object())
+    monkeypatch.setattr(service, "SearchEngine", _SearchEngine)
+
+    result = service.SearchService().run(
+        service.SearchServiceRequest(
+            project_root=service.Path("."),
+            case_ids=("first", "second"),
+            budget_seconds=1.0,
+        )
+    )
+
+    assert result.exit_code == 130
+    assert observed_cases == ["first"]
+
+
 def test_family_filter_deduplicates_limits_and_requires_plan_compatibility() -> None:
     target = ShapeFingerprint(
         batch_size=64,

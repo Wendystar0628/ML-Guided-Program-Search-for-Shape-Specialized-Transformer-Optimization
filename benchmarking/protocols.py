@@ -145,6 +145,18 @@ def load_shape(project_root: Path, case_id: str) -> TransformerShape:
     raise ContractError(f"unknown case_id: {case_id}")
 
 
+def load_resident_shapes(project_root: Path) -> tuple[TransformerShape, ...]:
+    """Return ordinary resident workloads in official order."""
+
+    return tuple(shape for shape in load_shapes(project_root) if not shape.streamed)
+
+
+def load_streamed_shapes(project_root: Path) -> tuple[TransformerShape, ...]:
+    """Return streamed workloads in official order."""
+
+    return tuple(shape for shape in load_shapes(project_root) if shape.streamed)
+
+
 def write_json(path: Path, value: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -160,7 +172,9 @@ __all__ = [
     "RunVariant",
     "TransformerShape",
     "load_json",
+    "load_resident_shapes",
     "load_shape",
     "load_shapes",
+    "load_streamed_shapes",
     "write_json",
 ]
