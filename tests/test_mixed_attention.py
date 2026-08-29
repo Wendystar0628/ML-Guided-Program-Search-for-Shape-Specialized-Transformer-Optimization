@@ -4,7 +4,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from solution.kernels.mixed_attention import (
+from solution.operators.attention.mixed_precision import (
     MIXED_FP16_CUDNN_BACKEND,
     MIXED_FP16_EFFICIENT_BACKEND,
     can_use_mixed_fp16_cudnn_attention,

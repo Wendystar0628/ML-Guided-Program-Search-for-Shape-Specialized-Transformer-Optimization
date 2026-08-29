@@ -24,7 +24,6 @@ from solution.config import (
     TritonNormParams,
 )
 
-
 Scalar = str | int | float | bool
 
 
@@ -43,7 +42,7 @@ class CompilationResultLike(Protocol):
     def accepted(self) -> bool: ...
 
 
-class ConfigCompilerLike(Protocol):
+class PlanBuilderLike(Protocol):
     def evaluate(
         self,
         config: ConfigSpec,
@@ -56,7 +55,7 @@ class ConfigCompilerLike(Protocol):
 class SearchContext:
     """Compiler inputs plus workload-level scheduling facts."""
 
-    compilation_context: Any
+    execution_context: Any
     scope: str
     hardware: Any | None = None
     logical_batch_size: int | None = None
@@ -76,7 +75,7 @@ class SearchContext:
         explicit = self.logical_batch_size
         if explicit is not None:
             return explicit
-        value = getattr(self.compilation_context, "batch_size", None)
+        value = getattr(self.execution_context, "batch_size", None)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError("compilation context has no valid batch_size")
         return value
@@ -166,7 +165,9 @@ class StructureSpec:
 
 
 def _batch_tile_choices(batch_size: int) -> tuple[int, ...]:
-    values = tuple(value for value in (32, 64, 128, 256, 512, 1024) if value < batch_size)
+    values = tuple(
+        value for value in (32, 64, 128, 256, 512, 1024) if value < batch_size
+    )
     if values:
         return values
     return (max(1, batch_size // 2),)
@@ -237,7 +238,9 @@ class BranchSpace:
     def default_parameters(self) -> dict[str, Scalar]:
         return {domain.name: domain.default for domain in self.domains}
 
-    def representative_parameter_sets(self, limit: int = 3) -> tuple[dict[str, Scalar], ...]:
+    def representative_parameter_sets(
+        self, limit: int = 3
+    ) -> tuple[dict[str, Scalar], ...]:
         """Cover defaults plus bounded one-coordinate alternatives."""
 
         if limit <= 0:
@@ -278,9 +281,7 @@ class BranchSpace:
             AttentionBackend.TRITON_SHAPE13,
             AttentionBackend.TRITON_DH8,
         }:
-            block_m, block_n = _decode_attention_tile(
-                parameters["attention_tile"]
-            )
+            block_m, block_n = _decode_attention_tile(parameters["attention_tile"])
             attention_launch = TritonAttentionParams(
                 block_m=block_m,
                 block_n=block_n,
@@ -419,7 +420,7 @@ def _domains_for_structure(
         AttentionBackend.TRITON_DH8,
     }:
         block_m, block_n, warps, stages = _attention_defaults(structure.attention)
-        tile_choices = _attention_tile_choices(context.compilation_context.seq_len)
+        tile_choices = _attention_tile_choices(context.execution_context.seq_len)
         default_tile = f"{block_m}x{block_n}"
         if default_tile not in tile_choices:
             default_tile = tile_choices[0]
@@ -647,12 +648,12 @@ def _pairwise_cover(
 
 
 class ProgramSearchSpace:
-    """Generate legal branches by passing programmatic structures to Compiler."""
+    """Generate legal branches by passing programmatic structures to a plan builder."""
 
     def __init__(
         self,
         *,
-        compiler: ConfigCompilerLike,
+        plan_builder: PlanBuilderLike,
         context: SearchContext,
         max_branches: int = 24,
         required_configs: Iterable[ConfigSpec] = (),
@@ -663,7 +664,7 @@ class ProgramSearchSpace:
             or max_branches <= 0
         ):
             raise ValueError("max_branches must be a positive integer")
-        self.compiler = compiler
+        self.plan_builder = plan_builder
         self.context = context
         candidates: list[BranchSpace] = []
         for structure in _structure_specs(context.scope):
@@ -681,11 +682,7 @@ class ProgramSearchSpace:
         required: list[BranchSpace] = []
         if context.scope == "resident":
             portable = next(
-                (
-                    branch
-                    for branch in candidates
-                    if branch.structure.portable
-                ),
+                (branch for branch in candidates if branch.structure.portable),
                 None,
             )
             if portable is not None:
@@ -709,13 +706,10 @@ class ProgramSearchSpace:
                 and all(item.branch_id != branch.branch_id for item in candidates)
             ):
                 candidates.append(branch)
-            if (
-                branch.parameters_for(config) is not None
-                and self.accepted(config)
-            ):
+            if branch.parameters_for(config) is not None and self.accepted(config):
                 required.append(branch)
         if not candidates:
-            raise ValueError("config compiler accepted no search branches")
+            raise ValueError("plan builder accepted no search branches")
         branches, mandatory = _pairwise_cover(
             candidates,
             required=required,
@@ -726,9 +720,9 @@ class ProgramSearchSpace:
         self._by_id = {branch.branch_id: branch for branch in self.branches}
 
     def accepted(self, config: ConfigSpec) -> bool:
-        result = self.compiler.evaluate(
+        result = self.plan_builder.evaluate(
             config,
-            self.context.compilation_context,
+            self.context.execution_context,
             self.context.hardware,
         )
         return bool(result.accepted)
@@ -748,8 +742,8 @@ class ProgramSearchSpace:
 
 __all__ = [
     "BranchSpace",
-    "ConfigCompilerLike",
     "ParameterDomain",
+    "PlanBuilderLike",
     "ProgramSearchSpace",
     "SearchContext",
     "StructureSpec",

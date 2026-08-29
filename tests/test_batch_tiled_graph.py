@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from solution.batch_tiled_graph import BatchTiledGraphReplay
+from solution.runtimes.batch_tiled_graph import BatchTiledGraphReplay
 
 
 def test_batch_tiled_graph_validates_tile_size() -> None:

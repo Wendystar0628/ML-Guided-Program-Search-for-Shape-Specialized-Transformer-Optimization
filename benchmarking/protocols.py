@@ -25,7 +25,7 @@ class TransformerShape:
     causal: bool
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "TransformerShape":
+    def from_dict(cls, value: dict[str, Any]) -> TransformerShape:
         try:
             shape = cls(
                 case_id=str(value["case_id"]),
@@ -109,7 +109,7 @@ class MeasurementProtocol:
     atol: float = 0.002
 
     @classmethod
-    def for_preset(cls, preset: str) -> "MeasurementProtocol":
+    def for_preset(cls, preset: str) -> MeasurementProtocol:
         if preset == "smoke":
             return cls(accuracy_trials=2, warmup=2, repeats=5, rounds=2)
         if preset == "formal":

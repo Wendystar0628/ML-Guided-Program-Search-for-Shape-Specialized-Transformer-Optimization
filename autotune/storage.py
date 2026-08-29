@@ -7,7 +7,9 @@ from pathlib import Path
 
 
 def _slug(value: str) -> str:
-    normalized = "".join(character if character.isalnum() else "-" for character in value)
+    normalized = "".join(
+        character if character.isalnum() else "-" for character in value
+    )
     return normalized.strip("-").lower() or "unknown"
 
 

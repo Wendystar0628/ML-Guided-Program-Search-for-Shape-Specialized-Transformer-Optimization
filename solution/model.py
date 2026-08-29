@@ -10,8 +10,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from .batch_tiled_graph import BatchTiledGraphReplay
-from .compiled_forward import CompiledForward
 from .config import (
     AttentionBackend,
     AttentionOutputLayout,
@@ -22,10 +20,7 @@ from .config import (
     RuntimeBackend,
     portable_config,
 )
-from .config_compiler import ConfigCompiler
-from .cuda_graph import CudaGraphReplay
-from .execution_plan import ExecutionContext, ExecutionPlan
-from .kernels import (
+from .operators import (
     MIXED_FP16_CUDNN_BACKEND,
     MIXED_FP16_EFFICIENT_BACKEND,
     TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
@@ -46,6 +41,9 @@ from .kernels import (
     triton_mixed_residual_layer_norm,
     triton_residual_layer_norm,
 )
+from .plan import ExecutionContext, ExecutionPlan
+from .plan_builder import PlanBuilder
+from .runtimes import BatchTiledGraphReplay, CompiledForward, CudaGraphReplay
 
 
 @dataclass(slots=True)
@@ -86,9 +84,7 @@ class _ExecutionObservation:
             "linear_backend": self._uniform(self.linear_backends),
             "residual_norm_backend": self._uniform(self.residual_norm_backends),
             "initial_norm_backend": self._uniform(self.initial_norm_backends),
-            "attention_compute_dtype": self._uniform(
-                self.attention_compute_dtypes
-            ),
+            "attention_compute_dtype": self._uniform(self.attention_compute_dtypes),
             "linear_compute_dtype": self._uniform(self.linear_compute_dtypes),
             "attention_calls": len(self.attention_backends),
             "linear_calls": len(self.linear_backends),
@@ -193,17 +189,15 @@ class _SelfAttention(nn.Module):
                 launch = plan.attention_launch
                 if launch is None:
                     raise RuntimeError("Triton Dh8 plan is missing launch parameters")
-                context, actual_marker = (
-                    prevalidated_triton_dh8_causal_attention_bsd(
-                        query,
-                        key,
-                        projected_value,
-                        scale=self.scale,
-                        block_m=launch.block_m,
-                        block_n=launch.block_n,
-                        num_warps=launch.num_warps,
-                        num_stages=launch.num_stages,
-                    )
+                context, actual_marker = prevalidated_triton_dh8_causal_attention_bsd(
+                    query,
+                    key,
+                    projected_value,
+                    scale=self.scale,
+                    block_m=launch.block_m,
+                    block_n=launch.block_n,
+                    num_warps=launch.num_warps,
+                    num_stages=launch.num_stages,
                 )
                 actual_attention_backend = _strict_backend_marker(
                     actual_marker,
@@ -216,17 +210,15 @@ class _SelfAttention(nn.Module):
                     raise RuntimeError(
                         "Triton Shape 13 plan is missing launch parameters"
                     )
-                context, actual_marker = (
-                    prevalidated_triton_shape13_causal_attention(
-                        query,
-                        key,
-                        projected_value,
-                        scale=self.scale,
-                        block_m=launch.block_m,
-                        block_n=launch.block_n,
-                        num_warps=launch.num_warps,
-                        num_stages=launch.num_stages,
-                    )
+                context, actual_marker = prevalidated_triton_shape13_causal_attention(
+                    query,
+                    key,
+                    projected_value,
+                    scale=self.scale,
+                    block_m=launch.block_m,
+                    block_n=launch.block_n,
+                    num_warps=launch.num_warps,
+                    num_stages=launch.num_stages,
                 )
                 actual_attention_backend = _strict_backend_marker(
                     actual_marker,
@@ -316,17 +308,15 @@ class _SelfAttention(nn.Module):
         if observation is not None:
             observation.attention_backends.append(actual_attention_backend)
             observation.attention_compute_dtypes.append(
-                (
-                    "float16"
-                    if plan.attention_backend
-                    in {
-                        AttentionBackend.FP16_EFFICIENT_SDPA,
-                        AttentionBackend.FP16_CUDNN_SDPA,
-                        AttentionBackend.TRITON_SHAPE13,
-                        AttentionBackend.TRITON_DH8,
-                    }
-                    else str(query.dtype).removeprefix("torch.")
-                )
+                "float16"
+                if plan.attention_backend
+                in {
+                    AttentionBackend.FP16_EFFICIENT_SDPA,
+                    AttentionBackend.FP16_CUDNN_SDPA,
+                    AttentionBackend.TRITON_SHAPE13,
+                    AttentionBackend.TRITON_DH8,
+                }
+                else str(query.dtype).removeprefix("torch.")
             )
             observation.linear_backends.extend([plan.linear_backend.value] * 2)
             observation.linear_compute_dtypes.extend(
@@ -443,7 +433,7 @@ class UserOptimizedTransformer(nn.Module):
         self._classified_mask_version: int | None = None
         self._classified_mask_is_all_valid = False
         self._fp16_shadow_weights_ready = False
-        self._config_compiler = ConfigCompiler()
+        self._plan_builder = PlanBuilder()
         self._explicit_config: ConfigSpec | None = None
         self._active_config = portable_config()
         self._deployment_signature: tuple[object, ...] | None = None
@@ -501,6 +491,7 @@ class UserOptimizedTransformer(nn.Module):
         )
         matmul_precision = torch.get_float32_matmul_precision()
         allow_tf32 = bool(torch.backends.cuda.matmul.allow_tf32)
+        cudnn_allow_tf32 = bool(torch.backends.cudnn.allow_tf32)
         signature = (
             device.type,
             device.index,
@@ -508,18 +499,19 @@ class UserOptimizedTransformer(nn.Module):
             shape,
             matmul_precision,
             allow_tf32,
+            cudnn_allow_tf32,
         )
         if signature == self._deployment_signature:
             return
         resolved_config: ConfigSpec | None = None
         if device.type == "cuda":
-            from .deployed_configs import (
-                HardwareFingerprint,
+            from deployment.registry import (
+                EnvironmentFingerprint,
                 ShapeFingerprint,
                 resolve_deployed_config,
             )
 
-            hardware = HardwareFingerprint.detect(device)
+            hardware = EnvironmentFingerprint.detect(device)
             deployed_shape = ShapeFingerprint(
                 batch_size=int(shape[0]),
                 qkv_dim=int(self.config.d_model),
@@ -551,7 +543,7 @@ class UserOptimizedTransformer(nn.Module):
 
         if not isinstance(config, ConfigSpec):
             raise TypeError("config must be ConfigSpec")
-        self._config_compiler.compile(config, self._execution_context())
+        self._plan_builder.build(config, self._execution_context())
         self._invalidate_runtime_state()
         self._explicit_config = config
         self._active_config = config
@@ -607,7 +599,7 @@ class UserOptimizedTransformer(nn.Module):
         value: torch.Tensor | None = None,
         valid_token_mask: torch.Tensor | None = None,
     ) -> ExecutionPlan:
-        return self._config_compiler.compile(
+        return self._plan_builder.build(
             self._active_config,
             self._execution_context(value, valid_token_mask),
         )
@@ -784,7 +776,9 @@ class UserOptimizedTransformer(nn.Module):
         elif plan.residual_norm_backend is ResidualNormBackend.TRITON:
             launch = plan.residual_norm_launch
             if launch is None:
-                raise RuntimeError("Triton residual norm plan is missing launch parameters")
+                raise RuntimeError(
+                    "Triton residual norm plan is missing launch parameters"
+                )
             value, normalized, actual_marker = triton_residual_layer_norm(
                 value,
                 update,

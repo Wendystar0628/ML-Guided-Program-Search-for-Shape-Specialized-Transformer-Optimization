@@ -4,9 +4,9 @@ import pytest
 import torch
 from torch import nn
 
-from solution.cuda_graph import CudaGraphReplay
-from solution.kernels import can_use_residual_layer_norm, residual_layer_norm
-from solution.kernels import residual_norm as residual_norm_module
+from solution.operators import can_use_residual_layer_norm, residual_layer_norm
+from solution.operators.norm import compiled_residual as residual_norm_module
+from solution.runtimes.cuda_graph import CudaGraphReplay
 
 
 def test_cpu_inputs_are_rejected_by_the_compiled_policy() -> None:

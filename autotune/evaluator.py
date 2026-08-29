@@ -1,15 +1,19 @@
-"""Typed measurements shared by the program-search engine and GPU runner."""
+"""Typed measurements shared by the program-search engine and GPU benchmark."""
 
 from __future__ import annotations
 
 import json
 import math
+import statistics
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Protocol
 
+import torch
+
 from solution.config import ConfigSpec
+from solution.plan_builder import ConfigRejectedError
 
 
 class Fidelity(StrEnum):
@@ -39,7 +43,9 @@ class FidelityProtocol:
 
     def __post_init__(self) -> None:
         values = (self.accuracy_trials, self.warmup, self.repeats, self.rounds)
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
             raise TypeError("fidelity counts must be integers")
         if self.accuracy_trials <= 0 or self.warmup < 0:
             raise ValueError("invalid fidelity accuracy or warmup count")
@@ -146,6 +152,56 @@ def memory_constraint(
     if peak_bytes is None or peak_bytes < 0:
         return 1.0
     return float(peak_bytes) / float(budget_bytes) - 1.0
+
+
+def classify_infeasible_exception(exc: Exception) -> str | None:
+    """Classify only known configuration-domain failures as infeasible.
+
+    Unknown Python, driver, and benchmark-infrastructure exceptions deliberately
+    return ``None`` so the caller can preserve the traceback and fail the Trial.
+    """
+
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ConfigRejectedError):
+            return "config_rejected"
+        if isinstance(current, torch.OutOfMemoryError):
+            return "out_of_memory"
+        exception_type = type(current)
+        if (
+            exception_type.__name__ == "OutOfResources"
+            and exception_type.__module__.startswith("triton.")
+        ):
+            return "runtime_resource_exhausted"
+        message = str(current).lower()
+        if any(
+            marker in message
+            for marker in (
+                "cuda out of memory",
+                "cuda error: out of memory",
+                "hip out of memory",
+            )
+        ):
+            return "out_of_memory"
+        if any(
+            marker in message
+            for marker in (
+                "too many resources requested",
+                "launch out of resources",
+                "out of resources when launching",
+                "out of resource: shared memory",
+                "out of resource: registers",
+                "exceeds available shared memory",
+                "uses too much shared memory",
+                "uses too many registers",
+                "register allocation failed",
+            )
+        ):
+            return "runtime_resource_exhausted"
+        current = current.__cause__ or current.__context__
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,11 +311,11 @@ class TrialMeasurement:
 
 @dataclass(frozen=True, slots=True)
 class PairedMeasurement:
-    """Independent challenger-versus-incumbent Formal comparison."""
+    """Interleaved challenger-versus-incumbent Formal comparison."""
 
     incumbent: TrialMeasurement
     challenger: TrialMeasurement
-    speedup: float
+    paired_ratios: tuple[float, ...]
     exceeds_noise_margin: bool
 
     def __post_init__(self) -> None:
@@ -267,12 +323,24 @@ class PairedMeasurement:
             raise ValueError("incumbent must use Formal fidelity")
         if self.challenger.fidelity is not Fidelity.FORMAL:
             raise ValueError("challenger must use Formal fidelity")
-        if not math.isfinite(self.speedup) or self.speedup <= 0.0:
-            raise ValueError("speedup must be finite and positive")
+        if self.incumbent.scope is not self.challenger.scope:
+            raise ValueError("paired measurements must use the same scope")
+        ratios = tuple(float(value) for value in self.paired_ratios)
+        if not ratios or any(
+            not math.isfinite(value) or value <= 0.0 for value in ratios
+        ):
+            raise ValueError("paired_ratios must be finite and positive")
+        object.__setattr__(self, "paired_ratios", ratios)
+
+    @property
+    def speedup(self) -> float:
+        """Median same-round incumbent/challenger latency ratio."""
+
+        return float(statistics.median(self.paired_ratios))
 
 
 class Evaluator(Protocol):
-    """GPU runner adapter implemented outside the optimizer package."""
+    """GPU measurement adapter implemented outside the autotune core."""
 
     def evaluate(
         self,
@@ -288,15 +356,16 @@ class Evaluator(Protocol):
 
 
 __all__ = [
+    "RESIDENT_PROTOCOLS",
+    "STREAMED_PROTOCOLS",
+    "ConstraintVector",
     "EvaluationScope",
     "Evaluator",
     "Fidelity",
     "FidelityProtocol",
     "PairedMeasurement",
-    "RESIDENT_PROTOCOLS",
-    "STREAMED_PROTOCOLS",
-    "ConstraintVector",
     "TrialMeasurement",
+    "classify_infeasible_exception",
     "execution_signatures_match",
     "memory_constraint",
     "normalized_accuracy_constraint",

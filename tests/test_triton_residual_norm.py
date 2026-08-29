@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from solution.kernels.triton_residual_norm import (
+from solution.operators.norm.triton_residual import (
     can_use_triton_residual_layer_norm,
     triton_residual_layer_norm,
 )

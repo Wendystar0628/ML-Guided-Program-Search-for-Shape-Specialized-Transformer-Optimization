@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from solution.kernels.triton_shape13_attention import (
+from solution.operators.attention.triton_s1024_dh32 import (
     can_use_triton_shape13_causal_attention,
     triton_shape13_causal_attention,
     triton_shape13_causal_attention_available,
@@ -51,7 +51,7 @@ def test_shape13_triton_attention_has_a_traceable_fake_implementation() -> None:
         pytest.skip("optional Triton runtime is unavailable")
     script = """
 import torch
-from solution.kernels.triton_shape13_attention import (
+from solution.operators.attention.triton_s1024_dh32 import (
     TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
     prevalidated_triton_shape13_causal_attention,
     triton_shape13_causal_attention_available,

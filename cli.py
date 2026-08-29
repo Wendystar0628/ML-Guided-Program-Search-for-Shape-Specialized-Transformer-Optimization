@@ -9,8 +9,9 @@ from typing import Any
 
 import torch
 
-from runner.benchmark import measure_config, profile_config
-from runner.contracts import (
+from benchmarking.measure import measure_config, profile_config
+from benchmarking.probe import execute_probe
+from benchmarking.protocols import (
     ContractError,
     MeasurementProtocol,
     RunVariant,
@@ -20,13 +21,12 @@ from runner.contracts import (
     load_shapes,
     write_json,
 )
-from runner.probe import execute_probe
-from solution.config import ConfigSpec, portable_config, portable_streamed_config
-from solution.deployed_configs import (
-    HardwareFingerprint,
+from deployment.registry import (
+    EnvironmentFingerprint,
     ShapeFingerprint,
     resolve_deployed_config,
 )
+from solution.config import ConfigSpec, portable_config, portable_streamed_config
 
 
 def _positive_float(value: str) -> float:
@@ -118,7 +118,7 @@ def _default_config(
     variant: RunVariant,
     device: str,
 ) -> ConfigSpec:
-    hardware = HardwareFingerprint.detect(torch.device(device))
+    hardware = EnvironmentFingerprint.detect(torch.device(device))
     deployed = resolve_deployed_config(
         hardware=hardware,
         shape=_shape_key(shape, variant),
@@ -157,7 +157,7 @@ def _run(args: argparse.Namespace, project_root: Path) -> int:
     )
     if args.config is not None and len(shapes) != 1:
         raise ContractError("--config requires exactly one --case-id")
-    output_root = args.output or project_root / "results" / "intermediate" / "runs"
+    output_root = args.output or project_root / "benchmark_runs"
     exit_code = 0
     for shape in shapes:
         result = measure_config(
@@ -205,7 +205,7 @@ def _probe(args: argparse.Namespace) -> int:
 
 
 def _search(args: argparse.Namespace, project_root: Path) -> int:
-    from runner.search_service import SearchService, SearchServiceRequest
+    from autotune.service import SearchService, SearchServiceRequest
 
     result = SearchService().run(
         SearchServiceRequest(
@@ -230,7 +230,7 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parent
     try:
         if args.command == "run":
             return _run(args, project_root)

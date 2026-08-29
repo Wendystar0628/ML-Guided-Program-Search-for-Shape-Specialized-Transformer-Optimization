@@ -1,4 +1,4 @@
-"""Small exact-match table for formally selected configurations."""
+"""Exact-match registry for formally selected device configurations."""
 
 from __future__ import annotations
 
@@ -7,48 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import torch
+from solution.config import ConfigSpec
 
-from .config import ConfigSpec
+from .environment import EnvironmentFingerprint
 
 DEFAULT_DEPLOYED_CONFIGS_PATH = (
-    Path(__file__).resolve().parents[1] / "deployments" / "deployed_configs.json"
+    Path(__file__).resolve().parent / "deployed_configs.json"
 )
-
-
-@dataclass(frozen=True, slots=True)
-class HardwareFingerprint:
-    """Only hardware facts used by the runtime lookup."""
-
-    device_name: str
-    compute_capability: str
-
-    @classmethod
-    def detect(cls, device: str | torch.device) -> "HardwareFingerprint":
-        resolved = torch.device(device)
-        if resolved.type != "cuda" or not torch.cuda.is_available():
-            raise ValueError("deployed configuration lookup requires CUDA")
-        index = (
-            torch.cuda.current_device() if resolved.index is None else resolved.index
-        )
-        major, minor = torch.cuda.get_device_capability(index)
-        return cls(
-            device_name=torch.cuda.get_device_name(index),
-            compute_capability=f"{major}.{minor}",
-        )
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "HardwareFingerprint":
-        return cls(
-            device_name=str(value["device_name"]),
-            compute_capability=str(value["compute_capability"]),
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "device_name": self.device_name,
-            "compute_capability": self.compute_capability,
-        }
+DEPLOYMENT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +31,7 @@ class ShapeFingerprint:
     input_scale: float
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "ShapeFingerprint":
+    def from_dict(cls, value: dict[str, Any]) -> ShapeFingerprint:
         return cls(
             batch_size=int(value["batch_size"]),
             qkv_dim=int(value["qkv_dim"]),
@@ -97,54 +63,93 @@ class ShapeFingerprint:
 def _load(path: str | Path) -> dict[str, Any]:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict) or not isinstance(value.get("bundles"), list):
-        raise ValueError("deployed config file must contain a bundles array")
+        raise ValueError(  # noqa: TRY004 - invalid persisted value, not caller type
+            "deployed config file must contain a bundles array"
+        )
     return value
 
 
 def _keys(
-    hardware: HardwareFingerprint | dict[str, Any],
+    hardware: EnvironmentFingerprint | dict[str, Any],
     shape: ShapeFingerprint | dict[str, Any],
-) -> tuple[HardwareFingerprint, ShapeFingerprint]:
+) -> tuple[EnvironmentFingerprint, ShapeFingerprint]:
     return (
         hardware
-        if isinstance(hardware, HardwareFingerprint)
-        else HardwareFingerprint.from_dict(hardware),
+        if isinstance(hardware, EnvironmentFingerprint)
+        else EnvironmentFingerprint.from_dict(hardware),
         shape
         if isinstance(shape, ShapeFingerprint)
         else ShapeFingerprint.from_dict(shape),
     )
 
 
+def _matching_entries(
+    *,
+    hardware: EnvironmentFingerprint,
+    path: str | Path,
+) -> tuple[dict[str, Any], ...]:
+    try:
+        document = _load(path)
+    except FileNotFoundError:
+        return ()
+    if document.get("schema_version") != DEPLOYMENT_SCHEMA_VERSION:
+        return ()
+    for bundle in document["bundles"]:
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("hardware"), dict):
+            continue
+        if EnvironmentFingerprint.from_dict(bundle["hardware"]) == hardware:
+            entries = bundle.get("entries", [])
+            return tuple(entry for entry in entries if isinstance(entry, dict))
+    return ()
+
+
 def resolve_deployed_config(
     *,
-    hardware: HardwareFingerprint | dict[str, Any],
+    hardware: EnvironmentFingerprint | dict[str, Any],
     shape: ShapeFingerprint | dict[str, Any],
     path: str | Path = DEFAULT_DEPLOYED_CONFIGS_PATH,
 ) -> ConfigSpec | None:
     """Return the exact device/shape config, or ``None`` when not measured."""
 
     hardware_key, shape_key = _keys(hardware, shape)
-    try:
-        document = _load(path)
-    except FileNotFoundError:
-        return None
-    for bundle in document["bundles"]:
-        if not isinstance(bundle, dict) or not isinstance(bundle.get("hardware"), dict):
+    for entry in _matching_entries(hardware=hardware_key, path=path):
+        if not isinstance(entry.get("shape"), dict):
             continue
-        if HardwareFingerprint.from_dict(bundle["hardware"]) != hardware_key:
-            continue
-        for entry in bundle.get("entries", []):
-            if not isinstance(entry, dict) or not isinstance(entry.get("shape"), dict):
-                continue
-            if ShapeFingerprint.from_dict(entry["shape"]) == shape_key:
-                return ConfigSpec.from_dict(entry["config"])
-        return None
+        if ShapeFingerprint.from_dict(entry["shape"]) == shape_key:
+            return ConfigSpec.from_dict(entry["config"])
     return None
+
+
+def iter_deployed_configs(
+    *,
+    hardware: EnvironmentFingerprint | dict[str, Any],
+    path: str | Path = DEFAULT_DEPLOYED_CONFIGS_PATH,
+) -> tuple[tuple[ShapeFingerprint, ConfigSpec], ...]:
+    """Return every exact-environment deployment as shape/config pairs."""
+
+    hardware_key = (
+        hardware
+        if isinstance(hardware, EnvironmentFingerprint)
+        else EnvironmentFingerprint.from_dict(hardware)
+    )
+    pairs = []
+    for entry in _matching_entries(hardware=hardware_key, path=path):
+        if not isinstance(entry.get("shape"), dict) or not isinstance(
+            entry.get("config"), dict
+        ):
+            continue
+        pairs.append(
+            (
+                ShapeFingerprint.from_dict(entry["shape"]),
+                ConfigSpec.from_dict(entry["config"]),
+            )
+        )
+    return tuple(pairs)
 
 
 def publish_deployed_config(
     *,
-    hardware: HardwareFingerprint | dict[str, Any],
+    hardware: EnvironmentFingerprint | dict[str, Any],
     shape: ShapeFingerprint | dict[str, Any],
     config: ConfigSpec,
     path: str | Path = DEFAULT_DEPLOYED_CONFIGS_PATH,
@@ -156,14 +161,16 @@ def publish_deployed_config(
     try:
         document = _load(target)
     except FileNotFoundError:
-        document = {"schema_version": 1, "bundles": []}
+        document = {"schema_version": DEPLOYMENT_SCHEMA_VERSION, "bundles": []}
+    if document.get("schema_version") != DEPLOYMENT_SCHEMA_VERSION:
+        document = {"schema_version": DEPLOYMENT_SCHEMA_VERSION, "bundles": []}
 
     matching_bundle: dict[str, Any] | None = None
     for bundle in document["bundles"]:
         if (
             isinstance(bundle, dict)
             and isinstance(bundle.get("hardware"), dict)
-            and HardwareFingerprint.from_dict(bundle["hardware"]) == hardware_key
+            and EnvironmentFingerprint.from_dict(bundle["hardware"]) == hardware_key
         ):
             matching_bundle = bundle
             break
@@ -194,8 +201,10 @@ def publish_deployed_config(
 
 __all__ = [
     "DEFAULT_DEPLOYED_CONFIGS_PATH",
-    "HardwareFingerprint",
+    "DEPLOYMENT_SCHEMA_VERSION",
+    "EnvironmentFingerprint",
     "ShapeFingerprint",
+    "iter_deployed_configs",
     "publish_deployed_config",
     "resolve_deployed_config",
 ]

@@ -3,25 +3,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from optimizer.engine import SearchResult
-from optimizer.evaluation import (
+from autotune.engine import SearchResult
+from autotune.evaluator import (
     ConstraintVector,
     EvaluationScope,
     Fidelity,
+    PairedMeasurement,
     TrialMeasurement,
 )
-from runner.search_service import MIN_PROMOTION_SPEEDUP, RunnerSearchEvaluator
+from autotune.service import MIN_PROMOTION_SPEEDUP, BenchmarkEvaluator
+from deployment.registry import (
+    EnvironmentFingerprint,
+    ShapeFingerprint,
+    publish_deployed_config,
+    resolve_deployed_config,
+)
 from solution.config import (
     ConfigSpec,
     RuntimeBackend,
     ScheduleConfig,
     portable_config,
-)
-from solution.deployed_configs import (
-    HardwareFingerprint,
-    ShapeFingerprint,
-    publish_deployed_config,
-    resolve_deployed_config,
 )
 
 
@@ -29,6 +30,23 @@ def _graph_config() -> ConfigSpec:
     return ConfigSpec(
         program=portable_config().program,
         schedule=ScheduleConfig(runtime=RuntimeBackend.CUDA_GRAPH),
+    )
+
+
+def _hardware() -> EnvironmentFingerprint:
+    return EnvironmentFingerprint(
+        device_name="Test GPU",
+        compute_capability="9.9",
+        driver_version="600.1",
+        torch_version="2.12.0",
+        cuda_runtime_version="13.2",
+        cudnn_version="92000",
+        triton_version="3.7.0",
+        matmul_precision="highest",
+        allow_tf32=False,
+        cudnn_allow_tf32=False,
+        official_definitions_digest="official-test",
+        solution_implementation_digest="solution-test",
     )
 
 
@@ -49,13 +67,28 @@ def _measurement(
     )
 
 
-class _FixedEvaluator(RunnerSearchEvaluator):
+class _FixedEvaluator(BenchmarkEvaluator):
     def __init__(self, measurements: dict[str, TrialMeasurement]) -> None:
         self.measurements = measurements
 
     def evaluate(self, config: ConfigSpec, fidelity: Fidelity) -> TrialMeasurement:
         assert fidelity is Fidelity.FORMAL
         return self.measurements[config.config_id]
+
+    def compare(
+        self,
+        challenger: ConfigSpec,
+        incumbent: ConfigSpec,
+    ) -> PairedMeasurement:
+        incumbent_result = self.evaluate(incumbent, Fidelity.FORMAL)
+        challenger_result = self.evaluate(challenger, Fidelity.FORMAL)
+        speedup = incumbent_result.objective_ms / challenger_result.objective_ms
+        return PairedMeasurement(
+            incumbent=incumbent_result,
+            challenger=challenger_result,
+            paired_ratios=(speedup,),
+            exceeds_noise_margin=speedup >= MIN_PROMOTION_SPEEDUP,
+        )
 
 
 def test_promotion_requires_two_percent_formal_speedup() -> None:
@@ -111,7 +144,7 @@ def test_only_completed_formal_selection_is_deployable() -> None:
 
 def test_deployment_key_separates_input_variants(tmp_path: Path) -> None:
     path = tmp_path / "deployed.json"
-    hardware = HardwareFingerprint("Test GPU", "9.9")
+    hardware = _hardware()
     default_shape = ShapeFingerprint(
         batch_size=1,
         qkv_dim=128,
@@ -171,8 +204,10 @@ def test_deployment_key_separates_input_variants(tmp_path: Path) -> None:
 
 
 def test_checked_in_deployments_use_complete_shape_keys() -> None:
-    path = Path(__file__).resolve().parents[1] / "deployments" / "deployed_configs.json"
+    path = Path(__file__).resolve().parents[1] / "deployment" / "deployed_configs.json"
     document = json.loads(path.read_text(encoding="utf-8"))
+
+    assert document["schema_version"] == 2
 
     for bundle in document["bundles"]:
         for entry in bundle["entries"]:

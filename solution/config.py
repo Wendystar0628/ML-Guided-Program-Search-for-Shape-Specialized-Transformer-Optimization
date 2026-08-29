@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
-
 CONFIG_SCHEMA_VERSION = 1
 
 
@@ -277,9 +276,7 @@ class ScheduleConfig:
                 _positive_int(self.batch_tile_size, field="batch_tile_size"),
             )
         elif self.batch_tile_size is not None:
-            raise ValueError(
-                "batch_tile_size is valid only for batch_tiled_cuda_graph"
-            )
+            raise ValueError("batch_tile_size is valid only for batch_tiled_cuda_graph")
         if runtime is RuntimeBackend.STREAMED:
             object.__setattr__(
                 self,

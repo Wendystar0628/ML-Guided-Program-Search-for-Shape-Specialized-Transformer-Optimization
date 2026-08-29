@@ -15,7 +15,7 @@ from optuna.trial import FrozenTrial, Trial, TrialState
 
 from solution.config import ConfigSpec
 
-from .evaluation import (
+from .evaluator import (
     ConstraintVector,
     EvaluationScope,
     Fidelity,
@@ -32,21 +32,46 @@ def _constraints_from_trial(trial: FrozenTrial) -> Sequence[float]:
     try:
         return ConstraintVector.from_value(raw).as_tuple()
     except (TypeError, ValueError):
-        # A completed trial without the optimizer contract must never be treated
+        # A completed trial without the autotuner contract must never be treated
         # as feasible. Infrastructure failures use TrialState.FAIL and do not
         # reach this callback.
         return (1.0, 1.0, 1.0, 1.0)
 
 
 def _branch_seed(seed: int, identity: StudyIdentity) -> int:
-    return (seed ^ int(identity.branch_id[:8], 16)) & 0xFFFFFFFF
+    branch_digest = identity.branch_id.removeprefix("branch-")
+    return (seed ^ int(branch_digest[:8], 16)) & 0xFFFFFFFF
+
+
+def startup_trial_count(
+    branch: BranchSpace,
+    *,
+    branch_budget: int,
+    scope: EvaluationScope,
+) -> int:
+    """Choose a small absolute TPE startup threshold for one branch."""
+
+    if (
+        isinstance(branch_budget, bool)
+        or not isinstance(branch_budget, int)
+        or branch_budget <= 0
+    ):
+        raise ValueError("branch_budget must be a positive integer")
+    normalized_scope = EvaluationScope(scope)
+    if normalized_scope is EvaluationScope.STREAMED:
+        ceiling = 4
+    elif branch.cardinality >= 1_024:
+        ceiling = 6
+    else:
+        ceiling = 4
+    return min(branch.cardinality, branch_budget, ceiling)
 
 
 def _optional_mapping(value: object, *, field: str) -> Mapping[str, Any] | None:
     if value is None:
         return None
     if not isinstance(value, Mapping):
-        raise ValueError(f"{field} must be an object or null")
+        raise TypeError(f"{field} must be an object or null")
     return dict(value)
 
 
@@ -54,7 +79,7 @@ def _optional_float(value: object, *, field: str) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"{field} must be numeric or null")
+        raise TypeError(f"{field} must be numeric or null")
     normalized = float(value)
     if not math.isfinite(normalized):
         raise ValueError(f"{field} must be finite")
@@ -65,7 +90,7 @@ def _optional_int(value: object, *, field: str) -> int | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{field} must be an integer or null")
+        raise TypeError(f"{field} must be an integer or null")
     return value
 
 
@@ -80,7 +105,7 @@ def measurement_from_frozen_trial(trial: FrozenTrial) -> TrialMeasurement:
     constraints = ConstraintVector.from_value(attrs.get("constraints"))
     metrics = attrs.get("metrics", {})
     if not isinstance(metrics, Mapping):
-        raise ValueError("trial metrics must be an object")
+        raise TypeError("trial metrics must be an object")
     failure_kind = attrs.get("failure_kind")
     if failure_kind is not None and not isinstance(failure_kind, str):
         raise ValueError("failure_kind must be a string or null")
@@ -136,7 +161,7 @@ class OptunaBackend:
         storage: SearchStorage,
         *,
         seed: int,
-        n_startup_trials: int = 8,
+        n_startup_trials: int = 4,
     ) -> None:
         if isinstance(seed, bool) or not isinstance(seed, int):
             raise TypeError("seed must be an integer")
@@ -146,12 +171,28 @@ class OptunaBackend:
         self.seed = seed
         self.n_startup_trials = n_startup_trials
 
-    def create_study(self, identity: StudyIdentity) -> Study:
+    def create_study(
+        self,
+        identity: StudyIdentity,
+        *,
+        n_startup_trials: int | None = None,
+    ) -> Study:
         """Create or resume exactly one compatible branch Study."""
 
+        startup_trials = (
+            self.n_startup_trials if n_startup_trials is None else n_startup_trials
+        )
+        if (
+            isinstance(startup_trials, bool)
+            or not isinstance(startup_trials, int)
+            or startup_trials <= 0
+        ):
+            raise ValueError("n_startup_trials must be positive")
         sampler = TPESampler(
             seed=_branch_seed(self.seed, identity),
-            n_startup_trials=self.n_startup_trials,
+            # This is the absolute Study threshold. Optuna therefore counts
+            # compatible preloaded and historical COMPLETE trials toward it.
+            n_startup_trials=startup_trials,
             multivariate=True,
             group=True,
             constraints_func=_constraints_from_trial,
@@ -235,6 +276,7 @@ class OptunaBackend:
                 distributions=distributions,
                 value=measurement.objective_ms,
                 user_attrs=attrs,
+                system_attrs={"constraints": measurement.constraints.as_tuple()},
             )
         )
 
@@ -336,4 +378,5 @@ __all__ = [
     "CompletedTrial",
     "OptunaBackend",
     "measurement_from_frozen_trial",
+    "startup_trial_count",
 ]

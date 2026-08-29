@@ -113,22 +113,17 @@ if triton is not None and tl is not None:
         dim_mask = offsets_d < HEAD_DIM
 
         query_base = (
-            batch_index.to(tl.int64) * stride_qb
-            + head_index.to(tl.int64) * stride_qh
+            batch_index.to(tl.int64) * stride_qb + head_index.to(tl.int64) * stride_qh
         )
         key_base = (
-            batch_index.to(tl.int64) * stride_kb
-            + head_index.to(tl.int64) * stride_kh
+            batch_index.to(tl.int64) * stride_kb + head_index.to(tl.int64) * stride_kh
         )
         value_base = (
-            batch_index.to(tl.int64) * stride_vb
-            + head_index.to(tl.int64) * stride_vh
+            batch_index.to(tl.int64) * stride_vb + head_index.to(tl.int64) * stride_vh
         )
 
         query_offsets = (
-            query_base
-            + offsets_m[:, None] * stride_qs
-            + offsets_d[None, :] * stride_qd
+            query_base + offsets_m[:, None] * stride_qs + offsets_d[None, :] * stride_qd
         )
         query_tile = tl.load(
             query + query_offsets,

@@ -4,7 +4,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptRoot
 $venvActivate = Join-Path $projectRoot '.venv\Scripts\Activate.ps1'
 $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
 $cudaRoot = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2'

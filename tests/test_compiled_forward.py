@@ -5,8 +5,8 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from solution import compiled_forward as compiled_forward_module
-from solution.compiled_forward import CompiledForward
+from solution.runtimes import compiled_forward as compiled_forward_module
+from solution.runtimes.compiled_forward import CompiledForward
 
 _COMPILE_MODE = "max-autotune"
 
@@ -217,14 +217,10 @@ def test_later_execution_failure_is_explicit_and_drops_entry(
     )
     runner = CompiledForward()
     value = torch.zeros(2, 3)
-    runner.run(
-        _add_mask, value, None, plan_key="plan", compile_mode=_COMPILE_MODE
-    )
+    runner.run(_add_mask, value, None, plan_key="plan", compile_mode=_COMPILE_MODE)
 
     with pytest.raises(RuntimeError, match="execution failed"):
-        runner.run(
-            _add_mask, value, None, plan_key="plan", compile_mode=_COMPILE_MODE
-        )
+        runner.run(_add_mask, value, None, plan_key="plan", compile_mode=_COMPILE_MODE)
 
     assert runner.cache_size == 0
 
@@ -241,9 +237,7 @@ def test_clear_and_rebuild_replace_cached_callable(
     runner = CompiledForward()
     value = torch.zeros(2, 3)
 
-    runner.run(
-        _add_mask, value, None, plan_key="plan", compile_mode="reduce-overhead"
-    )
+    runner.run(_add_mask, value, None, plan_key="plan", compile_mode="reduce-overhead")
     runner.rebuild(
         _add_mask, value, None, plan_key="plan", compile_mode="reduce-overhead"
     )

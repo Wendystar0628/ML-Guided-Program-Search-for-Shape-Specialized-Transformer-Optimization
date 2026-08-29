@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from solution.kernels import (
+from solution.operators import (
     can_split_qkv,
     can_use_causal_sdpa,
     can_use_residual_add,

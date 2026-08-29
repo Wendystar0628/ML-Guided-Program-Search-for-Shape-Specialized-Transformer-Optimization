@@ -1,4 +1,4 @@
-"""Immutable execution plans compiled from typed Transformer configurations."""
+"""Immutable execution plans built from typed Transformer configurations."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from .config import (
 
 @dataclass(frozen=True, slots=True)
 class ExecutionContext:
-    """Input and model facts that affect static execution eligibility."""
+    """Input and model facts that affect execution-plan eligibility."""
 
     batch_size: int
     seq_len: int
@@ -100,7 +100,7 @@ class ExpectedExecutionTrace:
 
 @dataclass(frozen=True, slots=True)
 class ExecutionPlan:
-    """Strictly compiled plan; forward must execute it without hidden fallback."""
+    """Strict plan that forward executes without hidden fallback."""
 
     config: ConfigSpec
     outer_context: ExecutionContext
@@ -184,9 +184,7 @@ class ExecutionPlan:
             "inner_batch_size": self.inner_context.batch_size,
             "causal_mask": causal_mask,
             "valid_token_mask": (
-                "direct_key_mask"
-                if self.outer_context.has_valid_token_mask
-                else "none"
+                "direct_key_mask" if self.outer_context.has_valid_token_mask else "none"
             ),
         }
 

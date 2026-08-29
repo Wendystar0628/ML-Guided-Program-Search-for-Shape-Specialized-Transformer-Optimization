@@ -1,4 +1,4 @@
-from runner.benchmark import BenchmarkResult, TimingStats
+from benchmarking.measure import BenchmarkResult, TimingStats
 from solution.config import portable_config
 
 

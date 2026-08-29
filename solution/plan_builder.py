@@ -1,4 +1,4 @@
-"""Strict compilation from typed search configurations to execution plans."""
+"""Build execution plans from typed search configurations."""
 
 from __future__ import annotations
 
@@ -15,17 +15,17 @@ from .config import (
     ResidualNormBackend,
     RuntimeBackend,
 )
-from .execution_plan import (
-    ExecutionContext,
-    ExecutionPlan,
-    ExpectedExecutionTrace,
-)
-from .kernels import (
+from .operators import (
     triton_dh8_causal_attention_available,
     triton_initial_fp16_layer_norm_available,
     triton_mixed_residual_layer_norm_available,
     triton_residual_layer_norm_available,
     triton_shape13_causal_attention_available,
+)
+from .plan import (
+    ExecutionContext,
+    ExecutionPlan,
+    ExpectedExecutionTrace,
 )
 
 
@@ -154,15 +154,13 @@ class HardwareCapabilities:
             triton_shape13_attention=triton_shape13_causal_attention_available(),
             triton_dh8_attention=triton_dh8_causal_attention_available(),
             triton_residual_norm=triton_residual_layer_norm_available(),
-            triton_mixed_residual_norm=(
-                triton_mixed_residual_layer_norm_available()
-            ),
+            triton_mixed_residual_norm=(triton_mixed_residual_layer_norm_available()),
             triton_initial_norm=triton_initial_fp16_layer_norm_available(),
         )
 
 
-class ConfigCompiler:
-    """Compile exactly one ConfigSpec without policy lookup or silent fallback."""
+class PlanBuilder:
+    """Build exactly one execution plan without policy lookup or fallback."""
 
     def evaluate(
         self,
@@ -194,13 +192,13 @@ class ConfigCompiler:
         plan = self._build_plan(config, context, inner_context)
         return CompilationResult(config.config_id, plan, None)
 
-    def compile(
+    def build(
         self,
         config: ConfigSpec,
         context: ExecutionContext,
         hardware: HardwareCapabilities | None = None,
     ) -> ExecutionPlan:
-        """Compile or raise a structured error; never substitute another config."""
+        """Build a plan or raise; never substitute another configuration."""
 
         return self.evaluate(config, context, hardware).require_plan()
 
@@ -734,8 +732,8 @@ class ConfigCompiler:
 __all__ = [
     "CompilationResult",
     "CompileRejection",
-    "ConfigCompiler",
     "ConfigRejectedError",
     "ConstraintViolation",
     "HardwareCapabilities",
+    "PlanBuilder",
 ]
