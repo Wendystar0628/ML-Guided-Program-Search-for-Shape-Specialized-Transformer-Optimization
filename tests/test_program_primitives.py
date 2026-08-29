@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 import pytest
 import torch
 
 import autotune.space as space_module
+from autotune.engine import SearchBudget
 from autotune.space import (
+    DEFAULT_MAX_STRUCTURE_BRANCHES,
     BranchSpace,
     ParameterDomain,
     SearchContext,
@@ -27,6 +30,7 @@ from solution.config import (
     RuntimeBackend,
     ScheduleConfig,
     TritonAttentionParams,
+    TritonNormParams,
 )
 from solution.model import UserOptimizedTransformer
 from solution.plan import ExecutionContext
@@ -50,6 +54,11 @@ _FP16_FIELDS = {
     PrecisionPlan.FP16_FFN_OUTPUT: frozenset({"ffn_output_projection"}),
     PrecisionPlan.FP16_CORE: frozenset(_PROJECTION_FIELDS),
 }
+
+
+def test_structure_cover_limit_has_one_shared_default() -> None:
+    assert SearchBudget(max_seconds=1.0).max_structure_branches == 36
+    assert DEFAULT_MAX_STRUCTURE_BRANCHES == 36
 
 
 def _program(
@@ -78,6 +87,25 @@ def _program(
         ffn=FFNBackend.TORCH,
         residual_norm=ResidualNormBackend.TORCH,
         initial_norm=InitialNormBackend.TORCH,
+    )
+
+
+def _official07_context(*, has_valid_token_mask: bool = False) -> ExecutionContext:
+    return ExecutionContext(
+        batch_size=64,
+        seq_len=128,
+        d_model=32,
+        num_heads=4,
+        causal=True,
+        device=torch.device("cuda"),
+        dtype=torch.float32,
+        training=False,
+        grad_enabled=False,
+        input_contiguous=True,
+        has_valid_token_mask=has_valid_token_mask,
+        mask_compatible=True,
+        ffn_dim=32,
+        num_layers=4,
     )
 
 
@@ -173,6 +201,148 @@ def test_branch_build_and_parameter_recovery_preserve_new_program_primitives() -
     assert config.program.attention_output_projection is ProjectionBackend.AUTOCAST_FP16
     assert config.program.ffn_input_projection is ProjectionBackend.FP16_SHADOW
     assert config.program.ffn_output_projection is ProjectionBackend.AUTOCAST_FP16
+
+
+def test_generated_projection_patterns_cover_every_legal_weight_implementation() -> (
+    None
+):
+    patterns = space_module._projection_patterns(PrecisionPlan.FP16_CORE)
+
+    assert len(patterns) == 16
+    assert len({values for _, values in patterns}) == 16
+    assert patterns[0][0] == "all_autocast"
+    assert patterns[-1][0] == "all_shadow"
+    assert any(
+        name
+        == "shadow_qkv_projection__attention_output_projection__ffn_input_projection"
+        for name, _ in patterns
+    )
+
+
+def test_generated_schedule_domains_cover_supported_shapes_without_padding_small_widths() -> (
+    None
+):
+    d32 = space_module._gemm_tile_choices(
+        output_width=32,
+        input_width=32,
+        supported_block_k=(16, 32, 64),
+    )
+    d128 = space_module._gemm_tile_choices(
+        output_width=128,
+        input_width=128,
+        supported_block_k=(16, 32, 64),
+    )
+    ffn = space_module._gemm_tile_choices(
+        output_width=128,
+        input_width=128,
+        supported_block_k=(16, 32, 64, 128),
+    )
+
+    assert len(d32) == 16
+    assert all(int(tile.split("x")[1]) <= 32 for tile in d32)
+    assert all(int(tile.split("x")[2]) <= 32 for tile in d32)
+    assert len(d128) == 48
+    assert "16x16x16" in d128
+    assert "128x128x64" in d128
+    assert len(ffn) == 64
+    assert "128x128x128" in ffn
+    assert space_module._batch_tile_choices(1) == ()
+    assert space_module._batch_tile_choices(64) == (1, 2, 4, 8, 16, 32)
+    assert space_module._batch_tile_choices(10000)[-1] == 8192
+    assert space_module._streaming_attention_tile_choices() == (
+        "16x64",
+        "16x128",
+        "32x64",
+        "32x128",
+        "64x64",
+        "64x128",
+    )
+
+
+def test_structure_generation_prunes_only_statically_impossible_combinations() -> None:
+    masked = SearchContext(
+        execution_context=_official07_context(has_valid_token_mask=True),
+        scope="resident",
+    )
+    structures = space_module._structure_specs(masked)
+
+    assert structures
+    assert all(
+        item.runtime is not RuntimeBackend.BATCH_TILED_CUDA_GRAPH for item in structures
+    )
+    assert all(
+        item.attention
+        in {
+            AttentionBackend.REFERENCE_STREAMING,
+            AttentionBackend.CAUSAL_SDPA,
+        }
+        for item in structures
+    )
+    assert all(
+        item.residual_norm is not ResidualNormBackend.COMPILED for item in structures
+    )
+    assert all(
+        item.runtime is not RuntimeBackend.COMPILED_FORWARD
+        or (
+            item.residual_norm is ResidualNormBackend.TORCH
+            and item.initial_norm is InitialNormBackend.TORCH
+        )
+        for item in structures
+    )
+
+
+def test_batch_tiled_d32_norm_domain_is_valid_for_the_inner_batch_template() -> None:
+    context = SearchContext(
+        execution_context=_official07_context(),
+        scope="resident",
+    )
+    structure = StructureSpec(
+        attention=AttentionBackend.CAUSAL_SDPA,
+        precision_plan=PrecisionPlan.INPUT_DTYPE,
+        qkv_materialization=QKVMaterialization.VIEW,
+        attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+        ffn=FFNBackend.TORCH,
+        residual_norm=ResidualNormBackend.TRITON,
+        initial_norm=InitialNormBackend.TORCH,
+        runtime=RuntimeBackend.BATCH_TILED_CUDA_GRAPH,
+    )
+    domains = {
+        domain.name: domain
+        for domain in space_module._domains_for_structure(structure, context)
+    }
+
+    assert domains["residual_block_rows"].choices == (4, 8)
+    assert domains["residual_num_warps"].choices == (2, 4, 8)
+    assert 16 not in domains["residual_block_rows"].choices
+
+
+def test_exact_d32_plan_rejects_a_warp_count_the_specialized_kernel_cannot_run() -> (
+    None
+):
+    program = replace(
+        _program(PrecisionPlan.FP16_CORE),
+        residual_norm=ResidualNormBackend.TRITON,
+    )
+    config = ConfigSpec(
+        program=program,
+        schedule=ScheduleConfig(
+            runtime=RuntimeBackend.EAGER,
+            residual_norm_launch=TritonNormParams(block_rows=4, num_warps=1),
+        ),
+    )
+    context = _official07_context()
+    hardware = replace(
+        HardwareCapabilities.detect(torch.device("cuda")),
+        triton_residual_norm=True,
+        triton_d32_residual_norm=True,
+    )
+
+    result = PlanBuilder().evaluate(config, context, hardware)
+
+    assert not result.accepted
+    assert any(
+        violation.code == "unsupported_launch_value" for violation in result.violations
+    )
 
 
 def test_structure_generation_prunes_unimplemented_attention_output_bridges() -> None:

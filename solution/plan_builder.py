@@ -932,9 +932,10 @@ class PlanBuilder:
             and hardware.triton_d32_residual_norm
         )
         allowed_rows = {4, 8, 16} if exact_d32 else {1, 2, 4, 8}
+        allowed_warps = {2, 4, 8} if exact_d32 else {1, 2, 4, 8}
         if launch is not None and (
             launch.block_rows not in allowed_rows
-            or launch.num_warps not in {1, 2, 4, 8}
+            or launch.num_warps not in allowed_warps
         ):
             reject(
                 "unsupported_launch_value",

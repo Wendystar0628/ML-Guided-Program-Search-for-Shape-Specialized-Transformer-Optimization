@@ -32,6 +32,7 @@ from solution.config import (
 )
 
 Scalar = str | int | float | bool
+DEFAULT_MAX_STRUCTURE_BRANCHES = 36
 ProjectionTuple = tuple[
     ProjectionBackend,
     ProjectionBackend,
@@ -64,7 +65,7 @@ _FP16_PROJECTION_FIELDS = {
 def _projection_patterns(
     precision_plan: PrecisionPlan,
 ) -> tuple[tuple[str, ProjectionTuple], ...]:
-    """Return a bounded categorical set of complete per-role implementations."""
+    """Return every legal per-role FP16 weight implementation pattern."""
 
     active_fields = _FP16_PROJECTION_FIELDS[precision_plan]
     if not active_fields:
@@ -94,25 +95,20 @@ def _projection_patterns(
         assert len(values) == 4
         return values  # type: ignore[return-value]
 
-    candidates = [
-        ("all_autocast", backends(shadow_fields=frozenset())),
-        ("all_shadow", backends(shadow_fields=frozenset(active_fields))),
-    ]
-    candidates.extend(
-        (
-            f"shadow_{field_name}",
-            backends(shadow_fields=frozenset({field_name})),
-        )
-        for field_name in active_fields
-    )
-    unique: list[tuple[str, ProjectionTuple]] = []
-    seen: set[ProjectionTuple] = set()
-    for name, values in candidates:
-        if values in seen:
-            continue
-        seen.add(values)
-        unique.append((name, values))
-    return tuple(unique)
+    patterns: list[tuple[str, ProjectionTuple]] = []
+    for shadow_count in range(len(active_fields) + 1):
+        for fields in itertools.combinations(active_fields, shadow_count):
+            shadow_fields = frozenset(fields)
+            if not fields:
+                name = "all_autocast"
+            elif len(fields) == len(active_fields):
+                name = "all_shadow"
+            elif len(fields) == 1:
+                name = f"shadow_{fields[0]}"
+            else:
+                name = "shadow_" + "__".join(fields)
+            patterns.append((name, backends(shadow_fields=shadow_fields)))
+    return tuple(patterns)
 
 
 def _projection_pattern_choices(
@@ -340,12 +336,13 @@ class StructureSpec:
 
 
 def _batch_tile_choices(batch_size: int) -> tuple[int, ...]:
-    values = tuple(
-        value for value in (32, 64, 128, 256, 512, 1024) if value < batch_size
+    if batch_size <= 1:
+        return ()
+    return tuple(
+        value
+        for exponent in range(batch_size.bit_length())
+        if (value := 1 << exponent) < batch_size
     )
-    if values:
-        return values
-    return (max(1, batch_size // 2),)
 
 
 def _microbatch_choices(batch_size: int) -> tuple[int, ...]:
@@ -385,12 +382,29 @@ def _decode_attention_tile(value: Scalar) -> tuple[int, int]:
     return int(block_m), int(block_n)
 
 
-_GEMM_TILE_CHOICES = (
-    "32x32x32",
-    "32x64x32",
-    "64x64x32",
-    "64x128x32",
-)
+_GEMM_BLOCK_CHOICES = (16, 32, 64, 128)
+
+
+def _gemm_tile_choices(
+    *,
+    output_width: int,
+    input_width: int,
+    supported_block_k: tuple[int, ...],
+) -> tuple[str, ...]:
+    """Generate implemented tiles and avoid blocks wider than small matrices."""
+
+    block_n_choices = tuple(
+        value for value in _GEMM_BLOCK_CHOICES if value <= output_width
+    )
+    block_k_choices = tuple(
+        value for value in supported_block_k if value <= input_width
+    )
+    return tuple(
+        f"{block_m}x{block_n}x{block_k}"
+        for block_m in _GEMM_BLOCK_CHOICES
+        for block_n in block_n_choices
+        for block_k in block_k_choices
+    )
 
 
 def _decode_gemm_tile(value: Scalar) -> tuple[int, int, int]:
@@ -401,9 +415,11 @@ def _decode_gemm_tile(value: Scalar) -> tuple[int, int, int]:
 
 
 def _streaming_attention_tile_choices() -> tuple[str, ...]:
-    """Small, valid Shape-14 tile set for the online-softmax kernel."""
+    """Cover Shape-14 occupancy and key-block reuse without tiny KV blocks."""
 
-    return ("32x64", "64x64", "64x128")
+    return tuple(
+        f"{block_m}x{block_n}" for block_m in (16, 32, 64) for block_n in (64, 128)
+    )
 
 
 def _context_supports_streaming_dh64(context: SearchContext) -> bool:
@@ -767,6 +783,8 @@ def _domains_for_structure(
     structure: StructureSpec,
     context: SearchContext,
 ) -> tuple[ParameterDomain, ...]:
+    model_width = int(context.execution_context.d_model)
+    ffn_width = int(context.execution_context.ffn_dim)
     projection_choices = _projection_pattern_choices(
         structure.precision_plan,
         require_qkv_shadow=(
@@ -832,12 +850,18 @@ def _domains_for_structure(
             )
         )
     if structure.qkv_materialization is QKVMaterialization.TRITON_NATIVE_BHSD:
+        tile_choices = _gemm_tile_choices(
+            output_width=model_width,
+            input_width=model_width,
+            supported_block_k=(16, 32, 64),
+        )
+        default_tile = "32x32x32" if model_width == 32 else "64x64x32"
         domains.extend(
             (
                 ParameterDomain(
                     "qkv_gemm_tile",
-                    _GEMM_TILE_CHOICES,
-                    "64x64x32",
+                    tile_choices,
+                    default_tile,
                     True,
                 ),
                 ParameterDomain("qkv_num_warps", (2, 4, 8), 4, True),
@@ -847,11 +871,16 @@ def _domains_for_structure(
         structure.attention_output_bridge
         is AttentionOutputBridge.TRITON_BHSD_PROJECTION
     ):
+        tile_choices = _gemm_tile_choices(
+            output_width=model_width,
+            input_width=model_width,
+            supported_block_k=(16, 32, 64),
+        )
         domains.extend(
             (
                 ParameterDomain(
                     "attention_output_gemm_tile",
-                    _GEMM_TILE_CHOICES,
+                    tile_choices,
                     "32x32x32",
                     True,
                 ),
@@ -869,7 +898,6 @@ def _domains_for_structure(
                 ),
             )
         )
-    model_width = int(context.execution_context.d_model)
     if model_width == 1024:
         norm_rows = (1, 2)
         norm_warps = (4, 8)
@@ -877,9 +905,20 @@ def _domains_for_structure(
         model_width == 32
         and context.execution_context.batch_size == 64
         and context.execution_context.seq_len == 128
+        and structure.runtime is not RuntimeBackend.BATCH_TILED_CUDA_GRAPH
         and not context.execution_context.has_valid_token_mask
     ):
         norm_rows = (4, 8, 16)
+        norm_warps = (2, 4, 8)
+    elif (
+        model_width == 32
+        and context.execution_context.seq_len == 128
+        and structure.runtime is RuntimeBackend.BATCH_TILED_CUDA_GRAPH
+        and not context.execution_context.has_valid_token_mask
+    ):
+        # This intersection is valid for both the general inner-batch kernel
+        # and a possible B64 D32 specialization.
+        norm_rows = (4, 8)
         norm_warps = (2, 4, 8)
     else:
         norm_rows = (1, 2, 4, 8)
@@ -953,12 +992,18 @@ def _domains_for_structure(
             )
         )
     if structure.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU:
+        tile_choices = _gemm_tile_choices(
+            output_width=ffn_width,
+            input_width=model_width,
+            supported_block_k=(16, 32, 64, 128),
+        )
+        default_tile = "32x32x32" if model_width == 32 else "64x64x32"
         domains.extend(
             (
                 ParameterDomain(
                     "ffn_input_gemm_tile",
-                    _GEMM_TILE_CHOICES,
-                    "64x64x32",
+                    tile_choices,
+                    default_tile,
                     True,
                 ),
                 ParameterDomain(
@@ -1047,7 +1092,23 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         )
     )
     execution = context.execution_context
+    if execution.has_valid_token_mask or context.batch_size <= 1:
+        runtimes = tuple(
+            runtime
+            for runtime in runtimes
+            if runtime is not RuntimeBackend.BATCH_TILED_CUDA_GRAPH
+        )
     attentions = tuple(AttentionBackend)
+    if execution.has_valid_token_mask:
+        attentions = tuple(
+            value
+            for value in attentions
+            if value
+            in {
+                AttentionBackend.REFERENCE_STREAMING,
+                AttentionBackend.CAUSAL_SDPA,
+            }
+        )
     if not _context_supports_streaming_dh64(context):
         attentions = tuple(
             value
@@ -1114,6 +1175,21 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         InitialNormBackend,
         runtimes,
     ):
+        if runtime is RuntimeBackend.COMPILED_FORWARD and (
+            residual_norm is not ResidualNormBackend.TORCH
+            or initial_norm is not InitialNormBackend.TORCH
+        ):
+            continue
+        if runtime is RuntimeBackend.BATCH_TILED_CUDA_GRAPH and attention in {
+            AttentionBackend.TRITON_SHAPE13,
+            AttentionBackend.TRITON_DH8,
+        }:
+            continue
+        if (
+            execution.has_valid_token_mask
+            and residual_norm is ResidualNormBackend.COMPILED
+        ):
+            continue
         if attention in {
             AttentionBackend.TRITON_SHAPE13,
             AttentionBackend.TRITON_DH8,
@@ -1315,7 +1391,7 @@ class ProgramSearchSpace:
         *,
         plan_builder: PlanBuilderLike,
         context: SearchContext,
-        max_branches: int = 24,
+        max_branches: int = DEFAULT_MAX_STRUCTURE_BRANCHES,
         required_configs: Iterable[ConfigSpec] = (),
     ) -> None:
         if (
@@ -1395,6 +1471,7 @@ class ProgramSearchSpace:
 
 
 __all__ = [
+    "DEFAULT_MAX_STRUCTURE_BRANCHES",
     "BranchSpace",
     "ParameterDomain",
     "PlanBuilderLike",

@@ -21,6 +21,7 @@ from .evaluator import (
 )
 from .optuna_store import CompletedTrial, OptunaBackend, startup_trial_count
 from .space import (
+    DEFAULT_MAX_STRUCTURE_BRANCHES,
     BranchSpace,
     PlanBuilderLike,
     ProgramSearchSpace,
@@ -35,7 +36,7 @@ class SearchBudget:
 
     max_seconds: float
     max_trials: int | None = None
-    max_structure_branches: int = 24
+    max_structure_branches: int = DEFAULT_MAX_STRUCTURE_BRANCHES
     min_trials_per_branch: int = 5
     survivor_count: int = 3
     promote_fraction: float = 0.2
