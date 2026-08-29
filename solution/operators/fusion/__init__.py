@@ -1,4 +1,4 @@
-"""Whole-boundary layer specializations."""
+"""Cross-operator fusion primitives."""
 
 from .triton_d32_fusion import (
     TRITON_D32_RESIDUAL_LAYER_NORM_BACKEND,

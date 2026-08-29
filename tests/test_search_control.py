@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from autotune.engine import SearchEngine, SearchResult
-from autotune.evaluator import (
+from autotune.evaluation import (
     PROMOTION_BLOCK_WIN_RATIO,
     ConstraintVector,
     EvaluationScope,
@@ -12,6 +11,7 @@ from autotune.evaluator import (
     PairedMeasurement,
     TrialMeasurement,
 )
+from autotune.search_engine import SearchEngine, SearchResult
 from deployment.registry import (
     EnvironmentFingerprint,
     ShapeFingerprint,

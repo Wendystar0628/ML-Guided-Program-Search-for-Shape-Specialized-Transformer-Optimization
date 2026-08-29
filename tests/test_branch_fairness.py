@@ -5,23 +5,23 @@ from dataclasses import dataclass, replace
 
 import pytest
 
-import autotune.engine as engine_module
-from autotune.engine import (
+import autotune.search_engine as engine_module
+from autotune.evaluation import (
+    ConstraintVector,
+    EvaluationScope,
+    Fidelity,
+    TrialMeasurement,
+)
+from autotune.optuna_backend import OptunaBackend, startup_trial_count
+from autotune.search_engine import (
     SearchBudget,
     SearchEngine,
     SearchPlan,
     SearchRequest,
     _RunState,
 )
-from autotune.evaluator import (
-    ConstraintVector,
-    EvaluationScope,
-    Fidelity,
-    TrialMeasurement,
-)
-from autotune.optuna_store import OptunaBackend, startup_trial_count
-from autotune.space import BranchSpace, ParameterDomain, StructureSpec
-from autotune.storage import SearchStorage, StudyIdentity
+from autotune.search_space import BranchSpace, ParameterDomain, StructureSpec
+from autotune.study_storage import SearchStorage, StudyIdentity
 from solution.config import (
     AttentionBackend,
     AttentionOutputBridge,

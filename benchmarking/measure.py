@@ -13,7 +13,7 @@ from torch import nn
 from benchmarking.protocols import MeasurementProtocol, RunVariant, TransformerShape
 from official import torch_transformer_benchmark as official
 from solution.config import ConfigSpec, RuntimeBackend, ScheduleConfig, portable_config
-from solution.model import UserOptimizedTransformer, copy_model_weights
+from solution.transformer import UserOptimizedTransformer, copy_model_weights
 
 
 @dataclass(frozen=True, slots=True)

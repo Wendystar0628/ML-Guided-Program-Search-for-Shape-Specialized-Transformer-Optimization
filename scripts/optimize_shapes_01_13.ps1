@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-. (Join-Path $PSScriptRoot 'activate_windows_rtx4080.ps1')
+. (Join-Path $projectRoot 'environments\activate_windows_rtx4080.ps1')
 
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $cli = Join-Path $projectRoot 'cli.py'

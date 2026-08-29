@@ -15,14 +15,14 @@ from optuna.trial import FrozenTrial, Trial, TrialState
 
 from solution.config import ConfigSpec
 
-from .evaluator import (
+from .evaluation import (
     ConstraintVector,
     EvaluationScope,
     Fidelity,
     TrialMeasurement,
 )
-from .space import BranchSpace
-from .storage import SearchStorage, StudyIdentity
+from .search_space import BranchSpace
+from .study_storage import SearchStorage, StudyIdentity
 
 
 def _constraints_from_trial(trial: FrozenTrial) -> Sequence[float]:

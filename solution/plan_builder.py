@@ -33,7 +33,7 @@ from .operators.attention.triton_streaming_dh64 import (
 from .operators.ffn.triton_linear_exact_gelu import (
     triton_linear_exact_gelu_available,
 )
-from .operators.layer.triton_d32_fusion import (
+from .operators.fusion.triton_d32_fusion import (
     triton_d32_residual_layer_norm_available,
 )
 from .operators.norm.triton_masked import triton_masked_layer_norm_available

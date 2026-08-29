@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from autotune.service import SearchServiceRequest
-from autotune.workflow import OptimizationLoopPolicy, OptimizationService
+from autotune.optimization_loop import OptimizationLoop, OptimizationLoopPolicy
+from autotune.search_sweep import SearchSweepRequest
 from benchmarking.protocols import (
     load_resident_shapes,
     load_shapes,
@@ -13,12 +13,12 @@ from benchmarking.protocols import (
 from cli import _optimization_case_ids
 
 
-class _SearchService:
+class _SearchSweep:
     def __init__(self, outcomes: list[tuple[int, tuple[bool, ...]]]) -> None:
         self.outcomes = iter(outcomes)
-        self.requests: list[SearchServiceRequest] = []
+        self.requests: list[SearchSweepRequest] = []
 
-    def run(self, request: SearchServiceRequest) -> object:
+    def run(self, request: SearchSweepRequest) -> object:
         self.requests.append(request)
         exit_code, updates = next(self.outcomes)
         return SimpleNamespace(
@@ -29,8 +29,8 @@ class _SearchService:
         )
 
 
-def _request() -> SearchServiceRequest:
-    return SearchServiceRequest(
+def _request() -> SearchSweepRequest:
+    return SearchSweepRequest(
         project_root=Path("."),
         case_ids=("official_01",),
         budget_seconds=1.0,
@@ -39,7 +39,7 @@ def _request() -> SearchServiceRequest:
 
 
 def test_deployment_resets_patience_before_plateau_stop() -> None:
-    search = _SearchService(
+    search = _SearchSweep(
         [
             (0, (False,)),
             (0, (False,)),
@@ -50,7 +50,7 @@ def test_deployment_resets_patience_before_plateau_stop() -> None:
         ]
     )
 
-    result = OptimizationService(search).run(  # type: ignore[arg-type]
+    result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
         OptimizationLoopPolicy(no_deployment_patience=3, max_iterations=10),
     )
@@ -63,9 +63,9 @@ def test_deployment_resets_patience_before_plateau_stop() -> None:
 
 
 def test_hard_iteration_limit_stops_continuous_deployments() -> None:
-    search = _SearchService([(0, (True,))] * 3)
+    search = _SearchSweep([(0, (True,))] * 3)
 
-    result = OptimizationService(search).run(  # type: ignore[arg-type]
+    result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
         OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=3),
     )
@@ -78,9 +78,9 @@ def test_hard_iteration_limit_stops_continuous_deployments() -> None:
 
 def test_failure_and_interrupt_stop_immediately_without_advancing_patience() -> None:
     for exit_code, expected_reason in ((1, "failed"), (130, "interrupted")):
-        search = _SearchService([(exit_code, (False,)), (0, (False,))])
+        search = _SearchSweep([(exit_code, (False,)), (0, (False,))])
 
-        result = OptimizationService(search).run(  # type: ignore[arg-type]
+        result = OptimizationLoop(search).run(  # type: ignore[arg-type]
             _request(),
             OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=4),
         )
@@ -98,7 +98,7 @@ def test_resident_and_shape14_groups_partition_the_official_workload() -> None:
     resident = load_resident_shapes(project_root)
     streamed = load_streamed_shapes(project_root)
 
-    assert tuple((*resident, *streamed)) == all_shapes
+    assert (*resident, *streamed) == all_shapes
     assert {shape.case_id for shape in resident}.isdisjoint(
         shape.case_id for shape in streamed
     )

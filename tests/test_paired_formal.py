@@ -3,7 +3,7 @@ import torch
 from torch import nn
 
 import benchmarking.measure as measure_module
-from autotune.evaluator import (
+from autotune.evaluation import (
     PROMOTION_BLOCK_COUNT,
     PROMOTION_BLOCK_WIN_RATIO,
     PROMOTION_REQUIRED_WINS,

@@ -6,9 +6,9 @@ from dataclasses import replace
 import pytest
 import torch
 
-import autotune.space as space_module
-from autotune.engine import SearchBudget
-from autotune.space import (
+import autotune.search_space as space_module
+from autotune.search_engine import SearchBudget
+from autotune.search_space import (
     DEFAULT_MAX_STRUCTURE_BRANCHES,
     BranchSpace,
     ParameterDomain,
@@ -32,9 +32,9 @@ from solution.config import (
     TritonAttentionParams,
     TritonNormParams,
 )
-from solution.model import UserOptimizedTransformer
 from solution.plan import ExecutionContext
 from solution.plan_builder import HardwareCapabilities, PlanBuilder
+from solution.transformer import UserOptimizedTransformer
 
 _PROJECTION_FIELDS = (
     "qkv_projection",

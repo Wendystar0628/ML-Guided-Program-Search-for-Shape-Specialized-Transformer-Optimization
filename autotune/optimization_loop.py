@@ -1,11 +1,11 @@
-"""Bounded multi-round optimization built on the single-pass search service."""
+"""Bounded multi-round optimization built on shape-group search sweeps."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
-from .service import SearchService, SearchServiceRequest, SearchServiceResult
+from .search_sweep import SearchSweep, SearchSweepRequest, SearchSweepResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +27,7 @@ class OptimizationIteration:
     """One complete or interrupted sweep over the selected workloads."""
 
     index: int
-    search_result: SearchServiceResult
+    search_result: SearchSweepResult
     deployment_updates: int
     no_deployment_streak: int
 
@@ -46,15 +46,15 @@ class OptimizationResult:
 IterationObserver = Callable[[OptimizationIteration], None]
 
 
-class OptimizationService:
+class OptimizationLoop:
     """Repeat full search sweeps while deployment progress remains productive."""
 
-    def __init__(self, search_service: SearchService | None = None) -> None:
-        self.search_service = search_service or SearchService()
+    def __init__(self, search_sweep: SearchSweep | None = None) -> None:
+        self.search_sweep = search_sweep or SearchSweep()
 
     def run(
         self,
-        request: SearchServiceRequest,
+        request: SearchSweepRequest,
         policy: OptimizationLoopPolicy,
         *,
         observer: IterationObserver | None = None,
@@ -63,7 +63,7 @@ class OptimizationService:
         total_deployment_updates = 0
 
         for iteration_index in range(1, policy.max_iterations + 1):
-            search_result = self.search_service.run(
+            search_result = self.search_sweep.run(
                 replace(request, seed=request.seed + iteration_index - 1)
             )
             deployment_updates = sum(
@@ -115,7 +115,7 @@ class OptimizationService:
 
 __all__ = [
     "OptimizationIteration",
+    "OptimizationLoop",
     "OptimizationLoopPolicy",
     "OptimizationResult",
-    "OptimizationService",
 ]

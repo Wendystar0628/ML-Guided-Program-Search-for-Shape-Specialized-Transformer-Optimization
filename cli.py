@@ -224,10 +224,10 @@ def _probe(args: argparse.Namespace) -> int:
 
 
 def _search(args: argparse.Namespace, project_root: Path) -> int:
-    from autotune.service import SearchService, SearchServiceRequest
+    from autotune.search_sweep import SearchSweep, SearchSweepRequest
 
-    result = SearchService().run(
-        SearchServiceRequest(
+    result = SearchSweep().run(
+        SearchSweepRequest(
             project_root=project_root,
             case_ids=tuple(args.case_id),
             device=args.device,
@@ -260,12 +260,12 @@ def _optimization_case_ids(project_root: Path, group: str) -> tuple[str, ...]:
 
 
 def _optimize(args: argparse.Namespace, project_root: Path) -> int:
-    from autotune.service import SearchServiceRequest
-    from autotune.workflow import (
+    from autotune.optimization_loop import (
         OptimizationIteration,
+        OptimizationLoop,
         OptimizationLoopPolicy,
-        OptimizationService,
     )
+    from autotune.search_sweep import SearchSweepRequest
 
     def print_iteration(iteration: OptimizationIteration) -> None:
         print(f"iteration {iteration.index}")
@@ -277,8 +277,8 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         print(f"  deployments: {iteration.deployment_updates}")
         print(f"  no-deployment streak: {iteration.no_deployment_streak}")
 
-    result = OptimizationService().run(
-        SearchServiceRequest(
+    result = OptimizationLoop().run(
+        SearchSweepRequest(
             project_root=project_root,
             case_ids=_optimization_case_ids(project_root, args.group),
             device=args.device,

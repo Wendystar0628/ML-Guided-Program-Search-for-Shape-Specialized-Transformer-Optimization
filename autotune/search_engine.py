@@ -11,7 +11,7 @@ from optuna.study import Study
 
 from solution.config import ConfigSpec, portable_streamed_config
 
-from .evaluator import (
+from .evaluation import (
     ConstraintVector,
     EvaluationScope,
     Evaluator,
@@ -19,15 +19,15 @@ from .evaluator import (
     PairedMeasurement,
     TrialMeasurement,
 )
-from .optuna_store import CompletedTrial, OptunaBackend, startup_trial_count
-from .space import (
+from .optuna_backend import CompletedTrial, OptunaBackend, startup_trial_count
+from .search_space import (
     DEFAULT_MAX_STRUCTURE_BRANCHES,
     BranchSpace,
     PlanBuilderLike,
     ProgramSearchSpace,
     SearchContext,
 )
-from .storage import SearchStorage, StudyIdentity
+from .study_storage import SearchStorage, StudyIdentity
 
 
 @dataclass(frozen=True, slots=True)

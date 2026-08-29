@@ -40,7 +40,7 @@ from .ffn import (
     triton_linear_exact_gelu,
     triton_linear_exact_gelu_available,
 )
-from .layer import (
+from .fusion import (
     TRITON_D32_RESIDUAL_LAYER_NORM_BACKEND,
     can_use_triton_d32_residual_layer_norm,
     prevalidated_triton_d32_residual_layer_norm,
@@ -77,16 +77,17 @@ from .norm import (
 from .projection import (
     TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
     TRITON_QKV_NATIVE_BHSD_BACKEND,
+    can_split_qkv,
     can_use_triton_attention_output_projection,
     can_use_triton_qkv_native_bhsd,
     prevalidated_triton_attention_output_projection,
     prevalidated_triton_qkv_native_bhsd,
+    split_qkv,
     triton_attention_output_projection,
     triton_attention_output_projection_available,
     triton_qkv_native_bhsd,
     triton_qkv_native_bhsd_available,
 )
-from .qkv import can_split_qkv, split_qkv
 
 __all__ = [
     "MIXED_FP16_CUDNN_BACKEND",

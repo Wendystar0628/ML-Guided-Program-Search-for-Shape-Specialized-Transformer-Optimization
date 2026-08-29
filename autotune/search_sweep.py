@@ -26,8 +26,7 @@ from solution.config import ConfigSpec, portable_config, portable_streamed_confi
 from solution.plan import ExecutionContext
 from solution.plan_builder import HardwareCapabilities, PlanBuilder
 
-from .engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
-from .evaluator import (
+from .evaluation import (
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
     ConstraintVector,
@@ -39,8 +38,9 @@ from .evaluator import (
     execution_signatures_match,
     normalized_accuracy_constraint,
 )
-from .space import ProgramSearchSpace
-from .storage import SearchStorage
+from .search_engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
+from .search_space import ProgramSearchSpace
+from .study_storage import SearchStorage
 
 MAX_CROSS_SHAPE_WARM_STARTS = 4
 
@@ -206,7 +206,7 @@ class BenchmarkEvaluator:
 
 
 @dataclass(frozen=True, slots=True)
-class SearchServiceRequest:
+class SearchSweepRequest:
     project_root: Path
     case_ids: tuple[str, ...]
     device: str = "cuda:0"
@@ -229,7 +229,7 @@ class ShapeSearchResult:
 
 
 @dataclass(frozen=True, slots=True)
-class SearchServiceResult:
+class SearchSweepResult:
     shape_results: tuple[ShapeSearchResult, ...]
 
     @property
@@ -349,8 +349,10 @@ def _shape_key(shape: TransformerShape, variant: RunVariant) -> ShapeFingerprint
     )
 
 
-class SearchService:
-    def run(self, request: SearchServiceRequest) -> SearchServiceResult:
+class SearchSweep:
+    """Run one bounded search pass across an explicit group of shapes."""
+
+    def run(self, request: SearchSweepRequest) -> SearchSweepResult:
         device = torch.device(request.device)
         if device.type != "cuda" or not torch.cuda.is_available():
             raise ValueError("program search requires a CUDA device")
@@ -457,15 +459,15 @@ class SearchService:
                 )
                 warm_start_order += 1
 
-        return SearchServiceResult(tuple(results))
+        return SearchSweepResult(tuple(results))
 
 
 __all__ = [
     "MAX_CROSS_SHAPE_WARM_STARTS",
     "BenchmarkEvaluator",
-    "SearchService",
-    "SearchServiceRequest",
-    "SearchServiceResult",
+    "SearchSweep",
+    "SearchSweepRequest",
+    "SearchSweepResult",
     "ShapeSearchResult",
     "execution_context",
 ]

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from autotune import service
-from autotune.engine import SearchResult
-from autotune.evaluator import (
+from autotune import search_sweep
+from autotune.evaluation import (
     ConstraintVector,
     EvaluationScope,
     Fidelity,
     PairedMeasurement,
     TrialMeasurement,
 )
+from autotune.search_engine import SearchResult
 from benchmarking.protocols import TransformerShape
 from deployment.registry import EnvironmentFingerprint, ShapeFingerprint
 from solution.config import (
@@ -172,37 +172,37 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
                 return first_result
             return _completed_result(winner, 1.0, incumbent=request.incumbent)
 
-    monkeypatch.setattr(service.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(search_sweep.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        service.EnvironmentFingerprint,
+        search_sweep.EnvironmentFingerprint,
         "detect",
         classmethod(lambda cls, device, **kwargs: hardware),
     )
     monkeypatch.setattr(
-        service.HardwareCapabilities,
+        search_sweep.HardwareCapabilities,
         "detect",
         classmethod(lambda cls, device: object()),
     )
     monkeypatch.setattr(
-        service,
+        search_sweep,
         "load_shape",
         lambda project_root, case_id: shapes[case_id],
     )
-    monkeypatch.setattr(service, "resolve_deployed_config", lambda **kwargs: None)
+    monkeypatch.setattr(search_sweep, "resolve_deployed_config", lambda **kwargs: None)
     monkeypatch.setattr(
-        service,
+        search_sweep,
         "iter_deployed_configs",
         lambda **kwargs: ((registry_shape, registry_config),),
     )
-    monkeypatch.setattr(service, "publish_deployed_config", lambda **kwargs: None)
-    monkeypatch.setattr(service, "SearchStorage", lambda root: object())
-    monkeypatch.setattr(service, "PlanBuilder", lambda: object())
-    monkeypatch.setattr(service, "BenchmarkEvaluator", lambda **kwargs: object())
-    monkeypatch.setattr(service, "SearchEngine", _SearchEngine)
+    monkeypatch.setattr(search_sweep, "publish_deployed_config", lambda **kwargs: None)
+    monkeypatch.setattr(search_sweep, "SearchStorage", lambda root: object())
+    monkeypatch.setattr(search_sweep, "PlanBuilder", lambda: object())
+    monkeypatch.setattr(search_sweep, "BenchmarkEvaluator", lambda **kwargs: object())
+    monkeypatch.setattr(search_sweep, "SearchEngine", _SearchEngine)
 
-    result = service.SearchService().run(
-        service.SearchServiceRequest(
-            project_root=service.Path("."),
+    result = search_sweep.SearchSweep().run(
+        search_sweep.SearchSweepRequest(
+            project_root=search_sweep.Path("."),
             case_ids=("first", "second"),
             budget_seconds=1.0,
         )
@@ -247,32 +247,32 @@ def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) 
                 stop_reason="interrupted",
             )
 
-    monkeypatch.setattr(service.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(search_sweep.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        service.EnvironmentFingerprint,
+        search_sweep.EnvironmentFingerprint,
         "detect",
         classmethod(lambda cls, device, **kwargs: _hardware()),
     )
     monkeypatch.setattr(
-        service.HardwareCapabilities,
+        search_sweep.HardwareCapabilities,
         "detect",
         classmethod(lambda cls, device: object()),
     )
     monkeypatch.setattr(
-        service,
+        search_sweep,
         "load_shape",
         lambda project_root, case_id: shapes[case_id],
     )
-    monkeypatch.setattr(service, "resolve_deployed_config", lambda **kwargs: None)
-    monkeypatch.setattr(service, "iter_deployed_configs", lambda **kwargs: ())
-    monkeypatch.setattr(service, "SearchStorage", lambda root: object())
-    monkeypatch.setattr(service, "PlanBuilder", lambda: object())
-    monkeypatch.setattr(service, "BenchmarkEvaluator", lambda **kwargs: object())
-    monkeypatch.setattr(service, "SearchEngine", _SearchEngine)
+    monkeypatch.setattr(search_sweep, "resolve_deployed_config", lambda **kwargs: None)
+    monkeypatch.setattr(search_sweep, "iter_deployed_configs", lambda **kwargs: ())
+    monkeypatch.setattr(search_sweep, "SearchStorage", lambda root: object())
+    monkeypatch.setattr(search_sweep, "PlanBuilder", lambda: object())
+    monkeypatch.setattr(search_sweep, "BenchmarkEvaluator", lambda **kwargs: object())
+    monkeypatch.setattr(search_sweep, "SearchEngine", _SearchEngine)
 
-    result = service.SearchService().run(
-        service.SearchServiceRequest(
-            project_root=service.Path("."),
+    result = search_sweep.SearchSweep().run(
+        search_sweep.SearchSweepRequest(
+            project_root=search_sweep.Path("."),
             case_ids=("first", "second"),
             budget_seconds=1.0,
         )
@@ -314,14 +314,14 @@ def test_family_filter_deduplicates_limits_and_requires_plan_compatibility() -> 
             return object()
 
     candidates = [
-        service._WarmStartCandidate(same_family, portable, 0, 0),
-        service._WarmStartCandidate(same_family, portable, 1, 1),
-        service._WarmStartCandidate(same_family, incompatible, 0, 2),
-        service._WarmStartCandidate(other_family, graph, 0, 3),
-        service._WarmStartCandidate(same_family, graph, 0, 4),
+        search_sweep._WarmStartCandidate(same_family, portable, 0, 0),
+        search_sweep._WarmStartCandidate(same_family, portable, 1, 1),
+        search_sweep._WarmStartCandidate(same_family, incompatible, 0, 2),
+        search_sweep._WarmStartCandidate(other_family, graph, 0, 3),
+        search_sweep._WarmStartCandidate(same_family, graph, 0, 4),
     ]
 
-    selected = service._compatible_family_warm_starts(
+    selected = search_sweep._compatible_family_warm_starts(
         candidates=candidates,
         target=target,
         incumbent=None,

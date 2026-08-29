@@ -15,17 +15,37 @@ batch cannot reside in GPU memory at once.
 
 ## Project structure
 
-- `solution/`: Transformer model, execution-plan builder, operators, and runtime
-  strategies.
-- `autotune/`: generated search space, TPE search, candidate evaluation, and
-  search-state storage.
+- `solution/`: code that executes a generated Transformer program.
+- `autotune/`: code that generates, searches, evaluates, and repeats candidate
+  programs.
 - `benchmarking/`: official-protocol measurement, profiling, and hardware probe.
-- `deployment/`: measured per-device winners consumed by the runtime.
+- `deployment/`: measured per-device winners consumed by `solution/`.
 - `official/`: upstream benchmark semantics and the 14 workload definitions.
 - `tests/`: control-plane and GPU-path tests.
-- `scripts/`: local development helpers.
-- `environments/`: machine-specific dependency files.
+- `scripts/`: the two public end-to-end optimization entry points.
+- `environments/`: machine-specific dependencies and environment activation.
 - `docs/`: competition rules, engineering notes, and deliverables.
+
+The performance mainline is organized by responsibility:
+
+```text
+solution/
+  config.py                 typed program and launch configuration
+  plan_builder.py           ConfigSpec -> validated ExecutionPlan
+  plan.py                   immutable execution plan and expected trace
+  transformer.py            model that executes the plan
+  operators/                attention, projection, FFN, norm, and fusion kernels
+  runtimes/                 eager/compile/CUDA Graph/streamed schedules
+
+autotune/
+  search_space.py           generated structures and parameter domains
+  search_engine.py          one-shape staged search
+  search_sweep.py           one sweep across a shape group
+  optimization_loop.py      repeated sweeps and convergence stopping
+  evaluation.py             trial and promotion measurements
+  optuna_backend.py         Optuna TPE adapter
+  study_storage.py          local study identity and SQLite location
+```
 
 The main entry point is [`cli.py`](cli.py). Generated Optuna state lives in
 `search_state/search.sqlite3`; it is local working data and is not committed.
@@ -43,13 +63,17 @@ python -m venv .venv
 For the validated native Windows RTX 4080 environment:
 
 ```powershell
-.\scripts\activate_windows_rtx4080.ps1
+.\environments\activate_windows_rtx4080.ps1
 python -m pip install -r environments\windows-rtx4080.txt
 ```
 
 ## Commands
 
 ```powershell
+# Run the complete resident or Shape-14 optimization flow
+.\scripts\optimize_shapes_01_13.ps1
+.\scripts\optimize_shape_14.ps1
+
 # Inspect the GPU environment
 .\.venv\Scripts\python.exe cli.py probe --device cuda:0
 
@@ -73,4 +97,7 @@ python -m pip install -r environments\windows-rtx4080.txt
   --device cuda:0
 ```
 
-`python -m benchmarking` exposes the same command line interface.
+[`cli.py`](cli.py) is the development and search CLI.
+[`torch_transformer_benchmark.py`](torch_transformer_benchmark.py) is the
+separate bridge that runs the immutable official benchmark against the current
+solution.

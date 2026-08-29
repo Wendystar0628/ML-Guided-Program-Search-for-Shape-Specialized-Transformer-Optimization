@@ -12,7 +12,7 @@ def __getattr__(name: str) -> Any:
 
     if name not in __all__:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from .model import UserOptimizedTransformer, copy_model_weights
+    from .transformer import UserOptimizedTransformer, copy_model_weights
 
     exports = {
         "UserOptimizedTransformer": UserOptimizedTransformer,

@@ -329,9 +329,7 @@ class PairedMeasurement:
     def promotion_wins(self) -> int:
         """Count blocks where the challenger is at least one percent faster."""
 
-        return sum(
-            ratio >= PROMOTION_BLOCK_WIN_RATIO for ratio in self.paired_ratios
-        )
+        return sum(ratio >= PROMOTION_BLOCK_WIN_RATIO for ratio in self.paired_ratios)
 
     @property
     def promotes(self) -> bool:
