@@ -22,7 +22,9 @@ from .kernels import (
 from .shape_families import (
     is_compiled_forward_candidate_workload,
     is_mixed_fp16_core_efficient_runtime_family,
+    is_shape05_graph_mixed_residual_norm_workload,
     is_shape06_batch_tiled_workload,
+    is_shape08_fp16_shadow_workload,
     is_shape13_triton_attention_workload,
     is_streamed_mixed_fp16_core_cudnn_slice,
 )
@@ -61,6 +63,7 @@ class ExecutionPlan:
     runtime_wrapper: str
     compile_mode: str | None
     batch_tile_size: int | None
+    reuse_unchanged_input: bool
     residual_norm_backend: str
     has_valid_token_mask: bool
     required_components: tuple[str, ...]
@@ -120,6 +123,7 @@ class ExecutionPlan:
             "linear_compute_dtype": self.linear_compute_dtype,
             "runtime_wrapper": self.runtime_wrapper,
             "compile_mode": self.compile_mode,
+            "reuse_unchanged_input": self.reuse_unchanged_input,
             "residual_norm_backend": self.residual_norm_backend,
             "causal_mask": causal_mask,
             "valid_token_mask": (
@@ -140,11 +144,13 @@ class _Capabilities:
     compiled_forward: bool
     compiled_residual_layer_norm: bool
     triton_residual_layer_norm: bool
-    triton_mixed_residual_layer_norm: bool
+    graph_triton_mixed_residual_layer_norm: bool
+    batch_tiled_triton_mixed_residual_layer_norm: bool
     triton_shape13_causal_attention: bool
     mixed_fp16_cudnn_attention: bool
     mixed_fp16_efficient_attention: bool
     mixed_fp16_core: bool
+    fp16_shadow_weights: bool
 
 
 def _capabilities(context: ExecutionContext) -> _Capabilities:
@@ -159,6 +165,14 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and context.device.type in {"cpu", "cuda"}
     )
     head_dim = context.d_model // context.num_heads
+    exact_shape = {
+        "batch_size": context.batch_size,
+        "seq_len": context.seq_len,
+        "d_model": context.d_model,
+        "num_heads": context.num_heads,
+        "ffn_dim": context.ffn_dim or 0,
+        "num_layers": context.num_layers or 0,
+    }
     efficient_core_shape = is_mixed_fp16_core_efficient_runtime_family(
         batch_size=context.batch_size,
         seq_len=context.seq_len,
@@ -220,6 +234,12 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and not torch.compiler.is_compiling()
         and triton_residual_layer_norm_available()
     )
+    cuda_graph = bool(
+        causal_sdpa
+        and inference
+        and context.device.type == "cuda"
+        and context.input_contiguous
+    )
     batch_tiled_cuda_graph = bool(
         causal_sdpa
         and inference
@@ -238,19 +258,19 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             num_layers=context.num_layers or 0,
         )
     )
-    triton_mixed_residual_base = bool(
-        batch_tiled_cuda_graph
-        and context.d_model == 128
+    graph_triton_mixed_residual = bool(
+        cuda_graph
+        and context.dtype == torch.float32
+        and not context.has_valid_token_mask
+        and context.mask_compatible
+        and not torch.compiler.is_compiling()
+        and is_shape05_graph_mixed_residual_norm_workload(**exact_shape)
         and triton_mixed_residual_layer_norm_available()
     )
-    exact_shape = {
-        "batch_size": context.batch_size,
-        "seq_len": context.seq_len,
-        "d_model": context.d_model,
-        "num_heads": context.num_heads,
-        "ffn_dim": context.ffn_dim or 0,
-        "num_layers": context.num_layers or 0,
-    }
+    batch_tiled_triton_mixed_residual = bool(
+        batch_tiled_cuda_graph
+        and triton_mixed_residual_layer_norm_available()
+    )
     compiled_forward = bool(
         causal_sdpa
         and inference
@@ -270,19 +290,20 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and is_shape13_triton_attention_workload(**exact_shape)
         and triton_shape13_causal_attention_available()
     )
+    fp16_shadow_weights = bool(
+        compiled_forward and is_shape08_fp16_shadow_workload(**exact_shape)
+    )
     return _Capabilities(
         causal_sdpa=causal_sdpa,
-        cuda_graph=(
-            causal_sdpa
-            and inference
-            and context.device.type == "cuda"
-            and context.input_contiguous
-        ),
+        cuda_graph=cuda_graph,
         batch_tiled_cuda_graph=batch_tiled_cuda_graph,
         compiled_forward=compiled_forward,
         compiled_residual_layer_norm=compiled_residual_base,
         triton_residual_layer_norm=triton_residual_base,
-        triton_mixed_residual_layer_norm=triton_mixed_residual_base,
+        graph_triton_mixed_residual_layer_norm=graph_triton_mixed_residual,
+        batch_tiled_triton_mixed_residual_layer_norm=(
+            batch_tiled_triton_mixed_residual
+        ),
         triton_shape13_causal_attention=triton_shape13_attention,
         mixed_fp16_cudnn_attention=(
             inference
@@ -316,6 +337,7 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             and context.mask_compatible
             and mixed_fp16_core_shape
         ),
+        fp16_shadow_weights=fp16_shadow_weights,
     )
 
 
@@ -350,7 +372,16 @@ def _resolved_components(
         resolved.add(ExecutionComponent.TRITON_RESIDUAL_LAYER_NORM)
     if (
         spec.residual_norm is ResidualNormBackend.TRITON_MIXED
-        and capabilities.triton_mixed_residual_layer_norm
+        and (
+            (
+                spec.runtime is RuntimeWrapper.CUDA_GRAPH
+                and capabilities.graph_triton_mixed_residual_layer_norm
+            )
+            or (
+                spec.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH
+                and capabilities.batch_tiled_triton_mixed_residual_layer_norm
+            )
+        )
     ):
         resolved.add(ExecutionComponent.TRITON_MIXED_RESIDUAL_LAYER_NORM)
     if spec.attention == "mixed_fp16_cudnn" and capabilities.mixed_fp16_cudnn_attention:
@@ -365,8 +396,13 @@ def _resolved_components(
         and capabilities.triton_shape13_causal_attention
     ):
         resolved.add(ExecutionComponent.TRITON_SHAPE13_CAUSAL_ATTENTION)
-    if spec.linear_compute == "float16" and capabilities.mixed_fp16_core:
+    if (
+        spec.linear_compute in {"float16", "float16_shadow"}
+        and capabilities.mixed_fp16_core
+    ):
         resolved.add(ExecutionComponent.MIXED_FP16_CORE)
+    if spec.linear_compute == "float16_shadow" and capabilities.fp16_shadow_weights:
+        resolved.add(ExecutionComponent.FP16_SHADOW_WEIGHTS)
     return frozenset(resolved)
 
 
@@ -389,12 +425,15 @@ def resolve_execution_plan(
     if fully_applied:
         attention_backend = spec.attention
         selected_policy = spec.policy_id
-        linear_backend = (
-            "autocast_fp16" if spec.linear_compute == "float16" else "torch"
-        )
+        if spec.linear_compute == "float16_shadow":
+            linear_backend = "fp16_shadow"
+        elif spec.linear_compute == "float16":
+            linear_backend = "autocast_fp16"
+        else:
+            linear_backend = "torch"
         linear_compute_dtype = (
             "float16"
-            if spec.linear_compute == "float16"
+            if spec.linear_compute in {"float16", "float16_shadow"}
             else str(context.dtype).removeprefix("torch.")
         )
         attention_compute_dtype = (
@@ -428,6 +467,9 @@ def resolve_execution_plan(
         runtime_wrapper=runtime_wrapper,
         compile_mode=(spec.compile_mode if fully_applied else None),
         batch_tile_size=(spec.batch_tile_size if fully_applied else None),
+        reuse_unchanged_input=(
+            spec.reuse_unchanged_input if fully_applied else False
+        ),
         residual_norm_backend=(
             spec.residual_norm.value
             if fully_applied

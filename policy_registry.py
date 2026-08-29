@@ -22,6 +22,7 @@ class ExecutionComponent(StrEnum):
     MIXED_FP16_EFFICIENT_ATTENTION = "mixed_fp16_efficient_attention"
     MIXED_FP16_CUDNN_ATTENTION = "mixed_fp16_cudnn_attention"
     MIXED_FP16_CORE = "mixed_fp16_core"
+    FP16_SHADOW_WEIGHTS = "fp16_shadow_weights"
 
 
 class ResidualNormBackend(StrEnum):
@@ -62,6 +63,7 @@ class PolicySpec:
     runtime: RuntimeWrapper = RuntimeWrapper.EAGER
     compile_mode: str | None = None
     batch_tile_size: int | None = None
+    reuse_unchanged_input: bool = False
     routable: bool = True
 
     def __post_init__(self) -> None:
@@ -75,7 +77,7 @@ class PolicySpec:
             "triton_shape13_causal_attention",
         }:
             raise ValueError(f"unsupported attention backend: {self.attention}")
-        if self.linear_compute not in {"input", "float16"}:
+        if self.linear_compute not in {"input", "float16", "float16_shadow"}:
             raise ValueError(f"unsupported linear compute mode: {self.linear_compute}")
         try:
             backend = ResidualNormBackend(self.residual_norm)
@@ -113,6 +115,12 @@ class PolicySpec:
             raise ValueError(
                 "batch_tile_size is valid only for batch-tiled CUDA Graph runtime"
             )
+        if not isinstance(self.reuse_unchanged_input, bool):
+            raise TypeError("reuse_unchanged_input must be a bool")
+        if self.reuse_unchanged_input and runtime is not RuntimeWrapper.CUDA_GRAPH:
+            raise ValueError(
+                "reuse_unchanged_input is valid only for the CUDA Graph runtime"
+            )
 
     @property
     def use_cuda_graph(self) -> bool:
@@ -136,8 +144,10 @@ class PolicySpec:
             components.add(ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION)
         elif self.attention == "triton_shape13_causal_attention":
             components.add(ExecutionComponent.TRITON_SHAPE13_CAUSAL_ATTENTION)
-        if self.linear_compute == "float16":
+        if self.linear_compute in {"float16", "float16_shadow"}:
             components.add(ExecutionComponent.MIXED_FP16_CORE)
+        if self.linear_compute == "float16_shadow":
+            components.add(ExecutionComponent.FP16_SHADOW_WEIGHTS)
         if self.runtime is RuntimeWrapper.CUDA_GRAPH:
             components.add(ExecutionComponent.CUDA_GRAPH)
         elif self.runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH:
@@ -217,6 +227,14 @@ _POLICY_SPECS = {
         residual_norm=ResidualNormBackend.COMPILED,
         runtime=RuntimeWrapper.CUDA_GRAPH,
     ),
+    "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input": PolicySpec(
+        "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16",
+        residual_norm=ResidualNormBackend.TRITON_MIXED,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
+        reuse_unchanged_input=True,
+    ),
     "batch-tiled-mixed-fp16-core-efficient-compiled-norm": PolicySpec(
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         attention="mixed_fp16_efficient",
@@ -237,6 +255,12 @@ _POLICY_SPECS = {
         "compiled-mixed-fp16-core-efficient",
         attention="mixed_fp16_efficient",
         linear_compute="float16",
+        runtime=RuntimeWrapper.COMPILED_FORWARD,
+    ),
+    "compiled-shape08-fp16-shadow-weights": PolicySpec(
+        "compiled-shape08-fp16-shadow-weights",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16_shadow",
         runtime=RuntimeWrapper.COMPILED_FORWARD,
     ),
     "compiled-mixed-fp16-core-shape13-triton-attention": PolicySpec(

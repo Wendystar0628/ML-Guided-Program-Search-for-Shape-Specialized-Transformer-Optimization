@@ -77,7 +77,7 @@ The current result used FP32 inputs, five Comparator trials per case, 20
 warm-ups, 100 timed repeats, three alternating baseline/Solution rounds, seed
 1234, high matmul precision, and TF32. All 13 cases completed, all 65
 Comparator trials passed, and zero elements failed. The maximum observed
-absolute error was `0.0018016696`. Geometric-mean speedup was **8.505x**.
+absolute error was `0.0018016696`. Geometric-mean speedup was **9.192x**.
 
 Latencies cover the complete Transformer forward and are measured with CUDA
 events. Achieved TFLOP/s counts useful matrix-multiplication work. MFU is the
@@ -86,19 +86,19 @@ competition score. Peak GiB is PyTorch peak CUDA allocation for the target.
 
 | Shape | Exact policy | Baseline median (ms) | Target median / P90 (ms) | Speedup | Achieved TFLOP/s | Est. MFU | Peak GiB |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `official_01` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.637 | 0.376 / 0.378 | 4.36x | 20.02 | 21.4% | 0.080 |
-| `official_02` | `graph-fused-norm` | 1.807 | 0.133 / 0.134 | 13.57x | 0.88 | 1.8% | 0.018 |
-| `official_03` | `graph-fused-norm` | 1.840 | 0.139 / 0.139 | 13.21x | 3.38 | 6.8% | 0.021 |
-| `official_04` | `graph-fused-norm` | 1.942 | 0.217 / 0.217 | 8.94x | 8.67 | 17.5% | 0.033 |
-| `official_05` | `graph-mixed-fp16-core-efficient-compiled-norm` | 2.384 | 0.680 / 0.714 | 3.50x | 22.12 | 23.7% | 0.142 |
-| `official_06` | `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm` | 454.034 | 42.754 / 43.298 | 10.62x | 27.50 | 29.4% | 1.257 |
-| `official_07` | `compiled-mixed-fp16-core-efficient` | 1.779 | 0.139 / 0.164 | 12.77x | 4.83 | 5.2% | 0.012 |
-| `official_08` | `compiled-mixed-fp16-core-efficient` | 13.435 | 6.054 / 6.588 | 2.22x | 69.54 | 74.4% | 0.227 |
-| `official_09` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.619 | 0.356 / 0.358 | 4.54x | 21.12 | 22.6% | 0.080 |
-| `official_10` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.792 | 0.346 / 0.349 | 5.18x | 21.74 | 23.3% | 0.080 |
-| `official_11` | `compiled-mixed-fp16-core-efficient` | 7.130 | 0.385 / 0.388 | 18.52x | 19.54 | 20.9% | 0.017 |
-| `official_12` | `graph-fused-norm` | 1.864 | 0.193 / 0.194 | 9.68x | 8.73 | 17.6% | 0.033 |
-| `official_13` | `compiled-mixed-fp16-core-shape13-triton-attention` | 110.119 | 2.807 / 3.090 | 39.23x | 42.87 | 45.9% | 0.181 |
+| `official_01` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.721 | 0.365 / 0.383 | 4.72x | 20.64 | 23.4% | 0.080 |
+| `official_02` | `graph-fused-norm` | 1.842 | 0.133 / 0.134 | 13.84x | 0.88 | 1.9% | 0.018 |
+| `official_03` | `graph-fused-norm` | 1.923 | 0.139 / 0.140 | 13.81x | 3.38 | 7.2% | 0.021 |
+| `official_04` | `graph-fused-norm` | 1.940 | 0.221 / 0.222 | 8.77x | 8.50 | 18.0% | 0.033 |
+| `official_05` | `graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input` | 2.363 | 0.502 / 0.759 | 4.71x | 29.99 | 34.1% | 0.049 |
+| `official_06` | `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm` | 486.329 | 45.323 / 46.174 | 10.73x | 25.94 | 29.5% | 1.257 |
+| `official_07` | `compiled-mixed-fp16-core-efficient` | 2.026 | 0.140 / 0.186 | 14.44x | 4.80 | 5.4% | 0.012 |
+| `official_08` | `compiled-shape08-fp16-shadow-weights` | 14.349 | 6.147 / 6.366 | 2.33x | 68.48 | 77.8% | 0.274 |
+| `official_09` | `graph-mixed-fp16-core-efficient-compiled-norm` | 2.444 | 0.352 / 0.373 | 6.94x | 21.36 | 24.3% | 0.080 |
+| `official_10` | `graph-mixed-fp16-core-efficient-compiled-norm` | 1.773 | 0.348 / 0.406 | 5.09x | 21.61 | 24.5% | 0.080 |
+| `official_11` | `compiled-mixed-fp16-core-efficient` | 7.587 | 0.387 / 0.587 | 19.60x | 19.44 | 22.1% | 0.017 |
+| `official_12` | `graph-fused-norm` | 1.930 | 0.198 / 0.199 | 9.77x | 8.50 | 18.0% | 0.033 |
+| `official_13` | `compiled-mixed-fp16-core-shape13-triton-attention` | 117.487 | 3.203 / 3.521 | 36.69x | 37.57 | 42.7% | 0.181 |
 
 The final JSON is authoritative if displayed rounding differs. Its logical
 traffic values describe estimated traffic at the current operator boundary;
@@ -107,9 +107,14 @@ they are not profiler-measured DRAM traffic.
 ## Deployed strategy groups
 
 - Shapes 2, 3, 4, and 12 use CUDA Graph replay with fused normalization.
-- Shapes 1, 5, 9, and 10 combine mixed-FP16 Efficient SDPA, compiled
+- Shapes 1, 9, and 10 combine mixed-FP16 Efficient SDPA, compiled
   normalization, and CUDA Graph replay.
-- Shapes 7, 8, and 11 use whole-forward compiled mixed-FP16 execution.
+- Shape 5 combines a mixed FP16 core, Efficient SDPA, the custom Triton mixed
+  residual/LayerNorm boundary, version-aware unchanged-input staging, and CUDA
+  Graph replay.
+- Shapes 7 and 11 use whole-forward compiled mixed-FP16 execution.
+- Shape 8 keeps its official FP32 parameters authoritative and uses derived,
+  non-persistent FP16 shadow weights in its compiled inference path.
 - Shape 6 uses batch tiling plus a Triton fused mixed-precision residual and
   normalization path.
 - Shape 13 uses its own compiled path with a Shape-specific Triton causal
@@ -126,10 +131,10 @@ covered logical `B=32` with 16 serial microbatches of size 2.
 | Metric | Result |
 | --- | ---: |
 | Selected policy | `mixed-fp16-core-cudnn` |
-| Target median / P90 | 16.237 s / 16.240 s |
-| Host end-to-end elapsed time | 18.183 s |
-| Useful matmul throughput | 85.69 TFLOP/s |
-| Project-estimated MFU | 91.7% |
+| Target median / P90 | 17.207 s / 17.208 s |
+| Host end-to-end elapsed time | 18.880 s |
+| Useful matmul throughput | 80.86 TFLOP/s |
+| Project-estimated MFU | 91.8% |
 | Peak CUDA allocation | 7.307 GiB |
 | Correctness | 0 / 102,400,000 failed elements |
 | Maximum absolute error | 0.000833869 |

@@ -22,6 +22,7 @@ DEPLOYABLE_CANDIDATES = (
     "graph-mixed-fp16-core-efficient-compiled-norm",
     "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
     "compiled-mixed-fp16-core-efficient",
+    "compiled-shape08-fp16-shadow-weights",
     "compiled-mixed-fp16-core-shape13-triton-attention",
 )
 ALL_CANDIDATES = ("eager-sdpa", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
@@ -204,9 +205,12 @@ def test_shape08_prioritizes_fixed_plan_compilation() -> None:
         limit=3,
     )
 
-    assert plan["candidate_order"][0] == "compiled-mixed-fp16-core-efficient"
-    reasons = " ".join(plan["selection_reasons"]["compiled-mixed-fp16-core-efficient"])
+    assert plan["candidate_order"][0] == "compiled-shape08-fp16-shadow-weights"
+    reasons = " ".join(
+        plan["selection_reasons"]["compiled-shape08-fp16-shadow-weights"]
+    )
     assert "whole-stack fusion" in reasons
+    assert "weight conversions" in reasons
 
 
 def test_shape13_prioritizes_fixed_plan_compilation() -> None:

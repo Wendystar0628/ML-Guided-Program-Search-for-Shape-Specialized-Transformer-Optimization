@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Callable
 
 import torch
@@ -10,12 +11,45 @@ import torch
 class CudaGraphReplay:
     """Capture exactly one static signature and replay it safely."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, reuse_unchanged_input: bool = False) -> None:
+        self._reuse_unchanged_input = reuse_unchanged_input
         self._signature: tuple[object, ...] | None = None
         self._graph: torch.cuda.CUDAGraph | None = None
         self._static_input: torch.Tensor | None = None
         self._static_mask: torch.Tensor | None = None
         self._static_output: torch.Tensor | None = None
+        self._staged_source: weakref.ReferenceType[torch.Tensor] | None = None
+        self._staged_source_version: int | None = None
+
+    @staticmethod
+    def _reliable_version(value: torch.Tensor) -> int | None:
+        """Return a mutation counter only when PyTorch exposes one reliably."""
+
+        try:
+            version = value._version
+        except RuntimeError:
+            return None
+        return version if isinstance(version, int) else None
+
+    def _staging_is_current(self, value: torch.Tensor) -> bool:
+        if not self._reuse_unchanged_input:
+            return False
+        version = self._reliable_version(value)
+        return bool(
+            version is not None
+            and self._staged_source is not None
+            and self._staged_source() is value
+            and self._staged_source_version == version
+        )
+
+    def _remember_staged_source(self, value: torch.Tensor) -> None:
+        version = self._reliable_version(value)
+        if not self._reuse_unchanged_input or version is None:
+            self._staged_source = None
+            self._staged_source_version = None
+            return
+        self._staged_source = weakref.ref(value)
+        self._staged_source_version = version
 
     @staticmethod
     def _input_signature(
@@ -74,6 +108,8 @@ class CudaGraphReplay:
         self._static_input = static_input
         self._static_mask = static_mask
         self._static_output = static_output
+        self._staged_source = None
+        self._staged_source_version = None
 
     def run(
         self,
@@ -95,7 +131,9 @@ class CudaGraphReplay:
         assert self._static_input is not None
         assert self._static_output is not None
         assert self._graph is not None
-        self._static_input.copy_(value)
+        if not self._staging_is_current(value):
+            self._static_input.copy_(value)
+            self._remember_staged_source(value)
         if valid_mask is not None:
             assert self._static_mask is not None
             self._static_mask.copy_(valid_mask)

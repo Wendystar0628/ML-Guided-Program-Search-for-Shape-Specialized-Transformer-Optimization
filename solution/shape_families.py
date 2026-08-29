@@ -52,6 +52,27 @@ def is_graph_mixed_fp16_core_candidate_workload(
     )
 
 
+def is_shape05_graph_mixed_residual_norm_workload(
+    *,
+    batch_size: int,
+    seq_len: int,
+    d_model: int,
+    num_heads: int,
+    ffn_dim: int,
+    num_layers: int,
+) -> bool:
+    """Match exact Shape 05 for the resident mixed residual-norm graph."""
+
+    return bool(
+        batch_size == 128
+        and seq_len == 128
+        and d_model == 128
+        and num_heads == 4
+        and ffn_dim == 128
+        and num_layers == 4
+    )
+
+
 def is_shape06_batch_tiled_workload(
     *,
     batch_size: int,
@@ -111,6 +132,27 @@ def is_compiled_forward_candidate_workload(
         and num_layers == 4
     )
     return bool(small_head or shape08 or shape13)
+
+
+def is_shape08_fp16_shadow_workload(
+    *,
+    batch_size: int,
+    seq_len: int,
+    d_model: int,
+    num_heads: int,
+    ffn_dim: int,
+    num_layers: int,
+) -> bool:
+    """Match exact Shape 08 for prebuilt compiled FP16 linear weights."""
+
+    return bool(
+        batch_size == 64
+        and seq_len == 128
+        and d_model == 1024
+        and num_heads == 4
+        and ffn_dim == 1024
+        and num_layers == 4
+    )
 
 
 def is_shape13_triton_attention_tensor_family(
@@ -243,7 +285,9 @@ __all__ = [
     "is_measured_streamed_mixed_fp16_core_cudnn_workload",
     "is_measured_triton_residual_norm_workload",
     "is_mixed_fp16_core_efficient_runtime_family",
+    "is_shape05_graph_mixed_residual_norm_workload",
     "is_shape06_batch_tiled_workload",
+    "is_shape08_fp16_shadow_workload",
     "is_shape13_triton_attention_tensor_family",
     "is_shape13_triton_attention_workload",
     "is_streamed_mixed_fp16_core_cudnn_slice",

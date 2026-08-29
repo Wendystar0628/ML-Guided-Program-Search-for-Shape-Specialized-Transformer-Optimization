@@ -323,6 +323,30 @@ def test_module_transform_invalidates_cached_runtime_state() -> None:
     assert solution._dispatch_signature is None
 
 
+def test_fp16_shadow_weights_are_derived_and_non_persistent() -> None:
+    solution_module = load_solution_module(PROJECT_ROOT)
+    solution = solution_module.UserOptimizedTransformer(_config()).eval()
+    original_state_keys = tuple(solution.state_dict())
+
+    solution._materialize_fp16_shadow_weights()
+
+    assert all(parameter.dtype == torch.float32 for parameter in solution.parameters())
+    shadow_linears = [
+        module
+        for module in solution.modules()
+        if hasattr(module, "_fp16_shadow_weight")
+    ]
+    assert len(shadow_linears) == 8
+    assert all(
+        module._fp16_shadow_weight.dtype == torch.float16 for module in shadow_linears
+    )
+    assert tuple(solution.state_dict()) == original_state_keys
+    assert not any("fp16_shadow" in key for key in solution.state_dict())
+
+    solution._clear_fp16_shadow_weights()
+    assert all(module._fp16_shadow_weight is None for module in shadow_linears)
+
+
 def test_execution_plan_cache_tracks_cudnn_sdpa_runtime_switch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -359,13 +383,18 @@ def test_execution_observation_does_not_bypass_the_graph_wrapper(
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
     plan = SimpleNamespace(
+        linear_backend="torch",
         use_batch_tiled_cuda_graph=False,
         use_compiled_forward=False,
         use_cuda_graph=True,
+        reuse_unchanged_input=False,
     )
     replay_calls: list[str] = []
 
     class FakeGraphReplay:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            pass
+
         def run(self, function, value, valid_mask):  # type: ignore[no-untyped-def]
             replay_calls.append("replay")
             return function(value, valid_mask)
@@ -404,6 +433,7 @@ def test_execution_observation_reports_batch_tiled_graph_wrapper(
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
     plan = SimpleNamespace(
+        linear_backend="torch",
         use_batch_tiled_cuda_graph=True,
         batch_tile_size=128,
         use_cuda_graph=False,
@@ -532,6 +562,7 @@ def test_execution_observation_reports_compiled_forward_wrapper(
     solution_module = load_solution_module(PROJECT_ROOT)
     solution = solution_module.UserOptimizedTransformer(_config()).eval()
     plan = SimpleNamespace(
+        linear_backend="torch",
         use_batch_tiled_cuda_graph=False,
         use_compiled_forward=True,
         use_cuda_graph=False,
@@ -706,6 +737,29 @@ def test_cuda_graph_replay_rejects_a_second_signature_without_recapture() -> Non
 
     with pytest.raises(RuntimeError, match="one static input signature"):
         replay.run(lambda value, _mask: value, torch.zeros(2, 4, 8), None)
+
+
+def test_cuda_graph_versioned_staging_tracks_identity_and_mutation() -> None:
+    replay = CudaGraphReplay(reuse_unchanged_input=True)
+    value = torch.zeros(1, 4, 8)
+
+    assert replay._staging_is_current(value) is False
+    replay._remember_staged_source(value)
+    assert replay._staging_is_current(value) is True
+    assert replay._staging_is_current(value.clone()) is False
+
+    value.add_(1)
+    assert replay._staging_is_current(value) is False
+
+
+def test_cuda_graph_versioned_staging_rejects_inference_tensor_versions() -> None:
+    replay = CudaGraphReplay(reuse_unchanged_input=True)
+    with torch.inference_mode():
+        value = torch.zeros(1, 4, 8)
+
+    assert replay._reliable_version(value) is None
+    replay._remember_staged_source(value)
+    assert replay._staging_is_current(value) is False
 
 
 def test_dispatch_is_the_default_and_falls_back_to_eager_sdpa() -> None:

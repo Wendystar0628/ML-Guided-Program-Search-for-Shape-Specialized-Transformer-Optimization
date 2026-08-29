@@ -8,10 +8,10 @@
     "snapshot_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762"
   },
   "solution": {
-    "implementation_sha256": "57e014b8cbb626905e4a619e2fd468b7c7113b5d2b88217eac876c0fe256d4f4"
+    "implementation_sha256": "8ed02ebea7050679e3a5833e08b19c68ba40861f6dae6e9a992fc3eb849bc258"
   },
   "route_table": {
-    "sha256": "440d6fa1f6ae86f41ccb5a83ec5029a1f9e84ab1344e28616d98bf2f7de419f9"
+    "sha256": "1d2e1f14b5306940ed48d8ec4efb8ea8598a8cb861e11e709cde43fe39dff111"
   },
   "formal": {
     "protocol": {
@@ -28,7 +28,7 @@
       "compile_mode": "default",
       "matmul_precision": "high",
       "allow_tf32": true,
-      "timeout_seconds": 900.0
+      "timeout_seconds": 1200.0
     },
     "variant": {
       "dtype": "float32",

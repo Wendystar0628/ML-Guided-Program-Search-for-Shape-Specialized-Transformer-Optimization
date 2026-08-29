@@ -7,7 +7,9 @@ from solution.shape_families import (
     is_measured_streamed_mixed_fp16_core_cudnn_workload,
     is_measured_triton_residual_norm_workload,
     is_mixed_fp16_core_efficient_runtime_family,
+    is_shape05_graph_mixed_residual_norm_workload,
     is_shape06_batch_tiled_workload,
+    is_shape08_fp16_shadow_workload,
     is_shape13_triton_attention_tensor_family,
     is_shape13_triton_attention_workload,
     is_streamed_mixed_fp16_core_cudnn_slice,
@@ -63,6 +65,27 @@ def test_solution_predicates_cover_runtime_slices_without_broadening_deployment(
         num_layers=4,
     )
 
+    shape05 = {
+        "batch_size": 128,
+        "seq_len": 128,
+        "d_model": 128,
+        "num_heads": 4,
+        "ffn_dim": 128,
+        "num_layers": 4,
+    }
+    assert is_shape05_graph_mixed_residual_norm_workload(**shape05)
+    for field, nearby_value in (
+        ("batch_size", 64),
+        ("seq_len", 32),
+        ("d_model", 32),
+        ("num_heads", 2),
+        ("ffn_dim", 256),
+        ("num_layers", 2),
+    ):
+        assert not is_shape05_graph_mixed_residual_norm_workload(
+            **{**shape05, field: nearby_value}
+        )
+
     assert is_shape06_batch_tiled_workload(
         batch_size=10_000,
         seq_len=128,
@@ -104,6 +127,17 @@ def test_solution_predicates_cover_runtime_slices_without_broadening_deployment(
         ffn_dim=128,
         num_layers=4,
     )
+
+    shape08 = {
+        "batch_size": 64,
+        "seq_len": 128,
+        "d_model": 1024,
+        "num_heads": 4,
+        "ffn_dim": 1024,
+        "num_layers": 4,
+    }
+    assert is_shape08_fp16_shadow_workload(**shape08)
+    assert not is_shape08_fp16_shadow_workload(**{**shape08, "batch_size": 32})
 
     assert is_shape13_triton_attention_tensor_family(
         batch_size=64,

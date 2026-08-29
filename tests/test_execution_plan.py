@@ -513,6 +513,62 @@ def test_compiled_forward_plan_is_exact_to_measured_shapes(monkeypatch) -> None:
     assert nearby.compile_mode is None
 
 
+def test_shape08_fp16_shadow_plan_is_exact_and_prebuilt(monkeypatch) -> None:
+    monkeypatch.setattr(
+        torch.backends.cuda,
+        "mem_efficient_sdp_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "get_device_capability",
+        lambda _device: (8, 9),
+    )
+
+    exact = _resolve(
+        "compiled-shape08-fp16-shadow-weights",
+        _context(
+            device="cuda",
+            batch_size=64,
+            seq_len=128,
+            d_model=1024,
+            num_heads=4,
+            ffn_dim=1024,
+            num_layers=4,
+        ),
+    )
+    nearby = _resolve(
+        "compiled-shape08-fp16-shadow-weights",
+        _context(
+            device="cuda",
+            batch_size=32,
+            seq_len=128,
+            d_model=1024,
+            num_heads=4,
+            ffn_dim=1024,
+            num_layers=4,
+        ),
+    )
+
+    assert exact.selected_policy == "compiled-shape08-fp16-shadow-weights"
+    assert exact.linear_backend == "fp16_shadow"
+    assert exact.linear_compute_dtype == "float16"
+    assert exact.runtime_wrapper == "compiled_forward"
+    assert exact.resolved_components == (
+        "compiled_forward",
+        "fp16_shadow_weights",
+        "mixed_fp16_core",
+        "mixed_fp16_efficient_attention",
+    )
+    assert nearby.selected_policy == "safe"
+    assert nearby.missing_components == (
+        "compiled_forward",
+        "fp16_shadow_weights",
+        "mixed_fp16_core",
+        "mixed_fp16_efficient_attention",
+    )
+
+
 def test_shape13_triton_attention_composes_with_compiled_mixed_core(
     monkeypatch,
 ) -> None:

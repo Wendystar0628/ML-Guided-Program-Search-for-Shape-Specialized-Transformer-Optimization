@@ -37,9 +37,11 @@ EXPECTED_EXPLICIT_POLICIES = frozenset(
         "graph-mixed-fp16-efficient",
         "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
+        "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
         "compiled-mixed-fp16-core-efficient",
+        "compiled-shape08-fp16-shadow-weights",
         "compiled-mixed-fp16-core-shape13-triton-attention",
     }
 )
@@ -82,6 +84,9 @@ def test_each_policy_has_one_shape_independent_candidate_owner() -> None:
     assert CANDIDATE_SPECS["eager-safe"].deployable is False
     assert CANDIDATE_SPECS["mixed-fp16-core-cudnn"].deployable is True
     assert CANDIDATE_SPECS["mixed-fp16-core-cudnn"].exact_route_eligible is False
+    shadow = CANDIDATE_SPECS["compiled-shape08-fp16-shadow-weights"]
+    assert shadow.deployable is True
+    assert shadow.exact_route_eligible is True
 
 
 def test_candidates_derive_capabilities_from_policy_specs() -> None:
@@ -115,6 +120,9 @@ def test_candidates_derive_capabilities_from_policy_specs() -> None:
         == "max-autotune-no-cudagraphs"
     )
     assert POLICY_SPECS["eager-sdpa"].compile_mode is None
+    assert POLICY_SPECS[
+        "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input"
+    ].reuse_unchanged_input
 
 
 def test_compile_mode_is_owned_only_by_compiled_policy_specs() -> None:
@@ -138,6 +146,16 @@ def test_compile_mode_is_owned_only_by_compiled_policy_specs() -> None:
         PolicySpec("eager-with-mode", compile_mode="max-autotune")
 
 
+def test_input_reuse_is_owned_only_by_cuda_graph_specs() -> None:
+    assert PolicySpec(
+        "versioned-graph",
+        runtime=RuntimeWrapper.CUDA_GRAPH,
+        reuse_unchanged_input=True,
+    ).reuse_unchanged_input
+    with pytest.raises(ValueError, match="valid only"):
+        PolicySpec("eager-versioned", reuse_unchanged_input=True)
+
+
 def test_candidate_registry_contains_only_distinct_strategies() -> None:
     assert set(CANDIDATE_SPECS) == {
         "eager-sdpa",
@@ -152,9 +170,11 @@ def test_candidate_registry_contains_only_distinct_strategies() -> None:
         "graph-mixed-fp16-efficient",
         "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
+        "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
         "compiled-mixed-fp16-core-efficient",
+        "compiled-shape08-fp16-shadow-weights",
         "compiled-mixed-fp16-core-shape13-triton-attention",
     }
 

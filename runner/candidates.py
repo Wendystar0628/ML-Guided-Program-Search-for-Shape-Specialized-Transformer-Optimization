@@ -21,7 +21,9 @@ from solution.shape_families import (
     is_measured_mixed_fp16_core_efficient_workload,
     is_measured_streamed_mixed_fp16_core_cudnn_workload,
     is_measured_triton_residual_norm_workload,
+    is_shape05_graph_mixed_residual_norm_workload,
     is_shape06_batch_tiled_workload,
+    is_shape08_fp16_shadow_workload,
     is_shape13_triton_attention_workload,
 )
 
@@ -299,6 +301,26 @@ def _graph_mixed_fp16_core_candidate(
     )
 
 
+def _shape05_graph_mixed_residual_norm_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
+    """Expose the resident mixed residual-norm graph only for Shape 05."""
+
+    return bool(
+        _native_sdpa_candidate(shape, variant)
+        and variant.dtype == "float32"
+        and is_shape05_graph_mixed_residual_norm_workload(
+            batch_size=shape.batch_size,
+            seq_len=shape.seq_len,
+            d_model=shape.d_model,
+            num_heads=shape.num_heads,
+            ffn_dim=shape.ffn_dim,
+            num_layers=shape.num_layers,
+        )
+    )
+
+
 def _shape06_batch_tiled_candidate(
     shape: TransformerShape,
     variant: RunVariant,
@@ -329,6 +351,26 @@ def _compiled_forward_candidate(
         _native_sdpa_candidate(shape, variant)
         and variant.dtype == "float32"
         and is_compiled_forward_candidate_workload(
+            batch_size=shape.batch_size,
+            seq_len=shape.seq_len,
+            d_model=shape.d_model,
+            num_heads=shape.num_heads,
+            ffn_dim=shape.ffn_dim,
+            num_layers=shape.num_layers,
+        )
+    )
+
+
+def _shape08_fp16_shadow_candidate(
+    shape: TransformerShape,
+    variant: RunVariant,
+) -> bool:
+    """Expose prebuilt FP16 linear shadows only for exact Shape 08."""
+
+    return bool(
+        _native_sdpa_candidate(shape, variant)
+        and variant.dtype == "float32"
+        and is_shape08_fp16_shadow_workload(
             batch_size=shape.batch_size,
             seq_len=shape.seq_len,
             d_model=shape.d_model,
@@ -381,6 +423,7 @@ def _native_evidence(
     linear_backend: str | None = None,
     linear_compute_dtype: str | None = None,
     batch_tile_size: int | None = None,
+    reuse_unchanged_input: bool | None = None,
 ) -> ExecutionEvidence:
     observed = [
         _observe("attention_backends", attention_backend),
@@ -409,6 +452,10 @@ def _native_evidence(
         observed.append(_observe("linear_compute_dtypes", linear_compute_dtype))
     if batch_tile_size is not None:
         path_expectations.append(_expect("batch_tile_size", batch_tile_size))
+    if reuse_unchanged_input is not None:
+        path_expectations.append(
+            _expect("reuse_unchanged_input", reuse_unchanged_input)
+        )
     return ExecutionEvidence(
         selected_policies=frozenset({policy}),
         path_expectations=tuple(path_expectations),
@@ -563,6 +610,24 @@ _CANDIDATE_SPECS = (
         ),
     ),
     CandidateSpec(
+        "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+        "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+        _shape05_graph_mixed_residual_norm_candidate,
+        "Shape 05 mixed residual-norm Graph with version-aware input staging",
+        _native_evidence(
+            policy=(
+                "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input"
+            ),
+            attention_backend="mixed_fp16_efficient",
+            runtime_wrapper="cuda_graph",
+            residual_norm_backend="triton_mixed_residual_layer_norm",
+            attention_compute_dtype="float16",
+            linear_backend="autocast_fp16",
+            linear_compute_dtype="float16",
+            reuse_unchanged_input=True,
+        ),
+    ),
+    CandidateSpec(
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
         _shape06_batch_tiled_candidate,
@@ -605,6 +670,20 @@ _CANDIDATE_SPECS = (
             runtime_wrapper="compiled_forward",
             attention_compute_dtype="float16",
             linear_backend="autocast_fp16",
+            linear_compute_dtype="float16",
+        ),
+    ),
+    CandidateSpec(
+        "compiled-shape08-fp16-shadow-weights",
+        "compiled-shape08-fp16-shadow-weights",
+        _shape08_fp16_shadow_candidate,
+        "exact Shape 08 with compiled mixed core and prebuilt FP16 weights",
+        _native_evidence(
+            policy="compiled-shape08-fp16-shadow-weights",
+            attention_backend="mixed_fp16_efficient",
+            runtime_wrapper="compiled_forward",
+            attention_compute_dtype="float16",
+            linear_backend="fp16_shadow",
             linear_compute_dtype="float16",
         ),
     ),

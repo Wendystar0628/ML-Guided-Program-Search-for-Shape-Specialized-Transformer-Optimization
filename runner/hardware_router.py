@@ -613,7 +613,7 @@ def _incremental_prior(
             ]
         )
 
-    if policy.linear_compute == "float16":
+    if policy.linear_compute in {"float16", "float16_shadow"}:
         linear_relative = analysis.dense_gemm_fraction * 0.5
         relative += linear_relative
         reasons.extend(
@@ -623,6 +623,16 @@ def _incremental_prior(
             ]
         )
         has_incremental_model = True
+
+    if policy.linear_compute == "float16_shadow":
+        shadow_relative = analysis.dense_gemm_fraction * 0.03
+        relative += shadow_relative
+        reasons.extend(
+            [
+                "prebuilt FP16 weights remove repeated autocast weight conversions",
+                f"heuristic shadow-weight opportunity={shadow_relative:.6f}",
+            ]
+        )
 
     if not has_incremental_model:
         return float("-inf"), ["candidate has no distinct incremental cost model"]

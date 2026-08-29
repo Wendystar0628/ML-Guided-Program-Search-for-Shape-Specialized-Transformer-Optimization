@@ -92,6 +92,7 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
             "graph-mixed-fp16-core-efficient-compiled-norm",
         ),
         ("official_13", "compiled-mixed-fp16-core-efficient"),
+        ("official_08", "compiled-shape08-fp16-shadow-weights"),
         (
             "official_13",
             "compiled-mixed-fp16-core-shape13-triton-attention",

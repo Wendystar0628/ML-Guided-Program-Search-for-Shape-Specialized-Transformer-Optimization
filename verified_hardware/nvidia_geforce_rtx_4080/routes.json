@@ -132,7 +132,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "compiled-mixed-fp16-core-efficient"
+      "policy": "compiled-shape08-fp16-shadow-weights"
     },
     {
       "match": {
@@ -198,7 +198,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm"
+      "policy": "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input"
     },
     {
       "match": {

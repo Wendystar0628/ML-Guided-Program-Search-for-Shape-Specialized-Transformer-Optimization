@@ -75,6 +75,41 @@ class _ExecutionObservation:
         return result
 
 
+class _FP16ShadowLinear(nn.Linear):
+    """Linear layer with optional non-persistent FP16 inference weights."""
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True) -> None:
+        super().__init__(in_features, out_features, bias=bias)
+        self.register_buffer("_fp16_shadow_weight", None, persistent=False)
+        self.register_buffer("_fp16_shadow_bias", None, persistent=False)
+
+    def materialize_fp16_shadow(self) -> None:
+        """Create immutable inference shadows from the current FP32 parameters."""
+
+        if self._fp16_shadow_weight is not None:
+            return
+        self._fp16_shadow_weight = self.weight.detach().to(torch.float16).contiguous()
+        self._fp16_shadow_bias = (
+            None
+            if self.bias is None
+            else self.bias.detach().to(torch.float16).contiguous()
+        )
+
+    def clear_fp16_shadow(self) -> None:
+        """Discard derived tensors after parameters move or are replaced."""
+
+        self._fp16_shadow_weight = None
+        self._fp16_shadow_bias = None
+
+    def forward_fp16_shadow(self, value: torch.Tensor) -> torch.Tensor:
+        """Run explicit FP16 linear algebra without autocast weight conversion."""
+
+        weight = self._fp16_shadow_weight
+        if weight is None:
+            raise RuntimeError("FP16 shadow weights must be materialized before use")
+        return F.linear(value.to(torch.float16), weight, self._fp16_shadow_bias)
+
+
 class _SelfAttention(nn.Module):
     """Packed QKV projection followed by the planned causal attention path."""
 
@@ -86,8 +121,8 @@ class _SelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.scale = self.head_dim**-0.5
-        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=True)
-        self.out_proj = nn.Linear(d_model, d_model, bias=True)
+        self.qkv_proj = _FP16ShadowLinear(d_model, 3 * d_model, bias=True)
+        self.out_proj = _FP16ShadowLinear(d_model, d_model, bias=True)
 
     def forward(
         self,
@@ -98,13 +133,19 @@ class _SelfAttention(nn.Module):
         observation: _ExecutionObservation | None,
     ) -> torch.Tensor:
         batch_size, sequence_length, _ = value.shape
-        mixed_core = plan.linear_backend == "autocast_fp16"
+        autocast_core = plan.linear_backend == "autocast_fp16"
+        shadow_core = plan.linear_backend == "fp16_shadow"
+        mixed_core = autocast_core or shadow_core
         with torch.autocast(
             device_type=value.device.type,
             dtype=torch.float16,
-            enabled=mixed_core,
+            enabled=autocast_core,
         ):
-            packed_qkv = self.qkv_proj(value)
+            packed_qkv = (
+                self.qkv_proj.forward_fp16_shadow(value)
+                if shadow_core
+                else self.qkv_proj(value)
+            )
             query, key, projected_value = split_qkv(
                 packed_qkv,
                 self.num_heads,
@@ -173,7 +214,11 @@ class _SelfAttention(nn.Module):
                 .contiguous()
                 .view(batch_size, sequence_length, self.d_model)
             )
-            output = self.out_proj(context)
+            output = (
+                self.out_proj.forward_fp16_shadow(context)
+                if shadow_core
+                else self.out_proj(context)
+            )
         if observation is not None:
             observation.attention_backends.append(actual_attention_backend)
             if mixed_core:
@@ -203,8 +248,8 @@ class _TransformerBlock(nn.Module):
         self.norm1 = nn.LayerNorm(d_model)
         self.attention = _SelfAttention(d_model, num_heads)
         self.norm2 = nn.LayerNorm(d_model)
-        self.ffn_in = nn.Linear(d_model, ffn_dim)
-        self.ffn_out = nn.Linear(ffn_dim, d_model)
+        self.ffn_in = _FP16ShadowLinear(d_model, ffn_dim)
+        self.ffn_out = _FP16ShadowLinear(ffn_dim, d_model)
 
     def attention_update(
         self,
@@ -232,15 +277,25 @@ class _TransformerBlock(nn.Module):
     ) -> torch.Tensor:
         """Compute the FFN branch from an already normalized value."""
 
-        mixed_core = plan.linear_backend == "autocast_fp16"
+        autocast_core = plan.linear_backend == "autocast_fp16"
+        shadow_core = plan.linear_backend == "fp16_shadow"
+        mixed_core = autocast_core or shadow_core
         with torch.autocast(
             device_type=normalized.device.type,
             dtype=torch.float16,
-            enabled=mixed_core,
+            enabled=autocast_core,
         ):
-            projected = self.ffn_in(normalized)
+            projected = (
+                self.ffn_in.forward_fp16_shadow(normalized)
+                if shadow_core
+                else self.ffn_in(normalized)
+            )
             hidden = F.gelu(projected, approximate="none")
-            ffn_update = self.ffn_out(hidden)
+            ffn_update = (
+                self.ffn_out.forward_fp16_shadow(hidden)
+                if shadow_core
+                else self.ffn_out(hidden)
+            )
         if observation is not None and mixed_core:
             observation.linear_backends.extend([plan.linear_backend] * 2)
             observation.linear_compute_dtypes.extend(
@@ -285,6 +340,7 @@ class UserOptimizedTransformer(nn.Module):
         self._classified_mask: torch.Tensor | None = None
         self._classified_mask_version: int | None = None
         self._classified_mask_is_all_valid = False
+        self._fp16_shadow_weights_ready = False
 
         self._dispatcher: OfflineDispatcher | None = None
         self._dispatch_signature: tuple[object, ...] | None = None
@@ -318,11 +374,30 @@ class UserOptimizedTransformer(nn.Module):
 
     def _apply(self, function: Any, recurse: bool = True) -> UserOptimizedTransformer:
         result = super()._apply(function, recurse=recurse)
+        self._clear_fp16_shadow_weights()
         self._invalidate_runtime_state()
         self._dispatch_signature = None
         if self._dispatcher is not None and next(self.parameters()).is_cuda:
             self._resolve_dispatch()
         return result
+
+    def _materialize_fp16_shadow_weights(self) -> None:
+        """Build all derived FP16 linear tensors once, outside compiled forward."""
+
+        if self._fp16_shadow_weights_ready:
+            return
+        for module in self.modules():
+            if isinstance(module, _FP16ShadowLinear):
+                module.materialize_fp16_shadow()
+        self._fp16_shadow_weights_ready = True
+
+    def _clear_fp16_shadow_weights(self) -> None:
+        """Invalidate every derived shadow while preserving FP32 parameters."""
+
+        for module in self.modules():
+            if isinstance(module, _FP16ShadowLinear):
+                module.clear_fp16_shadow()
+        self._fp16_shadow_weights_ready = False
 
     def _resolve_dispatch(self, value: torch.Tensor | None = None) -> None:
         if self._dispatcher is None:
@@ -649,6 +724,9 @@ class UserOptimizedTransformer(nn.Module):
             valid_token_mask = self._effective_valid_token_mask(x, valid_token_mask)
             plan = self._cached_execution_plan(x, valid_token_mask)
 
+        if plan.linear_backend == "fp16_shadow":
+            self._materialize_fp16_shadow_weights()
+
         if plan.use_batch_tiled_cuda_graph:
             if plan.batch_tile_size is None:
                 raise RuntimeError("batch-tiled plan is missing its tile size")
@@ -696,7 +774,9 @@ class UserOptimizedTransformer(nn.Module):
             return output
         if plan.use_cuda_graph:
             if self._cuda_graph_replay is None:
-                self._cuda_graph_replay = CudaGraphReplay()
+                self._cuda_graph_replay = CudaGraphReplay(
+                    reuse_unchanged_input=plan.reuse_unchanged_input
+                )
             output = self._cuda_graph_replay.run(
                 lambda value, mask: self._forward_eager(value, mask, plan),
                 x,
@@ -767,6 +847,9 @@ def copy_model_weights(
         )
 
     incompatible = optimized.load_state_dict(mapped_state, strict=strict)
+    clear_shadow_weights = getattr(optimized, "_clear_fp16_shadow_weights", None)
+    if callable(clear_shadow_weights):
+        clear_shadow_weights()
     if not strict:
         warning_parts = []
         if missing_target_keys or incompatible.missing_keys:

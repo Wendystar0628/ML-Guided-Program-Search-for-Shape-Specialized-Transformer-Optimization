@@ -295,6 +295,7 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
+            "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
         ],
         "official_06": [
             "mixed-fp16-core-efficient",
@@ -311,6 +312,7 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
         "official_08": [
             "mixed-fp16-core-efficient",
             "compiled-mixed-fp16-core-efficient",
+            "compiled-shape08-fp16-shadow-weights",
         ],
         "official_09": [
             "graph-mixed-fp16-efficient",
