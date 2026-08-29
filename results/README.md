@@ -1,17 +1,15 @@
 # Results
 
-This directory has one public result surface and one local working area.
+Only two result classes are kept:
 
 ```text
 results/
-├── final/          Concise, tracked performance results by verified GPU
-└── intermediate/   Regenerable runs, sweeps, tuning, probes, and profiles
+├── final/          Concise performance summaries produced after Formal runs
+└── intermediate/   Search studies, trial runs, probes, and profiles
 ```
 
-`final/<hardware_id>.json` is the authoritative performance artifact. It keeps
-one row per Shape, separates paired resident results from provisional streamed
-results, and defines every derived metric in the same file.
+- `final/`: concise results intentionally selected for submission.
+- `intermediate/`: disposable run JSON, profiles, and one resumable Optuna
+  SQLite database.
 
-`intermediate/` is ignored by Git. It may contain raw samples and failed or
-exploratory candidates needed during measurement, but none of those files is a
-published score.
+Old Policy-based results are not reused by the generated-configuration runtime.

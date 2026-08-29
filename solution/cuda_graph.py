@@ -1,4 +1,4 @@
-"""Narrow CUDA Graph replay state for a fixed eager Transformer route."""
+"""Narrow CUDA Graph replay state for one fixed Transformer execution plan."""
 
 from __future__ import annotations
 

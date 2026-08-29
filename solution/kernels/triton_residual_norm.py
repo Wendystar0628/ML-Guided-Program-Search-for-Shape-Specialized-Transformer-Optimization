@@ -1,4 +1,4 @@
-"""Triton residual-plus-LayerNorm for the measured large-row width-128 family."""
+"""Triton residual-plus-LayerNorm for contiguous width-128 tensors."""
 
 from __future__ import annotations
 
@@ -16,7 +16,21 @@ except ImportError:  # pragma: no cover - exercised by environments without Trit
 TRITON_RESIDUAL_LAYER_NORM_BACKEND = "triton_residual_layer_norm"
 _WIDTH = 128
 _BLOCK_ROWS = 2
-_MIN_ROWS = 1_000_000
+_NUM_WARPS = 2
+_SUPPORTED_BLOCK_ROWS = frozenset({1, 2, 4, 8})
+_SUPPORTED_NUM_WARPS = frozenset({1, 2, 4, 8})
+
+
+def _validate_launch_config(block_rows: int, num_warps: int) -> None:
+    if (
+        isinstance(block_rows, bool)
+        or not isinstance(block_rows, int)
+        or block_rows not in _SUPPORTED_BLOCK_ROWS
+        or isinstance(num_warps, bool)
+        or not isinstance(num_warps, int)
+        or num_warps not in _SUPPORTED_NUM_WARPS
+    ):
+        raise ValueError("unsupported Triton residual LayerNorm launch configuration")
 
 
 if triton is not None and tl is not None:
@@ -80,7 +94,7 @@ def can_use_triton_residual_layer_norm(
         return False
     if value.ndim < 2 or not value.is_contiguous() or not update.is_contiguous():
         return False
-    if value.shape[-1] != _WIDTH or value.numel() // _WIDTH < _MIN_ROWS:
+    if value.shape[-1] != _WIDTH:
         return False
     if tuple(layer_norm.normalized_shape) != (_WIDTH,):
         return False
@@ -96,9 +110,13 @@ def triton_residual_layer_norm(
     value: torch.Tensor,
     update: torch.Tensor,
     layer_norm: nn.LayerNorm,
+    *,
+    block_rows: int = _BLOCK_ROWS,
+    num_warps: int = _NUM_WARPS,
 ) -> tuple[torch.Tensor, torch.Tensor, str]:
     """Run the measured specialization without a silent implementation fallback."""
 
+    _validate_launch_config(block_rows, num_warps)
     if not can_use_triton_residual_layer_norm(value, update, layer_norm):
         raise RuntimeError(
             "Triton residual LayerNorm is ineligible for the requested inputs"
@@ -110,7 +128,7 @@ def triton_residual_layer_norm(
     residual = torch.empty_like(value)
     normalized = torch.empty_like(value)
     try:
-        _residual_layer_norm_kernel[(triton.cdiv(row_count, _BLOCK_ROWS),)](
+        _residual_layer_norm_kernel[(triton.cdiv(row_count, block_rows),)](
             value,
             update,
             layer_norm.weight,
@@ -120,8 +138,8 @@ def triton_residual_layer_norm(
             row_count,
             eps=layer_norm.eps,
             width=_WIDTH,
-            block_rows=_BLOCK_ROWS,
-            num_warps=_BLOCK_ROWS,
+            block_rows=block_rows,
+            num_warps=num_warps,
         )
     except Exception as exc:
         raise RuntimeError("Triton residual LayerNorm execution failed") from exc

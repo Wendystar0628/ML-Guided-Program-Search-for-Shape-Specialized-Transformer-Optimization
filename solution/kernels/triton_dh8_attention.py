@@ -27,7 +27,44 @@ _BLOCK_M = 32
 _BLOCK_N = 32
 _NUM_WARPS = 4
 _NUM_STAGES = 2
+_SUPPORTED_BLOCK_SIZES = frozenset({16, 32, 64, 128})
+_SUPPORTED_NUM_WARPS = frozenset({2, 4, 8})
+_SUPPORTED_NUM_STAGES = frozenset({1, 2, 3, 4})
 _MIN_COMPUTE_CAPABILITY = (8, 0)
+
+
+def _launch_config_is_valid(
+    block_m: int,
+    block_n: int,
+    num_warps: int,
+    num_stages: int,
+) -> bool:
+    values = (block_m, block_n, num_warps, num_stages)
+    return bool(
+        not any(isinstance(value, bool) for value in values)
+        and all(isinstance(value, int) for value in values)
+        and block_m in _SUPPORTED_BLOCK_SIZES
+        and block_n in _SUPPORTED_BLOCK_SIZES
+        and num_warps in _SUPPORTED_NUM_WARPS
+        and num_stages in _SUPPORTED_NUM_STAGES
+        and _SEQUENCE_LENGTH % block_m == 0
+        and _SEQUENCE_LENGTH % block_n == 0
+        and block_m % block_n == 0
+    )
+
+
+def _validate_launch_config(
+    block_m: int,
+    block_n: int,
+    num_warps: int,
+    num_stages: int,
+) -> None:
+    if not _launch_config_is_valid(block_m, block_n, num_warps, num_stages):
+        raise ValueError(
+            "invalid Dh8 Triton launch configuration; block sizes must be "
+            "supported divisors with block_m divisible by block_n, and warps/stages "
+            "must use supported values"
+        )
 
 
 if triton is not None and tl is not None:
@@ -61,6 +98,10 @@ if triton is not None and tl is not None:
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
     ) -> None:
+        tl.static_assert(SEQ_LEN % BLOCK_M == 0)
+        tl.static_assert(SEQ_LEN % BLOCK_N == 0)
+        tl.static_assert(BLOCK_M % BLOCK_N == 0)
+
         start_m = tl.program_id(0)
         batch_head = tl.program_id(1)
         batch_index = batch_head // NUM_HEADS
@@ -169,6 +210,10 @@ if (
         key: torch.Tensor,
         value: torch.Tensor,
         scale: float,
+        block_m: int,
+        block_n: int,
+        num_warps: int,
+        num_stages: int,
     ) -> torch.Tensor:
         output = torch.empty(
             (_BATCH_SIZE, _SEQUENCE_LENGTH, _NUM_HEADS * _HEAD_DIM),
@@ -176,7 +221,7 @@ if (
             device=query.device,
         )
         grid = (
-            _SEQUENCE_LENGTH // _BLOCK_M,
+            _SEQUENCE_LENGTH // block_m,
             _BATCH_SIZE * _NUM_HEADS,
         )
         wrap_triton(_dh8_causal_attention_kernel)[grid](
@@ -193,10 +238,10 @@ if (
             SEQ_LEN=_SEQUENCE_LENGTH,
             HEAD_DIM=_HEAD_DIM,
             PADDED_HEAD_DIM=_PADDED_HEAD_DIM,
-            BLOCK_M=_BLOCK_M,
-            BLOCK_N=_BLOCK_N,
-            num_warps=_NUM_WARPS,
-            num_stages=_NUM_STAGES,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
         return output
 
@@ -207,8 +252,12 @@ else:
         key: torch.Tensor,
         value: torch.Tensor,
         scale: float,
+        block_m: int,
+        block_n: int,
+        num_warps: int,
+        num_stages: int,
     ) -> torch.Tensor:
-        del query, key, value, scale
+        del query, key, value, scale, block_m, block_n, num_warps, num_stages
         raise RuntimeError("Triton Dh8 attention is unavailable")
 
 
@@ -228,10 +277,16 @@ def can_use_triton_dh8_causal_attention(
     *,
     causal: bool = True,
     training: bool = False,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
 ) -> bool:
     """Validate the exact Shape 11 tensor contract."""
 
     if not triton_dh8_causal_attention_available():
+        return False
+    if not _launch_config_is_valid(block_m, block_n, num_warps, num_stages):
         return False
     if training or torch.is_grad_enabled() or not causal:
         return False
@@ -265,9 +320,14 @@ def prevalidated_triton_dh8_causal_attention_bsd(
     value: torch.Tensor,
     *,
     scale: float | None = None,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
 ) -> tuple[torch.Tensor, str]:
     """Run the exact specialization after immutable plan validation."""
 
+    _validate_launch_config(block_m, block_n, num_warps, num_stages)
     resolved_scale = 1.0 / math.sqrt(_HEAD_DIM) if scale is None else float(scale)
     try:
         output = _dh8_causal_attention_bsd_op(
@@ -275,6 +335,10 @@ def prevalidated_triton_dh8_causal_attention_bsd(
             key,
             value,
             resolved_scale,
+            block_m,
+            block_n,
+            num_warps,
+            num_stages,
         )
     except Exception as exc:
         raise RuntimeError("Triton Dh8 attention execution failed") from exc

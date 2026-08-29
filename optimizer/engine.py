@@ -1,0 +1,831 @@
+"""Branch screening, constraint-aware TPE, and multi-fidelity promotion."""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from optuna.study import Study
+
+from solution.config import ConfigSpec, portable_streamed_config
+
+from .evaluation import (
+    ConstraintVector,
+    EvaluationScope,
+    Evaluator,
+    Fidelity,
+    PairedMeasurement,
+    TrialMeasurement,
+)
+from .optuna_backend import CompletedTrial, OptunaBackend
+from .space import (
+    BranchSpace,
+    ConfigCompilerLike,
+    ProgramSearchSpace,
+    SearchContext,
+)
+from .storage import SearchStorage, StudyIdentity
+
+
+@dataclass(frozen=True, slots=True)
+class SearchBudget:
+    """Time is the primary budget; trial count is an optional hard ceiling."""
+
+    max_seconds: float
+    max_trials: int | None = None
+    max_structure_branches: int = 24
+    min_trials_per_branch: int = 5
+    survivor_count: int = 3
+    promote_fraction: float = 0.2
+    enhanced_top_k: int = 8
+    formal_top_k: int = 3
+    local_top_k: int = 3
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.max_seconds, bool)
+            or not isinstance(self.max_seconds, (int, float))
+            or not math.isfinite(self.max_seconds)
+            or self.max_seconds <= 0.0
+        ):
+            raise ValueError("max_seconds must be finite and positive")
+        if self.max_trials is not None and (
+            isinstance(self.max_trials, bool)
+            or not isinstance(self.max_trials, int)
+            or self.max_trials <= 0
+        ):
+            raise ValueError("max_trials must be a positive integer or null")
+        for name in (
+            "min_trials_per_branch",
+            "survivor_count",
+            "enhanced_top_k",
+            "formal_top_k",
+            "local_top_k",
+            "max_structure_branches",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if not 0.0 < self.promote_fraction <= 1.0:
+            raise ValueError("promote_fraction must be in (0, 1]")
+
+
+@dataclass(frozen=True, slots=True)
+class SearchRequest:
+    """Inputs that directly affect search or measured performance."""
+
+    case_id: str
+    compilation_context: Any
+    hardware: Any
+    scope: EvaluationScope
+    environment: str
+    budget: SearchBudget
+    seed: int = 1234
+    incumbent: ConfigSpec | None = None
+    warm_starts: tuple[ConfigSpec, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("case_id", "environment"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} must not be empty")
+        object.__setattr__(self, "scope", EvaluationScope(self.scope))
+        if not isinstance(self.budget, SearchBudget):
+            raise TypeError("budget must be SearchBudget")
+        if isinstance(self.seed, bool) or not isinstance(self.seed, int):
+            raise TypeError("seed must be an integer")
+        if self.incumbent is not None and not isinstance(
+            self.incumbent, ConfigSpec
+        ):
+            raise TypeError("incumbent must be ConfigSpec or None")
+        starts = tuple(self.warm_starts)
+        if any(not isinstance(config, ConfigSpec) for config in starts):
+            raise TypeError("warm_starts must contain ConfigSpec values")
+        object.__setattr__(self, "warm_starts", starts)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchPlan:
+    """Static compiler-pruned branches and their persistent Study identities."""
+
+    request: SearchRequest
+    search_space: ProgramSearchSpace
+    identities: tuple[StudyIdentity, ...]
+
+    def identity_for(self, branch_id: str) -> StudyIdentity:
+        for identity in self.identities:
+            if identity.branch_id == branch_id:
+                return identity
+        raise KeyError(f"no Study identity for branch {branch_id}")
+
+
+@dataclass(frozen=True, slots=True)
+class SearchResult:
+    """Compact outcome; detailed Level-1 trials remain in Optuna SQLite."""
+
+    selected_config: ConfigSpec | None
+    selected_measurement: TrialMeasurement | None
+    branch_count: int
+    completed_level1: int
+    promoted_configs: tuple[ConfigSpec, ...]
+    formal_configs: tuple[ConfigSpec, ...]
+    formal_measurements: tuple[TrialMeasurement, ...]
+    paired_comparisons: tuple[PairedMeasurement, ...]
+    stop_reason: str
+
+    def __post_init__(self) -> None:
+        if len(self.formal_configs) != len(self.formal_measurements):
+            raise ValueError("formal configs and measurements must be aligned")
+        if any(
+            config.config_id != measurement.config_id
+            for config, measurement in zip(
+                self.formal_configs,
+                self.formal_measurements,
+                strict=True,
+            )
+        ):
+            raise ValueError("formal config and measurement identities disagree")
+        if self.selected_measurement is not None:
+            if self.selected_config is None:
+                raise ValueError("selected measurement requires a selected config")
+            if self.selected_measurement.config_id != self.selected_config.config_id:
+                raise ValueError("selected config and measurement identities disagree")
+
+    @property
+    def has_deployable_selection(self) -> bool:
+        measurement = self.selected_measurement
+        return (
+            self.stop_reason == "completed"
+            and self.selected_config is not None
+            and measurement is not None
+            and measurement.fidelity is Fidelity.FORMAL
+            and measurement.feasible
+        )
+
+@dataclass(slots=True)
+class _BudgetState:
+    new_level1_trials: int = 0
+
+    def can_start(
+        self,
+        *,
+        deadline: float,
+        max_trials: int | None,
+    ) -> bool:
+        if time.monotonic() >= deadline:
+            return False
+        return max_trials is None or self.new_level1_trials < max_trials
+
+
+@dataclass(slots=True)
+class _RunState:
+    studies: dict[str, Study]
+    budget: _BudgetState = field(default_factory=_BudgetState)
+
+
+def _unique_configs(configs: list[ConfigSpec]) -> tuple[ConfigSpec, ...]:
+    values: list[ConfigSpec] = []
+    seen: set[str] = set()
+    for config in configs:
+        if config.config_id in seen:
+            continue
+        seen.add(config.config_id)
+        values.append(config)
+    return tuple(values)
+
+
+class SearchEngine:
+    """Run generated program search without owning GPU runner mechanics."""
+
+    def __init__(
+        self,
+        *,
+        storage: SearchStorage,
+        evaluator: Evaluator,
+        compiler: ConfigCompilerLike,
+        failure_penalty_ms: float = 1_000_000_000.0,
+    ) -> None:
+        if not isinstance(storage, SearchStorage):
+            raise TypeError("storage must be SearchStorage")
+        if not math.isfinite(failure_penalty_ms) or failure_penalty_ms <= 0.0:
+            raise ValueError("failure_penalty_ms must be finite and positive")
+        self.storage = storage
+        self.evaluator = evaluator
+        self.compiler = compiler
+        self.failure_penalty_ms = float(failure_penalty_ms)
+
+    def plan(self, request: SearchRequest) -> SearchPlan:
+        """Generate legal high-level branches without running a benchmark."""
+
+        context = SearchContext(
+            compilation_context=request.compilation_context,
+            scope=request.scope.value,
+            hardware=request.hardware,
+        )
+        required_configs: tuple[ConfigSpec, ...] = (
+            (portable_streamed_config(microbatch_size=1),)
+            if request.scope is EvaluationScope.STREAMED
+            else ()
+        )
+        if request.incumbent is not None:
+            required_configs += (request.incumbent,)
+        search_space = ProgramSearchSpace(
+            compiler=self.compiler,
+            context=context,
+            max_branches=request.budget.max_structure_branches,
+            required_configs=required_configs,
+        )
+        mandatory_count = len(search_space.mandatory_branch_ids)
+        if (
+            request.budget.max_trials is not None
+            and request.budget.max_trials < mandatory_count
+        ):
+            raise ValueError(
+                "max_trials is smaller than mandatory structure coverage"
+            )
+        identities = tuple(
+            StudyIdentity(
+                case_id=request.case_id,
+                branch_id=branch.branch_id,
+                environment=request.environment,
+            )
+            for branch in search_space.branches
+        )
+        return SearchPlan(
+            request=request,
+            search_space=search_space,
+            identities=identities,
+        )
+
+    def run(self, request: SearchRequest) -> SearchResult:
+        """Execute screening, TPE, local refinement, and promotion in order."""
+
+        plan = self.plan(request)
+        backend = OptunaBackend(self.storage, seed=request.seed)
+        run_state = _RunState(
+            studies={
+                branch.branch_id: backend.create_study(
+                    plan.identity_for(branch.branch_id)
+                )
+                for branch in plan.search_space.branches
+            }
+        )
+        start = time.monotonic()
+        budget = request.budget
+        screen_deadline = start + float(budget.max_seconds) * 0.20
+        tpe_deadline = start + float(budget.max_seconds) * 0.55
+        level1_deadline = start + float(budget.max_seconds) * 0.65
+        enhanced_deadline = start + float(budget.max_seconds) * 0.82
+        final_deadline = start + float(budget.max_seconds)
+        promoted: tuple[ConfigSpec, ...] = ()
+        enhanced: tuple[tuple[ConfigSpec, TrialMeasurement], ...] = ()
+        formal_candidates: tuple[ConfigSpec, ...] = ()
+        formal_configs: tuple[ConfigSpec, ...] = ()
+        formal_measurements: tuple[TrialMeasurement, ...] = ()
+        comparisons: tuple[PairedMeasurement, ...] = ()
+
+        try:
+            self._enqueue_initial_configs(plan, run_state, backend)
+            self._screen_structures(
+                plan,
+                run_state,
+                backend,
+                deadline=screen_deadline,
+            )
+            survivors = self._select_survivors(plan, run_state, backend)
+            self._run_tpe(
+                plan,
+                run_state,
+                backend,
+                survivors,
+                deadline=tpe_deadline,
+            )
+            self._run_local_neighbourhood(
+                plan,
+                run_state,
+                backend,
+                survivors,
+                deadline=level1_deadline,
+            )
+            promoted = self._select_promotions(
+                plan,
+                run_state,
+                backend,
+                survivors,
+            )
+            enhanced = self._evaluate_promotions(
+                request,
+                promoted,
+                deadline=enhanced_deadline,
+            )
+            formal_candidates = tuple(
+                config
+                for config, measurement in sorted(
+                    enhanced,
+                    key=lambda item: item[1].objective_ms,
+                )
+                if measurement.feasible
+            )[: budget.formal_top_k]
+            (
+                selected_config,
+                selected_measurement,
+                formal_configs,
+                formal_measurements,
+                comparisons,
+            ) = self._run_formal(
+                request,
+                formal_candidates,
+                deadline=final_deadline,
+            )
+            stop_reason = (
+                "no_feasible_screen"
+                if not survivors
+                else "no_feasible_enhanced"
+                if selected_config is None
+                else "completed"
+            )
+        except KeyboardInterrupt:
+            # Level-1 observations remain available in Optuna, but an interrupted
+            # search never presents an unverified partial result as deployable.
+            selected_config = request.incumbent
+            selected_measurement = None
+            stop_reason = "interrupted"
+        except Exception:
+            raise
+
+        completed_level1 = sum(
+            len(backend.completed_trials(run_state.studies[branch.branch_id], branch))
+            for branch in plan.search_space.branches
+        )
+        return SearchResult(
+            selected_config=selected_config,
+            selected_measurement=selected_measurement,
+            branch_count=len(plan.search_space.branches),
+            completed_level1=completed_level1,
+            promoted_configs=promoted,
+            formal_configs=formal_configs,
+            formal_measurements=formal_measurements,
+            paired_comparisons=comparisons,
+            stop_reason=stop_reason,
+        )
+
+    def _enqueue_initial_configs(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+    ) -> None:
+        request = plan.request
+        seeds: list[tuple[str, ConfigSpec]] = []
+        if request.scope is EvaluationScope.STREAMED:
+            seeds.append(
+                ("portable_streamed", portable_streamed_config(microbatch_size=1))
+            )
+        if request.incumbent is not None:
+            seeds.append(("incumbent", request.incumbent))
+        seeds.extend(("warm_start", config) for config in request.warm_starts)
+        for branch in plan.search_space.branches:
+            study = state.studies[branch.branch_id]
+            for source, config in seeds:
+                backend.enqueue(study, branch, config, source=source)
+            for index, config in enumerate(branch.representative_configs(limit=3)):
+                backend.enqueue(
+                    study,
+                    branch,
+                    config,
+                    source=f"structure_representative_{index}",
+                )
+
+    def _screen_structures(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        *,
+        deadline: float,
+    ) -> None:
+        mandatory = [
+            branch
+            for branch in plan.search_space.branches
+            if branch.branch_id in plan.search_space.mandatory_branch_ids
+        ]
+        optional = [
+            branch
+            for branch in plan.search_space.branches
+            if branch.branch_id not in plan.search_space.mandatory_branch_ids
+        ]
+        for branch in (*mandatory, *optional):
+            study = state.studies[branch.branch_id]
+            if backend.completed_trials(study, branch):
+                continue
+            is_mandatory = (
+                branch.branch_id in plan.search_space.mandatory_branch_ids
+            )
+            if (
+                not is_mandatory
+                and not state.budget.can_start(
+                    deadline=deadline,
+                    max_trials=plan.request.budget.max_trials,
+                )
+            ):
+                break
+            self._ask_and_measure(plan, state, backend, branch)
+
+    def _select_survivors(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+    ) -> tuple[BranchSpace, ...]:
+        ranked: list[tuple[CompletedTrial, BranchSpace]] = []
+        for branch in plan.search_space.branches:
+            best = backend.best_feasible(state.studies[branch.branch_id], branch)
+            if best is not None:
+                ranked.append((best, branch))
+        ranked.sort(key=lambda item: item[0].measurement.objective_ms)
+        survivors = [
+            branch
+            for _, branch in ranked[: plan.request.budget.survivor_count]
+        ]
+        incumbent = plan.request.incumbent
+        incumbent_branch = (
+            None if incumbent is None else plan.search_space.branch_for(incumbent)
+        )
+        if incumbent_branch is not None and incumbent_branch not in survivors:
+            incumbent_best = backend.best_feasible(
+                state.studies[incumbent_branch.branch_id],
+                incumbent_branch,
+            )
+            if incumbent_best is not None:
+                if len(survivors) >= plan.request.budget.survivor_count:
+                    survivors[-1] = incumbent_branch
+                else:
+                    survivors.append(incumbent_branch)
+        survivors = list(dict.fromkeys(survivors))
+        return tuple(survivors)
+
+    def _run_tpe(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        survivors: tuple[BranchSpace, ...],
+        *,
+        deadline: float,
+    ) -> None:
+        budget = plan.request.budget
+        for branch in survivors:
+            target = min(budget.min_trials_per_branch, branch.cardinality)
+            study = state.studies[branch.branch_id]
+            while len(backend.completed_trials(study, branch)) < target:
+                if not state.budget.can_start(
+                    deadline=deadline,
+                    max_trials=budget.max_trials,
+                ):
+                    break
+                self._ask_and_measure(plan, state, backend, branch)
+
+        active = [branch for branch in survivors if branch.cardinality > 1]
+        cursor = 0
+        while active and state.budget.can_start(
+            deadline=deadline,
+            max_trials=budget.max_trials,
+        ):
+            branch = active[cursor % len(active)]
+            self._ask_and_measure(plan, state, backend, branch)
+            cursor += 1
+
+    def _run_local_neighbourhood(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        survivors: tuple[BranchSpace, ...],
+        *,
+        deadline: float,
+    ) -> None:
+        ranked = self._ranked_level1(state, backend, survivors)
+        for completed in ranked[: plan.request.budget.local_top_k]:
+            branch = plan.search_space.branch(completed.branch_id)
+            study = state.studies[branch.branch_id]
+            for config in branch.neighbours(completed.config):
+                if not state.budget.can_start(
+                    deadline=deadline,
+                    max_trials=plan.request.budget.max_trials,
+                ):
+                    break
+                if backend.measurement_for(study, branch, config.config_id) is not None:
+                    continue
+                try:
+                    measurement = self._measure_screen(plan.request, config)
+                    backend.record_completed(
+                        study,
+                        branch,
+                        config,
+                        measurement,
+                        source="local_neighbour",
+                    )
+                except Exception:
+                    pass
+                finally:
+                    state.budget.new_level1_trials += 1
+
+    def _ask_and_measure(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        branch: BranchSpace,
+    ) -> None:
+        study = state.studies[branch.branch_id]
+        trial, config = backend.ask(study, branch)
+        previous = backend.measurement_for(study, branch, config.config_id)
+        try:
+            measurement = (
+                previous
+                if previous is not None
+                else self._measure_screen(plan.request, config)
+            )
+            backend.tell(study, trial, config, measurement)
+        except Exception as exc:
+            backend.fail_infrastructure(study, trial, exc)
+        finally:
+            state.budget.new_level1_trials += 1
+
+    def _measure_screen(
+        self,
+        request: SearchRequest,
+        config: ConfigSpec,
+    ) -> TrialMeasurement:
+        compiled = self.compiler.evaluate(
+            config,
+            request.compilation_context,
+            request.hardware,
+        )
+        if not compiled.accepted:
+            rejection = getattr(compiled, "rejection", None)
+            details = (
+                rejection.to_dict()
+                if rejection is not None and hasattr(rejection, "to_dict")
+                else {"reason": "compiler_rejected"}
+            )
+            return TrialMeasurement.infeasible(
+                config_id=config.config_id,
+                fidelity=Fidelity.SCREEN,
+                scope=request.scope,
+                penalty_ms=self.failure_penalty_ms,
+                constraints=ConstraintVector(runtime=1.0),
+                failure_kind="compile_rejection",
+                metrics={"compile_rejection": details},
+            )
+        measurement = self.evaluator.evaluate(config, Fidelity.SCREEN)
+        self._validate_measurement(
+            measurement,
+            config=config,
+            fidelity=Fidelity.SCREEN,
+            scope=request.scope,
+        )
+        return measurement
+
+    def _select_promotions(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        survivors: tuple[BranchSpace, ...],
+    ) -> tuple[ConfigSpec, ...]:
+        ranked = self._ranked_level1(state, backend, survivors)
+        if not ranked:
+            return ()
+        budget = plan.request.budget
+        target = max(
+            1,
+            len(survivors),
+            math.ceil(len(ranked) * budget.promote_fraction),
+        )
+        target = min(target, budget.enhanced_top_k, len(ranked))
+        configs: list[ConfigSpec] = []
+        for branch in survivors:
+            best = backend.best_feasible(state.studies[branch.branch_id], branch)
+            if best is not None:
+                configs.append(best.config)
+        configs.extend(completed.config for completed in ranked)
+        values = _unique_configs(configs)[:target]
+        return values
+
+    def _evaluate_promotions(
+        self,
+        request: SearchRequest,
+        promoted: tuple[ConfigSpec, ...],
+        *,
+        deadline: float,
+    ) -> tuple[tuple[ConfigSpec, TrialMeasurement], ...]:
+        values: list[tuple[ConfigSpec, TrialMeasurement]] = []
+        for config in promoted:
+            if time.monotonic() >= deadline:
+                break
+            try:
+                measurement = self.evaluator.evaluate(config, Fidelity.ENHANCED)
+                self._validate_measurement(
+                    measurement,
+                    config=config,
+                    fidelity=Fidelity.ENHANCED,
+                    scope=request.scope,
+                )
+            except Exception:
+                continue
+            values.append((config, measurement))
+        return tuple(values)
+
+    def _run_formal(
+        self,
+        request: SearchRequest,
+        candidates: tuple[ConfigSpec, ...],
+        *,
+        deadline: float,
+    ) -> tuple[
+        ConfigSpec | None,
+        TrialMeasurement | None,
+        tuple[ConfigSpec, ...],
+        tuple[TrialMeasurement, ...],
+        tuple[PairedMeasurement, ...],
+    ]:
+        incumbent = request.incumbent
+        if incumbent is None:
+            measured: list[tuple[ConfigSpec, TrialMeasurement]] = []
+            for config in candidates:
+                if time.monotonic() >= deadline:
+                    break
+                try:
+                    measurement = self.evaluator.evaluate(config, Fidelity.FORMAL)
+                    self._validate_measurement(
+                        measurement,
+                        config=config,
+                        fidelity=Fidelity.FORMAL,
+                        scope=request.scope,
+                    )
+                except Exception:
+                    continue
+                if measurement.feasible:
+                    measured.append((config, measurement))
+            if not measured:
+                return None, None, (), (), ()
+            selected = min(measured, key=lambda item: item[1].objective_ms)
+            return (
+                selected[0],
+                selected[1],
+                tuple(config for config, _ in measured),
+                tuple(measurement for _, measurement in measured),
+                (),
+            )
+
+        comparisons: list[PairedMeasurement] = []
+        formal_records: dict[str, tuple[ConfigSpec, TrialMeasurement]] = {}
+        incumbent_measurement: TrialMeasurement | None = None
+        qualifying: list[tuple[ConfigSpec, TrialMeasurement]] = []
+        for challenger in candidates:
+            if time.monotonic() >= deadline:
+                break
+            if challenger.config_id == incumbent.config_id:
+                if incumbent_measurement is None:
+                    try:
+                        incumbent_measurement = self.evaluator.evaluate(
+                            incumbent,
+                            Fidelity.FORMAL,
+                        )
+                        self._validate_measurement(
+                            incumbent_measurement,
+                            config=incumbent,
+                            fidelity=Fidelity.FORMAL,
+                            scope=request.scope,
+                        )
+                        formal_records[incumbent.config_id] = (
+                            incumbent,
+                            incumbent_measurement,
+                        )
+                    except Exception:
+                        incumbent_measurement = None
+                continue
+            try:
+                comparison = self.evaluator.compare(challenger, incumbent)
+                self._validate_measurement(
+                    comparison.incumbent,
+                    config=incumbent,
+                    fidelity=Fidelity.FORMAL,
+                    scope=request.scope,
+                )
+                self._validate_measurement(
+                    comparison.challenger,
+                    config=challenger,
+                    fidelity=Fidelity.FORMAL,
+                    scope=request.scope,
+                )
+            except Exception:
+                continue
+            comparisons.append(comparison)
+            incumbent_measurement = comparison.incumbent
+            formal_records.setdefault(
+                incumbent.config_id,
+                (incumbent, comparison.incumbent),
+            )
+            formal_records[challenger.config_id] = (
+                challenger,
+                comparison.challenger,
+            )
+            if (
+                comparison.challenger.feasible
+                and (
+                    not comparison.incumbent.feasible
+                    or (
+                        comparison.speedup > 1.0
+                        and comparison.exceeds_noise_margin
+                    )
+                )
+            ):
+                qualifying.append((challenger, comparison.challenger))
+        if qualifying:
+            selected = min(qualifying, key=lambda item: item[1].objective_ms)
+            return (
+                selected[0],
+                selected[1],
+                tuple(config for config, _ in formal_records.values()),
+                tuple(measurement for _, measurement in formal_records.values()),
+                tuple(comparisons),
+            )
+        if incumbent_measurement is None:
+            if time.monotonic() >= deadline:
+                return incumbent, None, (), (), tuple(comparisons)
+            try:
+                incumbent_measurement = self.evaluator.evaluate(
+                    incumbent,
+                    Fidelity.FORMAL,
+                )
+                self._validate_measurement(
+                    incumbent_measurement,
+                    config=incumbent,
+                    fidelity=Fidelity.FORMAL,
+                    scope=request.scope,
+                )
+                formal_records[incumbent.config_id] = (
+                    incumbent,
+                    incumbent_measurement,
+                )
+            except Exception:
+                return None, None, (), (), tuple(comparisons)
+        if not incumbent_measurement.feasible:
+            return (
+                None,
+                None,
+                tuple(config for config, _ in formal_records.values()),
+                tuple(measurement for _, measurement in formal_records.values()),
+                tuple(comparisons),
+            )
+        return (
+            incumbent,
+            incumbent_measurement,
+            tuple(config for config, _ in formal_records.values()),
+            tuple(measurement for _, measurement in formal_records.values()),
+            tuple(comparisons),
+        )
+
+    @staticmethod
+    def _validate_measurement(
+        measurement: TrialMeasurement,
+        *,
+        config: ConfigSpec,
+        fidelity: Fidelity,
+        scope: EvaluationScope,
+    ) -> None:
+        if not isinstance(measurement, TrialMeasurement):
+            raise TypeError("evaluator must return TrialMeasurement")
+        if measurement.config_id != config.config_id:
+            raise ValueError("evaluator returned a different config_id")
+        if measurement.fidelity is not fidelity:
+            raise ValueError("evaluator returned the wrong fidelity")
+        if measurement.scope is not scope:
+            raise ValueError("evaluator returned the wrong scope")
+
+    @staticmethod
+    def _ranked_level1(
+        state: _RunState,
+        backend: OptunaBackend,
+        branches: tuple[BranchSpace, ...],
+    ) -> list[CompletedTrial]:
+        values = [
+            completed
+            for branch in branches
+            for completed in backend.feasible_trials(
+                state.studies[branch.branch_id], branch
+            )
+        ]
+        values.sort(key=lambda item: item.measurement.objective_ms)
+        return values
+
+__all__ = [
+    "SearchBudget",
+    "SearchEngine",
+    "SearchPlan",
+    "SearchRequest",
+    "SearchResult",
+]

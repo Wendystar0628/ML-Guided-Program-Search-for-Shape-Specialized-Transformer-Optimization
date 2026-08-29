@@ -1,4 +1,4 @@
-"""Strict mixed-precision attention for measured long and short-sequence families."""
+"""Strict mixed-precision attention primitives for program search."""
 
 from __future__ import annotations
 
@@ -6,16 +6,8 @@ import torch
 import torch.nn.functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from ..shape_families import is_mixed_fp16_core_efficient_runtime_family
-
 MIXED_FP16_EFFICIENT_BACKEND = "mixed_fp16_efficient"
 MIXED_FP16_CUDNN_BACKEND = "mixed_fp16_cudnn"
-_MIN_SEQUENCE_LENGTH = 1024
-_SUPPORTED_HEAD_DIMS = frozenset({32, 64})
-_CUDNN_HEAD_DIM = 64
-_SHORT_SEQUENCE_LENGTH = 128
-_SHORT_BATCH_SIZES = frozenset({64, 128})
-_SHORT_MODEL_DIMS = frozenset({32, 128})
 _MIN_COMPUTE_CAPABILITY = (8, 0)
 
 
@@ -58,14 +50,7 @@ def can_use_mixed_fp16_efficient_attention(
     causal: bool = True,
     training: bool = False,
 ) -> bool:
-    """Return whether the measured long-sequence mixed path is eligible.
-
-    The guard describes CUDA-measured long, short-graph, and mixed-core
-    families. The mixed-core family also includes the measured wide and
-    extreme-batch requests.
-    Unsupported requests stay on the regular FP32 path instead of silently
-    changing precision.
-    """
+    """Return whether Efficient SDPA can be requested for these tensors."""
 
     if not _mixed_fp16_inputs_are_legal(
         query,
@@ -75,24 +60,6 @@ def can_use_mixed_fp16_efficient_attention(
         causal=causal,
         training=training,
     ):
-        return False
-    sequence_length = query.shape[-2]
-    head_dim = query.shape[-1]
-    long_family = (
-        sequence_length >= _MIN_SEQUENCE_LENGTH and head_dim in _SUPPORTED_HEAD_DIMS
-    )
-    short_family = (
-        query.shape[0] in _SHORT_BATCH_SIZES
-        and sequence_length == _SHORT_SEQUENCE_LENGTH
-        and query.shape[1] * head_dim in _SHORT_MODEL_DIMS
-    )
-    mixed_core_runtime_family = is_mixed_fp16_core_efficient_runtime_family(
-        batch_size=query.shape[0],
-        seq_len=sequence_length,
-        num_heads=query.shape[1],
-        head_dim=head_dim,
-    )
-    if not (long_family or short_family or mixed_core_runtime_family):
         return False
     if not torch.backends.cuda.mem_efficient_sdp_enabled():
         return False
@@ -108,7 +75,7 @@ def can_use_mixed_fp16_cudnn_attention(
     causal: bool = True,
     training: bool = False,
 ) -> bool:
-    """Return whether the strict long-sequence cuDNN path is eligible."""
+    """Return whether cuDNN SDPA can be requested for these tensors."""
 
     if not _mixed_fp16_inputs_are_legal(
         query,
@@ -118,8 +85,6 @@ def can_use_mixed_fp16_cudnn_attention(
         causal=causal,
         training=training,
     ):
-        return False
-    if query.shape[-2] < _MIN_SEQUENCE_LENGTH or query.shape[-1] != _CUDNN_HEAD_DIM:
         return False
     if not torch.backends.cuda.cudnn_sdp_enabled():
         return False
@@ -141,7 +106,7 @@ def mixed_fp16_efficient_attention(
     """Run forced Efficient SDPA on temporary FP16 Q/K/V tensors.
 
     The returned tensor preserves the caller's dtype. The regular mixed
-    attention policy therefore returns FP32, while the mixed-core policy keeps
+    attention backend therefore returns FP32, while the mixed-core backend keeps
     the attention and surrounding linear layers inside one FP16 autocast
     region. Forcing the backend makes a successful backend marker truthful;
     an unavailable kernel is reported as an error and never falls through.
@@ -207,7 +172,7 @@ def mixed_fp16_cudnn_attention(
     """Run forced cuDNN SDPA on FP16 Q/K/V tensors.
 
     The backend is forced so an unavailable cuDNN kernel fails explicitly;
-    this policy never falls through to Efficient, Flash, or Math SDPA.
+    this backend never falls through to Efficient, Flash, or Math SDPA.
     """
 
     if not can_use_mixed_fp16_cudnn_attention(

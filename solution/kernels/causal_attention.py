@@ -121,13 +121,22 @@ def reference_causal_attention(
     *,
     scale: float | None = None,
     causal: bool = True,
+    query_block_size: int = _REFERENCE_QUERY_BLOCK,
 ) -> torch.Tensor:
     """Run the official operation order without a full square causal mask.
 
     Query blocking limits the temporary score and mask extent to
-    ``[B, H, 128, S]`` and ``[128, S]`` while preserving the reference's QK,
-    scaling, FP32 softmax, probability cast, and PV boundaries.
+    ``[B, H, query_block_size, S]`` and ``[query_block_size, S]`` while
+    preserving the reference's QK, scaling, FP32 softmax, probability cast,
+    and PV boundaries.
     """
+
+    if (
+        isinstance(query_block_size, bool)
+        or not isinstance(query_block_size, int)
+        or query_block_size <= 0
+    ):
+        raise ValueError("query_block_size must be a positive integer")
 
     if not _attention_inputs_are_legal(
         query,
@@ -146,8 +155,8 @@ def reference_causal_attention(
         None if valid_token_mask is None else (~valid_token_mask)[:, None, None, :]
     )
     chunks: list[torch.Tensor] = []
-    for start in range(0, sequence_length, _REFERENCE_QUERY_BLOCK):
-        stop = min(start + _REFERENCE_QUERY_BLOCK, sequence_length)
+    for start in range(0, sequence_length, query_block_size):
+        stop = min(start + query_block_size, sequence_length)
         scores = torch.matmul(query[..., start:stop, :], key_transposed)
         scores.mul_(effective_scale)
         if causal:

@@ -1,8 +1,6 @@
-# Install the CUDA-enabled PyTorch build for the target platform separately.
-# Install a compatible Triton distribution when using environment_check.py.
+# Install CUDA-enabled PyTorch and a compatible Triton build for the target
+# platform separately.
 pytest==9.1.1
 ruff==0.16.4
-psutil==7.2.2
-
-# Required only by environment_check.py --check-extension.
+optuna==4.9.0
 ninja==1.13.0

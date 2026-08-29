@@ -1,1 +1,1 @@
-"""Immutable upstream benchmark snapshots used by the project runner."""
+"""Upstream benchmark semantics and official workload data."""

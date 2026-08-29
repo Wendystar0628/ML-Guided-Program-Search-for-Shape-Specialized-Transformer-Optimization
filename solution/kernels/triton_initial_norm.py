@@ -1,4 +1,4 @@
-"""FP32-input LayerNorm with direct FP16 output for one Shape 06 graph tile."""
+"""FP32-input LayerNorm with direct FP16 output for width-128 tensors."""
 
 from __future__ import annotations
 
@@ -14,10 +14,23 @@ except ImportError:  # pragma: no cover - exercised without the optional runtime
 
 
 TRITON_INITIAL_FP16_LAYER_NORM_BACKEND = "triton_initial_fp16_layer_norm"
-_TILE_BATCH = 128
-_TILE_SEQUENCE = 128
 _WIDTH = 128
 _BLOCK_ROWS = 2
+_NUM_WARPS = 2
+_SUPPORTED_BLOCK_ROWS = frozenset({1, 2, 4, 8})
+_SUPPORTED_NUM_WARPS = frozenset({1, 2, 4, 8})
+
+
+def _validate_launch_config(block_rows: int, num_warps: int) -> None:
+    if (
+        isinstance(block_rows, bool)
+        or not isinstance(block_rows, int)
+        or block_rows not in _SUPPORTED_BLOCK_ROWS
+        or isinstance(num_warps, bool)
+        or not isinstance(num_warps, int)
+        or num_warps not in _SUPPORTED_NUM_WARPS
+    ):
+        raise ValueError("unsupported Triton initial LayerNorm launch configuration")
 
 
 if triton is not None and tl is not None:
@@ -66,11 +79,7 @@ def can_use_triton_initial_fp16_layer_norm(
         return False
     if torch.is_grad_enabled() or value.device.type != "cuda":
         return False
-    if value.dtype != torch.float32 or tuple(value.shape) != (
-        _TILE_BATCH,
-        _TILE_SEQUENCE,
-        _WIDTH,
-    ):
+    if value.dtype != torch.float32 or value.ndim < 2 or value.shape[-1] != _WIDTH:
         return False
     if not value.is_contiguous():
         return False
@@ -87,9 +96,13 @@ def can_use_triton_initial_fp16_layer_norm(
 def triton_initial_fp16_layer_norm(
     value: torch.Tensor,
     layer_norm: nn.LayerNorm,
+    *,
+    block_rows: int = _BLOCK_ROWS,
+    num_warps: int = _NUM_WARPS,
 ) -> torch.Tensor:
     """Normalize one graph tile in FP32 and write the branch stream as FP16."""
 
+    _validate_launch_config(block_rows, num_warps)
     if not can_use_triton_initial_fp16_layer_norm(value, layer_norm):
         raise RuntimeError(
             "Triton initial FP16 LayerNorm is ineligible for the requested input"
@@ -100,7 +113,7 @@ def triton_initial_fp16_layer_norm(
     row_count = value.numel() // _WIDTH
     normalized = torch.empty_like(value, dtype=torch.float16)
     try:
-        _initial_fp16_layer_norm_kernel[(triton.cdiv(row_count, _BLOCK_ROWS),)](
+        _initial_fp16_layer_norm_kernel[(triton.cdiv(row_count, block_rows),)](
             value,
             layer_norm.weight,
             layer_norm.bias,
@@ -108,8 +121,8 @@ def triton_initial_fp16_layer_norm(
             row_count,
             eps=layer_norm.eps,
             width=_WIDTH,
-            block_rows=_BLOCK_ROWS,
-            num_warps=_BLOCK_ROWS,
+            block_rows=block_rows,
+            num_warps=num_warps,
         )
     except Exception as exc:
         raise RuntimeError("Triton initial FP16 LayerNorm execution failed") from exc

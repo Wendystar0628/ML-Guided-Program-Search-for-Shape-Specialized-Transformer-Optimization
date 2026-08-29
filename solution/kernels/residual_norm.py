@@ -1,4 +1,4 @@
-"""Lazy compiled residual-plus-LayerNorm primitive for an explicit policy."""
+"""Lazy compiled residual-plus-LayerNorm primitive."""
 
 from __future__ import annotations
 
@@ -142,9 +142,9 @@ def residual_layer_norm(
     """Run the requested compiled backend and report the observed backend.
 
     Compilation happens lazily during the runner's correctness or warmup
-    phase. This function belongs only to the explicit compiled policy, so an
+    phase. This function belongs only to the compiled backend, so an
     unavailable compiler or failed specialization is surfaced to the runner
-    instead of silently executing a different route.
+    instead of silently executing a different program.
     """
 
     if not can_use_residual_layer_norm(value, update, layer_norm):

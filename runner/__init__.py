@@ -1,1 +1,1 @@
-"""Benchmark, tuning, and hardware-aware routing package."""
+"""Direct GPU measurement, profiling, probing, and program search."""

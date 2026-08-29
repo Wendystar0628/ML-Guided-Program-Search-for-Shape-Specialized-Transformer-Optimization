@@ -1,4 +1,4 @@
-"""Mixed-precision residual-plus-LayerNorm for one Shape 06 graph tile."""
+"""Mixed-precision residual-plus-LayerNorm for width-128 tensors."""
 
 from __future__ import annotations
 
@@ -14,10 +14,25 @@ except ImportError:  # pragma: no cover - exercised without the optional runtime
 
 
 TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND = "triton_mixed_residual_layer_norm"
-_TILE_BATCH = 128
-_TILE_SEQUENCE = 128
 _WIDTH = 128
 _BLOCK_ROWS = 2
+_NUM_WARPS = 2
+_SUPPORTED_BLOCK_ROWS = frozenset({1, 2, 4, 8})
+_SUPPORTED_NUM_WARPS = frozenset({1, 2, 4, 8})
+
+
+def _validate_launch_config(block_rows: int, num_warps: int) -> None:
+    if (
+        isinstance(block_rows, bool)
+        or not isinstance(block_rows, int)
+        or block_rows not in _SUPPORTED_BLOCK_ROWS
+        or isinstance(num_warps, bool)
+        or not isinstance(num_warps, int)
+        or num_warps not in _SUPPORTED_NUM_WARPS
+    ):
+        raise ValueError(
+            "unsupported Triton mixed residual LayerNorm launch configuration"
+        )
 
 
 if triton is not None and tl is not None:
@@ -66,14 +81,6 @@ def triton_mixed_residual_layer_norm_available() -> bool:
     return triton is not None and tl is not None
 
 
-def _is_shape06_graph_tile(value: torch.Tensor) -> bool:
-    return value.ndim == 3 and tuple(value.shape) == (
-        _TILE_BATCH,
-        _TILE_SEQUENCE,
-        _WIDTH,
-    )
-
-
 def can_use_triton_mixed_residual_layer_norm(
     value: torch.Tensor,
     update: torch.Tensor,
@@ -89,7 +96,7 @@ def can_use_triton_mixed_residual_layer_norm(
         return False
     if value.shape != update.shape or value.device != update.device:
         return False
-    if not _is_shape06_graph_tile(value):
+    if value.ndim < 2 or value.shape[-1] != _WIDTH:
         return False
     if not value.is_contiguous() or not update.is_contiguous():
         return False
@@ -109,9 +116,12 @@ def triton_mixed_residual_layer_norm(
     layer_norm: nn.LayerNorm,
     *,
     final_boundary: bool,
+    block_rows: int = _BLOCK_ROWS,
+    num_warps: int = _NUM_WARPS,
 ) -> tuple[torch.Tensor, torch.Tensor, str]:
     """Keep residuals in FP32 while feeding intermediate branches with FP16."""
 
+    _validate_launch_config(block_rows, num_warps)
     if not can_use_triton_mixed_residual_layer_norm(value, update, layer_norm):
         raise RuntimeError(
             "Triton mixed residual LayerNorm is ineligible for the requested inputs"
@@ -126,7 +136,7 @@ def triton_mixed_residual_layer_norm(
         dtype=torch.float32 if final_boundary else torch.float16,
     )
     try:
-        _mixed_residual_layer_norm_kernel[(triton.cdiv(row_count, _BLOCK_ROWS),)](
+        _mixed_residual_layer_norm_kernel[(triton.cdiv(row_count, block_rows),)](
             value,
             update,
             layer_norm.weight,
@@ -136,9 +146,9 @@ def triton_mixed_residual_layer_norm(
             row_count,
             eps=layer_norm.eps,
             width=_WIDTH,
-            block_rows=_BLOCK_ROWS,
+            block_rows=block_rows,
             final_boundary=final_boundary,
-            num_warps=_BLOCK_ROWS,
+            num_warps=num_warps,
         )
     except Exception as exc:
         raise RuntimeError("Triton mixed residual LayerNorm execution failed") from exc

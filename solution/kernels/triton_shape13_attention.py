@@ -6,8 +6,6 @@ import math
 
 import torch
 
-from ..shape_families import is_shape13_triton_attention_tensor_family
-
 try:
     import triton
     import triton.language as tl
@@ -28,7 +26,44 @@ _BLOCK_M = 64
 _BLOCK_N = 64
 _NUM_WARPS = 4
 _NUM_STAGES = 2
+_SUPPORTED_BLOCK_SIZES = frozenset({16, 32, 64, 128})
+_SUPPORTED_NUM_WARPS = frozenset({2, 4, 8})
+_SUPPORTED_NUM_STAGES = frozenset({1, 2, 3, 4})
 _MIN_COMPUTE_CAPABILITY = (8, 0)
+
+
+def _launch_config_is_valid(
+    block_m: int,
+    block_n: int,
+    num_warps: int,
+    num_stages: int,
+) -> bool:
+    values = (block_m, block_n, num_warps, num_stages)
+    return bool(
+        not any(isinstance(value, bool) for value in values)
+        and all(isinstance(value, int) for value in values)
+        and block_m in _SUPPORTED_BLOCK_SIZES
+        and block_n in _SUPPORTED_BLOCK_SIZES
+        and num_warps in _SUPPORTED_NUM_WARPS
+        and num_stages in _SUPPORTED_NUM_STAGES
+        and _SEQUENCE_LENGTH % block_m == 0
+        and _SEQUENCE_LENGTH % block_n == 0
+        and block_m % block_n == 0
+    )
+
+
+def _validate_launch_config(
+    block_m: int,
+    block_n: int,
+    num_warps: int,
+    num_stages: int,
+) -> None:
+    if not _launch_config_is_valid(block_m, block_n, num_warps, num_stages):
+        raise ValueError(
+            "invalid Shape 13 Triton launch configuration; block sizes must be "
+            "supported divisors with block_m divisible by block_n, and warps/stages "
+            "must use supported values"
+        )
 
 
 if triton is not None and tl is not None:
@@ -127,8 +162,9 @@ if triton is not None and tl is not None:
         tl.static_assert(NUM_HEADS == 4)
         tl.static_assert(SEQ_LEN == 1024)
         tl.static_assert(HEAD_DIM == 32)
-        tl.static_assert(BLOCK_M == 64)
-        tl.static_assert(BLOCK_N == 64)
+        tl.static_assert(SEQ_LEN % BLOCK_M == 0)
+        tl.static_assert(SEQ_LEN % BLOCK_N == 0)
+        tl.static_assert(BLOCK_M % BLOCK_N == 0)
 
         start_m = tl.program_id(axis=0)
         batch_head = tl.program_id(axis=1)
@@ -244,6 +280,10 @@ if (
         key: torch.Tensor,
         value: torch.Tensor,
         scale: float,
+        block_m: int,
+        block_n: int,
+        num_warps: int,
+        num_stages: int,
     ) -> torch.Tensor:
         output = torch.empty(
             query.shape,
@@ -251,7 +291,7 @@ if (
             device=query.device,
         )
         grid = (
-            _SEQUENCE_LENGTH // _BLOCK_M,
+            _SEQUENCE_LENGTH // block_m,
             _BATCH_SIZE * _NUM_HEADS,
         )
         wrap_triton(_shape13_causal_attention_kernel)[grid](
@@ -267,10 +307,10 @@ if (
             NUM_HEADS=_NUM_HEADS,
             SEQ_LEN=_SEQUENCE_LENGTH,
             HEAD_DIM=_HEAD_DIM,
-            BLOCK_M=_BLOCK_M,
-            BLOCK_N=_BLOCK_N,
-            num_warps=_NUM_WARPS,
-            num_stages=_NUM_STAGES,
+            BLOCK_M=block_m,
+            BLOCK_N=block_n,
+            num_warps=num_warps,
+            num_stages=num_stages,
         )
         return output
 
@@ -281,8 +321,12 @@ else:
         key: torch.Tensor,
         value: torch.Tensor,
         scale: float,
+        block_m: int,
+        block_n: int,
+        num_warps: int,
+        num_stages: int,
     ) -> torch.Tensor:
-        del query, key, value, scale
+        del query, key, value, scale, block_m, block_n, num_warps, num_stages
         raise RuntimeError("Triton Shape 13 attention is unavailable")
 
 
@@ -302,10 +346,16 @@ def can_use_triton_shape13_causal_attention(
     *,
     causal: bool = True,
     training: bool = False,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
 ) -> bool:
     """Validate the exact tensor contract used by the measured specialization."""
 
     if not triton_shape13_causal_attention_available():
+        return False
+    if not _launch_config_is_valid(block_m, block_n, num_warps, num_stages):
         return False
     if training or torch.is_grad_enabled() or not causal:
         return False
@@ -313,11 +363,11 @@ def can_use_triton_shape13_causal_attention(
         return False
     if query.ndim != 4:
         return False
-    if not is_shape13_triton_attention_tensor_family(
-        batch_size=query.shape[0],
-        seq_len=query.shape[2],
-        num_heads=query.shape[1],
-        head_dim=query.shape[3],
+    if tuple(query.shape) != (
+        _BATCH_SIZE,
+        _NUM_HEADS,
+        _SEQUENCE_LENGTH,
+        _HEAD_DIM,
     ):
         return False
     if query.shape != key.shape or query.shape != value.shape:
@@ -341,9 +391,14 @@ def prevalidated_triton_shape13_causal_attention(
     value: torch.Tensor,
     *,
     scale: float | None = None,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
 ) -> tuple[torch.Tensor, str]:
     """Run the immutable-plan specialization without re-evaluating Python guards."""
 
+    _validate_launch_config(block_m, block_n, num_warps, num_stages)
     resolved_scale = 1.0 / math.sqrt(_HEAD_DIM) if scale is None else float(scale)
     try:
         output = _shape13_causal_attention_op(
@@ -351,6 +406,10 @@ def prevalidated_triton_shape13_causal_attention(
             key,
             value,
             resolved_scale,
+            block_m,
+            block_n,
+            num_warps,
+            num_stages,
         )
     except Exception as exc:
         raise RuntimeError("Triton Shape 13 attention execution failed") from exc
@@ -366,6 +425,10 @@ def triton_shape13_causal_attention(
     scale: float | None = None,
     causal: bool = True,
     training: bool = False,
+    block_m: int = _BLOCK_M,
+    block_n: int = _BLOCK_N,
+    num_warps: int = _NUM_WARPS,
+    num_stages: int = _NUM_STAGES,
 ) -> tuple[torch.Tensor, str]:
     """Run the specialization with an explicit failure instead of fallback."""
 
@@ -376,6 +439,10 @@ def triton_shape13_causal_attention(
         valid_token_mask,
         causal=causal,
         training=training,
+        block_m=block_m,
+        block_n=block_n,
+        num_warps=num_warps,
+        num_stages=num_stages,
     ):
         raise RuntimeError(
             "Triton Shape 13 attention is ineligible for the requested inputs"
@@ -385,6 +452,10 @@ def triton_shape13_causal_attention(
         key,
         value,
         scale=scale,
+        block_m=block_m,
+        block_n=block_n,
+        num_warps=num_warps,
+        num_stages=num_stages,
     )
 
 

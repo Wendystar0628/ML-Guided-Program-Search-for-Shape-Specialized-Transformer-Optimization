@@ -70,7 +70,7 @@ def test_mixed_attention_executes_the_forced_backend_and_meets_comparator() -> N
             value,
             torch.ones(2, 1024, dtype=torch.bool, device="cuda"),
         )
-        assert not can_use_mixed_fp16_efficient_attention(
+        assert can_use_mixed_fp16_efficient_attention(
             query[..., :512, :],
             key[..., :512, :],
             value[..., :512, :],
@@ -164,12 +164,12 @@ def test_mixed_cudnn_attention_is_forced_observed_and_comparator_safe() -> None:
     assert actual.dtype == torch.float32
 
     with torch.inference_mode():
-        assert not can_use_mixed_fp16_cudnn_attention(
+        assert can_use_mixed_fp16_cudnn_attention(
             query[..., :512, :],
             key[..., :512, :],
             value[..., :512, :],
         )
-        assert not can_use_mixed_fp16_cudnn_attention(
+        assert can_use_mixed_fp16_cudnn_attention(
             query[..., :32],
             key[..., :32],
             value[..., :32],
