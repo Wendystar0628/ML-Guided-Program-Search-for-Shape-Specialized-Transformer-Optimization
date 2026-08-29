@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from autotune.engine import SearchResult
+from autotune.engine import SearchEngine, SearchResult
 from autotune.evaluator import (
+    PROMOTION_BLOCK_WIN_RATIO,
     ConstraintVector,
     EvaluationScope,
     Fidelity,
     PairedMeasurement,
     TrialMeasurement,
 )
-from autotune.service import MIN_PROMOTION_SPEEDUP, BenchmarkEvaluator
 from deployment.registry import (
     EnvironmentFingerprint,
     ShapeFingerprint,
@@ -30,6 +30,13 @@ def _graph_config() -> ConfigSpec:
     return ConfigSpec(
         program=portable_config().program,
         schedule=ScheduleConfig(runtime=RuntimeBackend.CUDA_GRAPH),
+    )
+
+
+def _compiled_config() -> ConfigSpec:
+    return ConfigSpec(
+        program=portable_config().program,
+        schedule=ScheduleConfig(runtime=RuntimeBackend.COMPILED_FORWARD),
     )
 
 
@@ -67,79 +74,77 @@ def _measurement(
     )
 
 
-class _FixedEvaluator(BenchmarkEvaluator):
-    def __init__(self, measurements: dict[str, TrialMeasurement]) -> None:
-        self.measurements = measurements
-
-    def evaluate(self, config: ConfigSpec, fidelity: Fidelity) -> TrialMeasurement:
-        assert fidelity is Fidelity.FORMAL
-        return self.measurements[config.config_id]
-
-    def compare(
-        self,
-        challenger: ConfigSpec,
-        incumbent: ConfigSpec,
-    ) -> PairedMeasurement:
-        incumbent_result = self.evaluate(incumbent, Fidelity.FORMAL)
-        challenger_result = self.evaluate(challenger, Fidelity.FORMAL)
-        speedup = incumbent_result.objective_ms / challenger_result.objective_ms
-        return PairedMeasurement(
-            incumbent=incumbent_result,
-            challenger=challenger_result,
-            paired_ratios=(speedup,),
-            exceeds_noise_margin=speedup >= MIN_PROMOTION_SPEEDUP,
-        )
-
-
-def test_promotion_requires_two_percent_formal_speedup() -> None:
+def test_deployment_uses_the_single_paired_block_rule() -> None:
     incumbent = portable_config()
     challenger = _graph_config()
+    incumbent_measurement = _measurement(incumbent, 101.0)
+    challenger_measurement = _measurement(challenger, 100.0)
+    comparison = PairedMeasurement(
+        incumbent=incumbent_measurement,
+        challenger=challenger_measurement,
+        paired_ratios=(PROMOTION_BLOCK_WIN_RATIO,) * 10 + (1.0,) * 3,
+    )
+    result = SearchResult(
+        incumbent_config=incumbent,
+        selected_config=challenger,
+        selected_measurement=challenger_measurement,
+        branch_count=1,
+        completed_level1=1,
+        enhanced_configs=(challenger,),
+        locked_challenger=challenger,
+        formal_challenger_measurement=challenger_measurement,
+        formal_comparison=comparison,
+        stop_reason="completed",
+    )
 
-    below = _FixedEvaluator(
-        {
-            incumbent.config_id: _measurement(incumbent, 101.99),
-            challenger.config_id: _measurement(challenger, 100.0),
-        }
-    ).compare(challenger, incumbent)
-    boundary = _FixedEvaluator(
-        {
-            incumbent.config_id: _measurement(incumbent, 102.0),
-            challenger.config_id: _measurement(challenger, 100.0),
-        }
-    ).compare(challenger, incumbent)
+    assert comparison.promotes
+    assert result.deployment_approved
 
-    assert MIN_PROMOTION_SPEEDUP == 1.02
-    assert not below.exceeds_noise_margin
-    assert boundary.exceeds_noise_margin
+
+def test_formal_locks_only_the_fastest_feasible_enhanced_challenger() -> None:
+    incumbent = portable_config()
+    slower = _graph_config()
+    faster = _compiled_config()
+    enhanced = (
+        (incumbent, _measurement(incumbent, 0.5, fidelity=Fidelity.ENHANCED)),
+        (slower, _measurement(slower, 2.0, fidelity=Fidelity.ENHANCED)),
+        (faster, _measurement(faster, 1.0, fidelity=Fidelity.ENHANCED)),
+    )
+
+    locked = SearchEngine._lock_challenger(enhanced, incumbent=incumbent)
+
+    assert locked == faster
 
 
 def test_only_completed_formal_selection_is_deployable() -> None:
     config = portable_config()
     interrupted = SearchResult(
+        incumbent_config=config,
         selected_config=config,
         selected_measurement=_measurement(config, 1.0, fidelity=Fidelity.SCREEN),
         branch_count=1,
         completed_level1=1,
-        promoted_configs=(),
-        formal_configs=(),
-        formal_measurements=(),
-        paired_comparisons=(),
+        enhanced_configs=(),
+        locked_challenger=None,
+        formal_challenger_measurement=None,
+        formal_comparison=None,
         stop_reason="interrupted",
     )
     completed = SearchResult(
+        incumbent_config=None,
         selected_config=config,
         selected_measurement=_measurement(config, 1.0),
         branch_count=1,
         completed_level1=1,
-        promoted_configs=(config,),
-        formal_configs=(config,),
-        formal_measurements=(_measurement(config, 1.0),),
-        paired_comparisons=(),
+        enhanced_configs=(config,),
+        locked_challenger=config,
+        formal_challenger_measurement=_measurement(config, 1.0),
+        formal_comparison=None,
         stop_reason="completed",
     )
 
-    assert not interrupted.has_deployable_selection
-    assert completed.has_deployable_selection
+    assert not interrupted.deployment_approved
+    assert completed.deployment_approved
 
 
 def test_deployment_key_separates_input_variants(tmp_path: Path) -> None:

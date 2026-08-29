@@ -8,6 +8,9 @@ from .engine import (
     SearchResult,
 )
 from .evaluator import (
+    PROMOTION_BLOCK_COUNT,
+    PROMOTION_BLOCK_WIN_RATIO,
+    PROMOTION_REQUIRED_WINS,
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
     ConstraintVector,
@@ -29,6 +32,9 @@ from .space import (
 from .storage import SearchStorage, StudyIdentity
 
 __all__ = [
+    "PROMOTION_BLOCK_COUNT",
+    "PROMOTION_BLOCK_WIN_RATIO",
+    "PROMOTION_REQUIRED_WINS",
     "RESIDENT_PROTOCOLS",
     "STREAMED_PROTOCOLS",
     "BranchSpace",

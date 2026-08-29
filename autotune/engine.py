@@ -41,7 +41,6 @@ class SearchBudget:
     survivor_count: int = 3
     promote_fraction: float = 0.2
     enhanced_top_k: int = 8
-    formal_top_k: int = 3
     local_top_k: int = 3
 
     def __post_init__(self) -> None:
@@ -62,7 +61,6 @@ class SearchBudget:
             "min_trials_per_branch",
             "survivor_count",
             "enhanced_top_k",
-            "formal_top_k",
             "local_top_k",
             "max_structure_branches",
         ):
@@ -123,28 +121,36 @@ class SearchPlan:
 class SearchResult:
     """Compact outcome; detailed Level-1 trials remain in Optuna SQLite."""
 
+    incumbent_config: ConfigSpec | None
     selected_config: ConfigSpec | None
     selected_measurement: TrialMeasurement | None
     branch_count: int
     completed_level1: int
-    promoted_configs: tuple[ConfigSpec, ...]
-    formal_configs: tuple[ConfigSpec, ...]
-    formal_measurements: tuple[TrialMeasurement, ...]
-    paired_comparisons: tuple[PairedMeasurement, ...]
+    enhanced_configs: tuple[ConfigSpec, ...]
+    locked_challenger: ConfigSpec | None
+    formal_challenger_measurement: TrialMeasurement | None
+    formal_comparison: PairedMeasurement | None
     stop_reason: str
 
     def __post_init__(self) -> None:
-        if len(self.formal_configs) != len(self.formal_measurements):
-            raise ValueError("formal configs and measurements must be aligned")
-        if any(
-            config.config_id != measurement.config_id
-            for config, measurement in zip(
-                self.formal_configs,
-                self.formal_measurements,
-                strict=True,
-            )
-        ):
-            raise ValueError("formal config and measurement identities disagree")
+        formal = self.formal_challenger_measurement
+        if formal is not None:
+            if self.locked_challenger is None:
+                raise ValueError("formal measurement requires a locked challenger")
+            if formal.config_id != self.locked_challenger.config_id:
+                raise ValueError("formal challenger identity disagrees")
+            if formal.fidelity is not Fidelity.FORMAL:
+                raise ValueError("formal challenger must use Formal fidelity")
+        comparison = self.formal_comparison
+        if comparison is not None:
+            if self.incumbent_config is None or self.locked_challenger is None:
+                raise ValueError("paired comparison requires incumbent and challenger")
+            if comparison.incumbent.config_id != self.incumbent_config.config_id:
+                raise ValueError("paired incumbent identity disagrees")
+            if comparison.challenger.config_id != self.locked_challenger.config_id:
+                raise ValueError("paired challenger identity disagrees")
+            if formal != comparison.challenger:
+                raise ValueError("formal challenger measurement disagrees")
         if self.selected_measurement is not None:
             if self.selected_config is None:
                 raise ValueError("selected measurement requires a selected config")
@@ -152,15 +158,21 @@ class SearchResult:
                 raise ValueError("selected config and measurement identities disagree")
 
     @property
-    def has_deployable_selection(self) -> bool:
-        measurement = self.selected_measurement
-        return (
-            self.stop_reason == "completed"
-            and self.selected_config is not None
-            and measurement is not None
-            and measurement.fidelity is Fidelity.FORMAL
-            and measurement.feasible
-        )
+    def deployment_approved(self) -> bool:
+        challenger = self.locked_challenger
+        measurement = self.formal_challenger_measurement
+        if (
+            self.stop_reason != "completed"
+            or challenger is None
+            or measurement is None
+            or not measurement.feasible
+            or self.selected_config != challenger
+        ):
+            return False
+        if self.incumbent_config is None:
+            return self.formal_comparison is None
+        comparison = self.formal_comparison
+        return comparison is not None and comparison.promotes
 
 
 @dataclass(slots=True)
@@ -313,10 +325,9 @@ class SearchEngine:
         final_deadline = start + float(budget.max_seconds)
         promoted: tuple[ConfigSpec, ...] = ()
         enhanced: tuple[tuple[ConfigSpec, TrialMeasurement], ...] = ()
-        formal_candidates: tuple[ConfigSpec, ...] = ()
-        formal_configs: tuple[ConfigSpec, ...] = ()
-        formal_measurements: tuple[TrialMeasurement, ...] = ()
-        comparisons: tuple[PairedMeasurement, ...] = ()
+        locked_challenger: ConfigSpec | None = None
+        formal_challenger_measurement: TrialMeasurement | None = None
+        formal_comparison: PairedMeasurement | None = None
 
         try:
             self._enqueue_initial_configs(plan, run_state, backend)
@@ -357,29 +368,28 @@ class SearchEngine:
                     promoted,
                     deadline=enhanced_deadline,
                 )
-                formal_candidates = tuple(
-                    config
-                    for config, measurement in sorted(
-                        enhanced,
-                        key=lambda item: item[1].objective_ms,
-                    )
-                    if measurement.feasible
-                )[: budget.formal_top_k]
+                locked_challenger = self._lock_challenger(
+                    enhanced,
+                    incumbent=request.incumbent,
+                )
                 (
                     selected_config,
                     selected_measurement,
-                    formal_configs,
-                    formal_measurements,
-                    comparisons,
+                    formal_challenger_measurement,
+                    formal_comparison,
                 ) = self._run_formal(
                     request,
-                    formal_candidates,
+                    locked_challenger,
                     deadline=final_deadline,
                 )
                 stop_reason = (
                     "no_feasible_screen"
                     if not survivors
                     else "no_feasible_enhanced"
+                    if locked_challenger is None
+                    else "formal_not_run"
+                    if formal_challenger_measurement is None
+                    else "no_feasible_formal"
                     if selected_config is None
                     else "completed"
                 )
@@ -397,14 +407,15 @@ class SearchEngine:
             for branch in plan.search_space.branches
         )
         return SearchResult(
+            incumbent_config=request.incumbent,
             selected_config=selected_config,
             selected_measurement=selected_measurement,
             branch_count=len(plan.search_space.branches),
             completed_level1=completed_level1,
-            promoted_configs=promoted,
-            formal_configs=formal_configs,
-            formal_measurements=formal_measurements,
-            paired_comparisons=comparisons,
+            enhanced_configs=promoted,
+            locked_challenger=locked_challenger,
+            formal_challenger_measurement=formal_challenger_measurement,
+            formal_comparison=formal_comparison,
             stop_reason=stop_reason,
         )
 
@@ -732,138 +743,79 @@ class SearchEngine:
             values.append((config, measurement))
         return tuple(values)
 
+    @staticmethod
+    def _lock_challenger(
+        enhanced: tuple[tuple[ConfigSpec, TrialMeasurement], ...],
+        *,
+        incumbent: ConfigSpec | None,
+    ) -> ConfigSpec | None:
+        """Lock the fastest feasible Enhanced challenger before Formal testing."""
+
+        incumbent_id = None if incumbent is None else incumbent.config_id
+        eligible = (
+            (config, measurement)
+            for config, measurement in enhanced
+            if measurement.feasible and config.config_id != incumbent_id
+        )
+        winner = min(eligible, key=lambda item: item[1].objective_ms, default=None)
+        return None if winner is None else winner[0]
+
     def _run_formal(
         self,
         request: SearchRequest,
-        candidates: tuple[ConfigSpec, ...],
+        challenger: ConfigSpec | None,
         *,
         deadline: float,
     ) -> tuple[
         ConfigSpec | None,
         TrialMeasurement | None,
-        tuple[ConfigSpec, ...],
-        tuple[TrialMeasurement, ...],
-        tuple[PairedMeasurement, ...],
+        TrialMeasurement | None,
+        PairedMeasurement | None,
     ]:
         incumbent = request.incumbent
-        if incumbent is None:
-            measured: list[tuple[ConfigSpec, TrialMeasurement]] = []
-            for config in candidates:
-                if time.monotonic() >= deadline:
-                    break
-                measurement = self.evaluator.evaluate(config, Fidelity.FORMAL)
-                self._validate_measurement(
-                    measurement,
-                    config=config,
-                    fidelity=Fidelity.FORMAL,
-                    scope=request.scope,
-                )
-                if measurement.feasible:
-                    measured.append((config, measurement))
-            if not measured:
-                return None, None, (), (), ()
-            selected = min(measured, key=lambda item: item[1].objective_ms)
-            return (
-                selected[0],
-                selected[1],
-                tuple(config for config, _ in measured),
-                tuple(measurement for _, measurement in measured),
-                (),
-            )
+        if challenger is None or time.monotonic() >= deadline:
+            return incumbent, None, None, None
 
-        comparisons: list[PairedMeasurement] = []
-        formal_records: dict[str, tuple[ConfigSpec, TrialMeasurement]] = {}
-        incumbent_measurement: TrialMeasurement | None = None
-        qualifying: list[tuple[ConfigSpec, TrialMeasurement]] = []
-        for challenger in candidates:
-            if time.monotonic() >= deadline:
-                break
-            if challenger.config_id == incumbent.config_id:
-                if incumbent_measurement is None:
-                    incumbent_measurement = self.evaluator.evaluate(
-                        incumbent,
-                        Fidelity.FORMAL,
-                    )
-                    self._validate_measurement(
-                        incumbent_measurement,
-                        config=incumbent,
-                        fidelity=Fidelity.FORMAL,
-                        scope=request.scope,
-                    )
-                    formal_records[incumbent.config_id] = (
-                        incumbent,
-                        incumbent_measurement,
-                    )
-                continue
-            comparison = self.evaluator.compare(challenger, incumbent)
+        if incumbent is None:
+            measurement = self.evaluator.evaluate(challenger, Fidelity.FORMAL)
             self._validate_measurement(
-                comparison.incumbent,
-                config=incumbent,
-                fidelity=Fidelity.FORMAL,
-                scope=request.scope,
-            )
-            self._validate_measurement(
-                comparison.challenger,
+                measurement,
                 config=challenger,
                 fidelity=Fidelity.FORMAL,
                 scope=request.scope,
             )
-            comparisons.append(comparison)
-            incumbent_measurement = comparison.incumbent
-            formal_records.setdefault(
-                incumbent.config_id,
-                (incumbent, comparison.incumbent),
-            )
-            formal_records[challenger.config_id] = (
+            if measurement.feasible:
+                return challenger, measurement, measurement, None
+            return None, None, measurement, None
+
+        comparison = self.evaluator.compare(challenger, incumbent)
+        self._validate_measurement(
+            comparison.incumbent,
+            config=incumbent,
+            fidelity=Fidelity.FORMAL,
+            scope=request.scope,
+        )
+        self._validate_measurement(
+            comparison.challenger,
+            config=challenger,
+            fidelity=Fidelity.FORMAL,
+            scope=request.scope,
+        )
+        if comparison.promotes:
+            return (
                 challenger,
                 comparison.challenger,
+                comparison.challenger,
+                comparison,
             )
-            if comparison.challenger.feasible and (
-                not comparison.incumbent.feasible
-                or (comparison.speedup > 1.0 and comparison.exceeds_noise_margin)
-            ):
-                qualifying.append((challenger, comparison.challenger))
-        if qualifying:
-            selected = min(qualifying, key=lambda item: item[1].objective_ms)
+        if comparison.incumbent.feasible:
             return (
-                selected[0],
-                selected[1],
-                tuple(config for config, _ in formal_records.values()),
-                tuple(measurement for _, measurement in formal_records.values()),
-                tuple(comparisons),
-            )
-        if incumbent_measurement is None:
-            if time.monotonic() >= deadline:
-                return incumbent, None, (), (), tuple(comparisons)
-            incumbent_measurement = self.evaluator.evaluate(
                 incumbent,
-                Fidelity.FORMAL,
+                comparison.incumbent,
+                comparison.challenger,
+                comparison,
             )
-            self._validate_measurement(
-                incumbent_measurement,
-                config=incumbent,
-                fidelity=Fidelity.FORMAL,
-                scope=request.scope,
-            )
-            formal_records[incumbent.config_id] = (
-                incumbent,
-                incumbent_measurement,
-            )
-        if not incumbent_measurement.feasible:
-            return (
-                None,
-                None,
-                tuple(config for config, _ in formal_records.values()),
-                tuple(measurement for _, measurement in formal_records.values()),
-                tuple(comparisons),
-            )
-        return (
-            incumbent,
-            incumbent_measurement,
-            tuple(config for config, _ in formal_records.values()),
-            tuple(measurement for _, measurement in formal_records.values()),
-            tuple(comparisons),
-        )
+        return None, None, comparison.challenger, comparison
 
     @staticmethod
     def _validate_measurement(

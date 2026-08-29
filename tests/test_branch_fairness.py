@@ -316,7 +316,7 @@ def test_time_limited_partial_screen_has_no_winner(
     assert result.stop_reason == "insufficient_screen_budget"
     assert result.selected_config is None
     assert result.selected_measurement is None
-    assert not result.has_deployable_selection
+    assert not result.deployment_approved
 
 
 def test_tpe_startup_is_dynamic_and_uses_an_absolute_history_threshold(
@@ -431,6 +431,6 @@ def test_unknown_benchmark_errors_propagate_after_screening(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="benchmark infrastructure failed"):
         engine._run_formal(
             request,
-            (middle,),
+            middle,
             deadline=time.monotonic() + 30.0,
         )

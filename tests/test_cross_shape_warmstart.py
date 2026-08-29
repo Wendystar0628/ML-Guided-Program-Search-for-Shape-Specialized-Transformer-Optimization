@@ -8,6 +8,7 @@ from autotune.evaluator import (
     ConstraintVector,
     EvaluationScope,
     Fidelity,
+    PairedMeasurement,
     TrialMeasurement,
 )
 from benchmarking.protocols import TransformerShape
@@ -56,17 +57,32 @@ def _measurement(config: ConfigSpec, latency_ms: float) -> TrialMeasurement:
     )
 
 
-def _completed_result(config: ConfigSpec, latency_ms: float) -> SearchResult:
+def _completed_result(
+    config: ConfigSpec,
+    latency_ms: float,
+    *,
+    incumbent: ConfigSpec | None = None,
+) -> SearchResult:
     measurement = _measurement(config, latency_ms)
+    comparison = (
+        None
+        if incumbent is None
+        else PairedMeasurement(
+            incumbent=_measurement(incumbent, latency_ms * 1.01),
+            challenger=measurement,
+            paired_ratios=(1.01,) * 10 + (1.0,) * 3,
+        )
+    )
     return SearchResult(
+        incumbent_config=incumbent,
         selected_config=config,
         selected_measurement=measurement,
         branch_count=1,
         completed_level1=1,
-        promoted_configs=(config,),
-        formal_configs=(config,),
-        formal_measurements=(measurement,),
-        paired_comparisons=(),
+        enhanced_configs=(config,),
+        locked_challenger=config,
+        formal_challenger_measurement=measurement,
+        formal_comparison=comparison,
         stop_reason="completed",
     )
 
@@ -98,28 +114,30 @@ class _AcceptingSearchSpace:
         return object()
 
 
-def test_service_combines_registry_family_and_earlier_request_winner(
+def test_service_combines_registry_family_and_earlier_approved_winner(
     monkeypatch,
 ) -> None:
     winner = _graph_config()
-    registry_config = portable_config()
-    formal_config = ConfigSpec(
+    registry_config = ConfigSpec(
         program=portable_config().program,
         schedule=ScheduleConfig(runtime=RuntimeBackend.COMPILED_FORWARD),
     )
     winner_measurement = _measurement(winner, 1.0)
+    incumbent = portable_config()
     first_result = SearchResult(
+        incumbent_config=incumbent,
         selected_config=winner,
         selected_measurement=winner_measurement,
         branch_count=2,
         completed_level1=2,
-        promoted_configs=(winner, formal_config),
-        formal_configs=(winner, formal_config),
-        formal_measurements=(
-            winner_measurement,
-            _measurement(formal_config, 1.1),
+        enhanced_configs=(winner, registry_config),
+        locked_challenger=winner,
+        formal_challenger_measurement=winner_measurement,
+        formal_comparison=PairedMeasurement(
+            incumbent=_measurement(incumbent, 1.01),
+            challenger=winner_measurement,
+            paired_ratios=(1.01,) * 10 + (1.0,) * 3,
         ),
-        paired_comparisons=(),
         stop_reason="completed",
     )
     shapes = {
@@ -152,14 +170,9 @@ def test_service_combines_registry_family_and_earlier_request_winner(
             observed_requests.append(request)
             if request.case_id == "first":
                 return first_result
-            return _completed_result(winner, 1.0)
+            return _completed_result(winner, 1.0, incumbent=request.incumbent)
 
     monkeypatch.setattr(service.torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        service.torch.cuda,
-        "get_device_properties",
-        lambda device: SimpleNamespace(total_memory=1_000_000),
-    )
     monkeypatch.setattr(
         service.EnvironmentFingerprint,
         "detect",
@@ -200,7 +213,6 @@ def test_service_combines_registry_family_and_earlier_request_winner(
     assert observed_requests[1].warm_starts == (
         registry_config,
         winner,
-        formal_config,
     )
     assert observed_requests[0].case_id == "first"
     assert observed_requests[1].case_id == "second"

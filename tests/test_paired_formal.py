@@ -4,6 +4,11 @@ from torch import nn
 
 import benchmarking.measure as measure_module
 from autotune.evaluator import (
+    PROMOTION_BLOCK_COUNT,
+    PROMOTION_BLOCK_WIN_RATIO,
+    PROMOTION_REQUIRED_WINS,
+    RESIDENT_PROTOCOLS,
+    STREAMED_PROTOCOLS,
     ConstraintVector,
     EvaluationScope,
     Fidelity,
@@ -109,21 +114,76 @@ def test_promotion_speedup_is_the_median_of_paired_ratios() -> None:
     comparison = PairedMeasurement(
         incumbent=_formal_measurement("incumbent", 20.0),
         challenger=_formal_measurement("challenger", 10.0),
-        paired_ratios=(1.50, 1.01, 1.02),
-        exceeds_noise_margin=True,
+        paired_ratios=(
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.00,
+            1.02,
+            1.02,
+            1.02,
+            1.03,
+            1.04,
+            1.05,
+            1.50,
+        ),
     )
 
     assert comparison.speedup == pytest.approx(1.02)
+    assert comparison.promotion_wins == 7
+    assert not comparison.promotes
 
 
-def test_paired_measurement_rejects_missing_rounds() -> None:
-    with pytest.raises(ValueError, match="paired_ratios"):
+def test_promotion_requires_ten_of_thirteen_one_percent_block_wins() -> None:
+    incumbent = _formal_measurement("incumbent", 20.0)
+    challenger = _formal_measurement("challenger", 10.0)
+    nine_wins = PairedMeasurement(
+        incumbent=incumbent,
+        challenger=challenger,
+        paired_ratios=(PROMOTION_BLOCK_WIN_RATIO,) * 9 + (1.0,) * 4,
+    )
+    ten_wins = PairedMeasurement(
+        incumbent=incumbent,
+        challenger=challenger,
+        paired_ratios=(PROMOTION_BLOCK_WIN_RATIO,) * 10 + (1.0,) * 3,
+    )
+
+    assert PROMOTION_BLOCK_COUNT == 13
+    assert PROMOTION_REQUIRED_WINS == 10
+    assert nine_wins.promotion_wins == 9
+    assert not nine_wins.promotes
+    assert ten_wins.promotion_wins == 10
+    assert ten_wins.promotes
+
+
+def test_incomplete_paired_measurement_cannot_promote() -> None:
+    comparison = PairedMeasurement(
+        incumbent=_formal_measurement("incumbent", 20.0),
+        challenger=_formal_measurement("challenger", 10.0),
+        paired_ratios=(),
+    )
+
+    assert comparison.speedup is None
+    assert comparison.promotion_wins == 0
+    assert not comparison.promotes
+
+    with pytest.raises(ValueError, match="13 blocks"):
         PairedMeasurement(
             incumbent=_formal_measurement("incumbent", 20.0),
             challenger=_formal_measurement("challenger", 10.0),
-            paired_ratios=(),
-            exceeds_noise_margin=False,
+            paired_ratios=(1.01,) * 12,
         )
+
+
+def test_formal_promotion_protocols_use_thirteen_paired_blocks() -> None:
+    resident = RESIDENT_PROTOCOLS[Fidelity.FORMAL]
+    streamed = STREAMED_PROTOCOLS[Fidelity.FORMAL]
+
+    assert (resident.warmup, resident.repeats, resident.rounds) == (20, 25, 13)
+    assert (streamed.repeats, streamed.rounds) == (1, 13)
+    assert streamed.full_logical_batch
 
 
 def test_only_known_config_domain_exceptions_are_infeasible() -> None:

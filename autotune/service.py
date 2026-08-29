@@ -22,7 +22,7 @@ from deployment.registry import (
     publish_deployed_config,
     resolve_deployed_config,
 )
-from solution.config import ConfigSpec
+from solution.config import ConfigSpec, portable_config, portable_streamed_config
 from solution.plan import ExecutionContext
 from solution.plan_builder import HardwareCapabilities, PlanBuilder
 
@@ -37,13 +37,11 @@ from .evaluator import (
     TrialMeasurement,
     classify_infeasible_exception,
     execution_signatures_match,
-    memory_constraint,
     normalized_accuracy_constraint,
 )
 from .space import ProgramSearchSpace
 from .storage import SearchStorage
 
-MIN_PROMOTION_SPEEDUP = 1.02
 MAX_CROSS_SHAPE_WARM_STARTS = 4
 
 
@@ -96,7 +94,6 @@ class BenchmarkEvaluator:
         shape: TransformerShape,
         variant: RunVariant,
         device: torch.device,
-        memory_budget_bytes: int | None,
     ) -> None:
         self.shape = shape
         self.variant = variant
@@ -104,19 +101,14 @@ class BenchmarkEvaluator:
         self.scope = (
             EvaluationScope.STREAMED if shape.streamed else EvaluationScope.RESIDENT
         )
-        self.memory_budget_bytes = memory_budget_bytes
 
     def _to_measurement(
         self,
         result: BenchmarkResult,
         fidelity: Fidelity,
     ) -> TrialMeasurement:
-        safety_margin = 1.0 if fidelity is Fidelity.FORMAL else 0.9
         constraints = ConstraintVector(
-            accuracy=normalized_accuracy_constraint(
-                result.max_tolerance_ratio,
-                safety_margin=safety_margin,
-            ),
+            accuracy=normalized_accuracy_constraint(result.max_tolerance_ratio),
             execution_path=(
                 0.0
                 if execution_signatures_match(
@@ -124,10 +116,6 @@ class BenchmarkEvaluator:
                     result.actual_execution_signature,
                 )
                 else 1.0
-            ),
-            memory=memory_constraint(
-                result.peak_memory_bytes,
-                self.memory_budget_bytes,
             ),
             runtime=0.0,
         )
@@ -200,16 +188,13 @@ class BenchmarkEvaluator:
         except Exception as exc:
             if classify_infeasible_exception(exc) is None:
                 raise
-            # Locate the infeasible program. This path is not used for a
-            # performance promotion; it only preserves the constraint result.
+            # Preserve feasibility without inventing paired timing evidence.
             incumbent_result = self.evaluate(incumbent, Fidelity.FORMAL)
             challenger_result = self.evaluate(challenger, Fidelity.FORMAL)
-            ratio = incumbent_result.objective_ms / challenger_result.objective_ms
             return PairedMeasurement(
                 incumbent=incumbent_result,
                 challenger=challenger_result,
-                paired_ratios=(ratio,),
-                exceeds_noise_margin=False,
+                paired_ratios=(),
             )
         incumbent_result = self._to_measurement(paired.incumbent, Fidelity.FORMAL)
         challenger_result = self._to_measurement(paired.challenger, Fidelity.FORMAL)
@@ -217,7 +202,6 @@ class BenchmarkEvaluator:
             incumbent=incumbent_result,
             challenger=challenger_result,
             paired_ratios=paired.paired_ratios,
-            exceeds_noise_margin=paired.median_speedup >= MIN_PROMOTION_SPEEDUP,
         )
 
 
@@ -344,34 +328,10 @@ def _compatible_family_warm_starts(
     return tuple(compatible)
 
 
-def _transferable_formal_configs(result: SearchResult) -> tuple[ConfigSpec, ...]:
-    """Keep only formally feasible results, with the selected winner first."""
+def _transferable_formal_config(result: SearchResult) -> ConfigSpec | None:
+    """Share only the formally approved deployment with later shapes."""
 
-    values: list[ConfigSpec] = []
-    selected = result.selected_config if result.has_deployable_selection else None
-    if selected is not None:
-        values.append(selected)
-    ranked = sorted(
-        (
-            (config, measurement)
-            for config, measurement in zip(
-                result.formal_configs,
-                result.formal_measurements,
-                strict=True,
-            )
-            if measurement.fidelity is Fidelity.FORMAL and measurement.feasible
-        ),
-        key=lambda item: item[1].objective_ms,
-    )
-    values.extend(config for config, _ in ranked)
-    unique: list[ConfigSpec] = []
-    seen: set[str] = set()
-    for config in values:
-        if config.config_id in seen:
-            continue
-        seen.add(config.config_id)
-        unique.append(config)
-    return tuple(unique)
+    return result.selected_config if result.deployment_approved else None
 
 
 def _shape_key(shape: TransformerShape, variant: RunVariant) -> ShapeFingerprint:
@@ -399,8 +359,6 @@ class SearchService:
             project_root=request.project_root,
         )
         capabilities = HardwareCapabilities.detect(device)
-        properties = torch.cuda.get_device_properties(device)
-        memory_budget = int(properties.total_memory * 0.95)
         storage = SearchStorage(
             request.storage_root or request.project_root / "search_state"
         )
@@ -426,6 +384,12 @@ class SearchService:
                 hardware=hardware_key,
                 shape=shape_key,
             )
+            if incumbent is None:
+                incumbent = (
+                    portable_streamed_config()
+                    if shape.streamed
+                    else portable_config()
+                )
             scope = (
                 EvaluationScope.STREAMED if shape.streamed else EvaluationScope.RESIDENT
             )
@@ -433,7 +397,6 @@ class SearchService:
                 shape=shape,
                 variant=request.variant,
                 device=device,
-                memory_budget_bytes=memory_budget,
             )
             engine = SearchEngine(
                 storage=storage,
@@ -471,7 +434,7 @@ class SearchService:
             search_result = engine.run(replace(search_request, warm_starts=warm_starts))
             selected = search_result.selected_config
             updated = (
-                search_result.has_deployable_selection
+                search_result.deployment_approved
                 and selected is not None
                 and selected != incumbent
             )
@@ -482,17 +445,13 @@ class SearchService:
                     config=selected,
                 )
             results.append(ShapeSearchResult(case_id, search_result, updated))
-            for config in _transferable_formal_configs(search_result):
+            transferable = _transferable_formal_config(search_result)
+            if transferable is not None:
                 warm_start_candidates.append(
                     _WarmStartCandidate(
                         shape=shape_key,
-                        config=config,
-                        source_priority=(
-                            0
-                            if selected is not None
-                            and config.config_id == selected.config_id
-                            else 1
-                        ),
+                        config=transferable,
+                        source_priority=0,
                         source_order=warm_start_order,
                     )
                 )
@@ -503,7 +462,6 @@ class SearchService:
 
 __all__ = [
     "MAX_CROSS_SHAPE_WARM_STARTS",
-    "MIN_PROMOTION_SPEEDUP",
     "BenchmarkEvaluator",
     "SearchService",
     "SearchServiceRequest",

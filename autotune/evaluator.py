@@ -56,15 +56,20 @@ class FidelityProtocol:
 RESIDENT_PROTOCOLS: Mapping[Fidelity, FidelityProtocol] = {
     Fidelity.SCREEN: FidelityProtocol(2, 2, 5, 2),
     Fidelity.ENHANCED: FidelityProtocol(3, 5, 20, 2),
-    Fidelity.FORMAL: FidelityProtocol(5, 20, 100, 3),
+    Fidelity.FORMAL: FidelityProtocol(5, 20, 25, 13),
 }
 
 
 STREAMED_PROTOCOLS: Mapping[Fidelity, FidelityProtocol] = {
     Fidelity.SCREEN: FidelityProtocol(1, 1, 3, 1, full_logical_batch=False),
     Fidelity.ENHANCED: FidelityProtocol(2, 2, 5, 2, full_logical_batch=False),
-    Fidelity.FORMAL: FidelityProtocol(1, 2, 1, 3, full_logical_batch=True),
+    Fidelity.FORMAL: FidelityProtocol(1, 2, 1, 13, full_logical_batch=True),
 }
+
+
+PROMOTION_BLOCK_COUNT = 13
+PROMOTION_BLOCK_WIN_RATIO = 1.01
+PROMOTION_REQUIRED_WINS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +78,6 @@ class ConstraintVector:
 
     accuracy: float = 0.0
     execution_path: float = 0.0
-    memory: float = 0.0
     runtime: float = 0.0
 
     def __post_init__(self) -> None:
@@ -81,11 +85,10 @@ class ConstraintVector:
         if any(not math.isfinite(value) for value in values):
             raise ValueError("constraint values must be finite")
 
-    def as_tuple(self) -> tuple[float, float, float, float]:
+    def as_tuple(self) -> tuple[float, float, float]:
         return (
             float(self.accuracy),
             float(self.execution_path),
-            float(self.memory),
             float(self.runtime),
         )
 
@@ -101,25 +104,21 @@ class ConstraintVector:
     def from_value(cls, value: object) -> ConstraintVector:
         if (
             not isinstance(value, (list, tuple))
-            or len(value) != 4
+            or len(value) != 3
             or any(isinstance(item, bool) for item in value)
         ):
-            raise ValueError("constraints must contain four numeric values")
+            raise ValueError("constraints must contain three numeric values")
         return cls(*(float(item) for item in value))
 
 
 def normalized_accuracy_constraint(
     max_tolerance_ratio: float | None,
-    *,
-    safety_margin: float,
 ) -> float:
     """Convert the official OR-tolerance ratio into ``g_accuracy``."""
 
-    if not 0.0 < safety_margin <= 1.0:
-        raise ValueError("safety_margin must be in (0, 1]")
     if max_tolerance_ratio is None or not math.isfinite(max_tolerance_ratio):
         return 1.0
-    return float(max_tolerance_ratio) - safety_margin
+    return float(max_tolerance_ratio) - 1.0
 
 
 def execution_signatures_match(
@@ -137,21 +136,6 @@ def execution_signatures_match(
         dict(actual), sort_keys=True, separators=(",", ":"), allow_nan=False
     )
     return expected_json == actual_json
-
-
-def memory_constraint(
-    peak_bytes: int | None,
-    budget_bytes: int | None,
-) -> float:
-    """Return normalized memory headroom; positive values violate the budget."""
-
-    if budget_bytes is None:
-        return 0.0
-    if budget_bytes <= 0:
-        raise ValueError("memory budget must be positive")
-    if peak_bytes is None or peak_bytes < 0:
-        return 1.0
-    return float(peak_bytes) / float(budget_bytes) - 1.0
 
 
 def classify_infeasible_exception(exc: Exception) -> str | None:
@@ -316,7 +300,6 @@ class PairedMeasurement:
     incumbent: TrialMeasurement
     challenger: TrialMeasurement
     paired_ratios: tuple[float, ...]
-    exceeds_noise_margin: bool
 
     def __post_init__(self) -> None:
         if self.incumbent.fidelity is not Fidelity.FORMAL:
@@ -326,17 +309,40 @@ class PairedMeasurement:
         if self.incumbent.scope is not self.challenger.scope:
             raise ValueError("paired measurements must use the same scope")
         ratios = tuple(float(value) for value in self.paired_ratios)
-        if not ratios or any(
-            not math.isfinite(value) or value <= 0.0 for value in ratios
-        ):
+        if ratios and len(ratios) != PROMOTION_BLOCK_COUNT:
+            raise ValueError(
+                f"paired_ratios must contain {PROMOTION_BLOCK_COUNT} blocks or be empty"
+            )
+        if any(not math.isfinite(value) or value <= 0.0 for value in ratios):
             raise ValueError("paired_ratios must be finite and positive")
         object.__setattr__(self, "paired_ratios", ratios)
 
     @property
-    def speedup(self) -> float:
-        """Median same-round incumbent/challenger latency ratio."""
+    def speedup(self) -> float | None:
+        """Median paired-block ratio, reported only as an effect size."""
 
+        if not self.paired_ratios:
+            return None
         return float(statistics.median(self.paired_ratios))
+
+    @property
+    def promotion_wins(self) -> int:
+        """Count blocks where the challenger is at least one percent faster."""
+
+        return sum(
+            ratio >= PROMOTION_BLOCK_WIN_RATIO for ratio in self.paired_ratios
+        )
+
+    @property
+    def promotes(self) -> bool:
+        """Apply the sole replacement rule to a complete Formal comparison."""
+
+        return (
+            self.incumbent.feasible
+            and self.challenger.feasible
+            and len(self.paired_ratios) == PROMOTION_BLOCK_COUNT
+            and self.promotion_wins >= PROMOTION_REQUIRED_WINS
+        )
 
 
 class Evaluator(Protocol):
@@ -356,6 +362,9 @@ class Evaluator(Protocol):
 
 
 __all__ = [
+    "PROMOTION_BLOCK_COUNT",
+    "PROMOTION_BLOCK_WIN_RATIO",
+    "PROMOTION_REQUIRED_WINS",
     "RESIDENT_PROTOCOLS",
     "STREAMED_PROTOCOLS",
     "ConstraintVector",
@@ -367,6 +376,5 @@ __all__ = [
     "TrialMeasurement",
     "classify_infeasible_exception",
     "execution_signatures_match",
-    "memory_constraint",
     "normalized_accuracy_constraint",
 ]
