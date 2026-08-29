@@ -197,6 +197,12 @@ def test_branch_build_and_parameter_recovery_preserve_new_program_primitives() -
 
     assert StructureSpec.from_config(config) == structure
     assert branch.parameters_for(config) == parameters
+
+    decoded = tuple(branch.config_at(index) for index in range(branch.cardinality))
+    assert len({candidate.config_id for candidate in decoded}) == branch.cardinality
+    assert tuple(branch.index_for(candidate) for candidate in decoded) == tuple(
+        range(branch.cardinality)
+    )
     assert config.program.qkv_projection is ProjectionBackend.AUTOCAST_FP16
     assert config.program.attention_output_projection is ProjectionBackend.AUTOCAST_FP16
     assert config.program.ffn_input_projection is ProjectionBackend.FP16_SHADOW

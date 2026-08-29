@@ -293,6 +293,17 @@ class OptunaBackend:
         study.tell(trial, state=TrialState.FAIL)
 
     @staticmethod
+    def reject_duplicate(
+        study: Study,
+        trial: Trial,
+        config_id: str,
+    ) -> None:
+        """Discard a zero-information proposal without teaching it to TPE."""
+
+        trial.set_user_attr("duplicate_config_id", config_id)
+        study.tell(trial, state=TrialState.FAIL)
+
+    @staticmethod
     def completed_trials(
         study: Study,
         branch: BranchSpace,

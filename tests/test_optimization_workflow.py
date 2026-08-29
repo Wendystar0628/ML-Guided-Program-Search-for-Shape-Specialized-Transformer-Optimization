@@ -24,7 +24,11 @@ class _SearchSweep:
         return SimpleNamespace(
             exit_code=exit_code,
             shape_results=tuple(
-                SimpleNamespace(deployment_updated=updated) for updated in updates
+                SimpleNamespace(
+                    deployment_updated=updated,
+                    search_result=SimpleNamespace(made_search_progress=True),
+                )
+                for updated in updates
             ),
         )
 
@@ -74,6 +78,23 @@ def test_hard_iteration_limit_stops_continuous_deployments() -> None:
     assert result.iterations_run == 3
     assert result.total_deployment_updates == 3
     assert result.no_deployment_streak == 0
+
+
+def test_no_new_evidence_stops_an_exhausted_search_immediately() -> None:
+    class _ExhaustedSweep(_SearchSweep):
+        def run(self, request: SearchSweepRequest) -> object:
+            result = super().run(request)
+            for item in result.shape_results:
+                item.search_result.made_search_progress = False
+            return result
+
+    result = OptimizationLoop(_ExhaustedSweep([(0, (False,))])).run(
+        _request(),
+        OptimizationLoopPolicy(no_deployment_patience=5, max_iterations=10),
+    )
+
+    assert result.stop_reason == "search_space_exhausted"
+    assert result.iterations_run == 1
 
 
 def test_failure_and_interrupt_stop_immediately_without_advancing_patience() -> None:

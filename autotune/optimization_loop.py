@@ -29,6 +29,7 @@ class OptimizationIteration:
     index: int
     search_result: SearchSweepResult
     deployment_updates: int
+    shapes_with_search_progress: int
     no_deployment_streak: int
 
 
@@ -69,6 +70,10 @@ class OptimizationLoop:
             deployment_updates = sum(
                 item.deployment_updated for item in search_result.shape_results
             )
+            shapes_with_search_progress = sum(
+                item.search_result.made_search_progress
+                for item in search_result.shape_results
+            )
             total_deployment_updates += deployment_updates
 
             if search_result.exit_code == 0:
@@ -80,6 +85,7 @@ class OptimizationLoop:
                 index=iteration_index,
                 search_result=search_result,
                 deployment_updates=deployment_updates,
+                shapes_with_search_progress=shapes_with_search_progress,
                 no_deployment_streak=no_deployment_streak,
             )
             if observer is not None:
@@ -94,6 +100,14 @@ class OptimizationLoop:
                         "interrupted" if search_result.exit_code == 130 else "failed"
                     ),
                     exit_code=search_result.exit_code,
+                )
+            if deployment_updates == 0 and shapes_with_search_progress == 0:
+                return OptimizationResult(
+                    iterations_run=iteration_index,
+                    total_deployment_updates=total_deployment_updates,
+                    no_deployment_streak=no_deployment_streak,
+                    stop_reason="search_space_exhausted",
+                    exit_code=0,
                 )
             if no_deployment_streak >= policy.no_deployment_patience:
                 return OptimizationResult(

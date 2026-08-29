@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass, replace
 
 import pytest
+from optuna.trial import TrialState
 
 import autotune.search_engine as engine_module
 from autotune.evaluation import (
@@ -60,6 +61,16 @@ class _Evaluator:
         else:
             latency = 2.0
         return _measurement(config, latency, scope=self.scope, fidelity=fidelity)
+
+
+class _RecordingEvaluator(_Evaluator):
+    def __init__(self, scope: EvaluationScope) -> None:
+        super().__init__(scope)
+        self.calls: list[tuple[str, Fidelity]] = []
+
+    def evaluate(self, config: ConfigSpec, fidelity: Fidelity) -> TrialMeasurement:
+        self.calls.append((config.config_id, fidelity))
+        return super().evaluate(config, fidelity)
 
 
 class _RaisingEvaluator:
@@ -228,6 +239,128 @@ def test_screening_uses_three_unique_configs_and_best_feasible_latency(
     # The first branch wins because its best representative is 1 ms, even
     # though its other completed observations are 100 ms.
     assert engine._select_survivors(plan, state, backend) == (branches[0],)
+
+
+def test_duplicate_tpe_proposal_uses_one_unseen_point_without_extra_budget(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
+    request = _request(max_trials=3)
+    plan = _plan(request, (branch,))
+    evaluator = _RecordingEvaluator(request.scope)
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=evaluator,
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    historical = branch.config_at(0)
+    backend.record_completed(
+        study,
+        branch,
+        historical,
+        _measurement(historical, 1.0),
+        source="historical",
+    )
+    state = _RunState(studies={branch.branch_id: study})
+
+    def _duplicate_ask(*args: object) -> tuple[object, ConfigSpec]:
+        del args
+        return study.ask(), historical
+
+    monkeypatch.setattr(backend, "ask", _duplicate_ask)
+
+    assert engine._ask_and_measure(plan, state, backend, branch)
+    assert state.budget.new_level1_trials == 1
+    completed = backend.completed_trials(study, branch)
+    assert len({trial.config.config_id for trial in completed}) == 2
+    assert evaluator.calls[0][0] != historical.config_id
+    failed = study.get_trials(deepcopy=False, states=(TrialState.FAIL,))
+    assert failed[-1].user_attrs["duplicate_config_id"] == historical.config_id
+
+
+def test_exhausted_finite_branch_does_not_ask_or_measure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=(32, 64))
+    request = _request(max_trials=2)
+    plan = _plan(request, (branch,))
+    evaluator = _RecordingEvaluator(request.scope)
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=evaluator,
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    for index in range(branch.cardinality):
+        config = branch.config_at(index)
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            _measurement(config, float(index + 1)),
+            source="historical",
+        )
+    backend = OptunaBackend(engine.storage, seed=request.seed + 1)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    state = _RunState(studies={branch.branch_id: study})
+
+    monkeypatch.setattr(
+        backend,
+        "ask",
+        lambda *args: (_ for _ in ()).throw(AssertionError("unexpected ask")),
+    )
+
+    assert not engine._ask_and_measure(plan, state, backend, branch)
+    assert state.budget.new_level1_trials == 0
+    assert evaluator.calls == []
+
+
+def test_formal_tabu_skips_rejected_challenger_for_same_incumbent(tmp_path) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
+    configs = tuple(branch.config_at(index) for index in range(branch.cardinality))
+    incumbent, rejected, next_challenger = configs
+    request = replace(_request(max_trials=3), incumbent=incumbent)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    for config, latency in (
+        (incumbent, 0.5),
+        (rejected, 1.0),
+        (next_challenger, 2.0),
+    ):
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            _measurement(config, latency),
+            source="historical",
+        )
+    state = _RunState(studies={branch.branch_id: study})
+    engine.storage.record_challenger_attempt(
+        case_id=request.case_id,
+        environment=request.environment,
+        incumbent_id=incumbent.config_id,
+        challenger_id=rejected.config_id,
+    )
+
+    promoted = engine._select_promotions(plan, state, backend, (branch,))
+
+    assert promoted == (next_challenger,)
+    assert engine.storage.attempted_challenger_ids(
+        case_id=request.case_id,
+        environment=request.environment,
+        incumbent_id=incumbent.config_id,
+    ) == frozenset({rejected.config_id})
 
 
 def test_plan_rejects_trial_cap_below_fair_screening_total(

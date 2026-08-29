@@ -500,6 +500,32 @@ class BranchSpace:
     def parameter_names(self) -> tuple[str, ...]:
         return tuple(domain.name for domain in self.domains)
 
+    def config_at(self, index: int) -> ConfigSpec:
+        """Decode one point in the finite branch without materializing it."""
+
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("index must be an integer")
+        if not 0 <= index < self.cardinality:
+            raise IndexError("branch configuration index is out of range")
+        parameters: dict[str, Scalar] = {}
+        remainder = index
+        for domain in reversed(self.domains):
+            remainder, choice_index = divmod(remainder, len(domain.choices))
+            parameters[domain.name] = domain.choices[choice_index]
+        return self.build(parameters)
+
+    def index_for(self, config: ConfigSpec) -> int | None:
+        """Return the mixed-radix index of a branch member."""
+
+        parameters = self.parameters_for(config)
+        if parameters is None:
+            return None
+        index = 0
+        for domain in self.domains:
+            index *= len(domain.choices)
+            index += domain.choices.index(parameters[domain.name])
+        return index
+
     def default_parameters(self) -> dict[str, Scalar]:
         return {domain.name: domain.default for domain in self.domains}
 

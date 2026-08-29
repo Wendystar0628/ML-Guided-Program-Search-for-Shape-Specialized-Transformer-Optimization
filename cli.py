@@ -275,6 +275,7 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
             print(f"    selected: {None if selected is None else selected.config_id}")
             print(f"    deployment updated: {item.deployment_updated}")
         print(f"  deployments: {iteration.deployment_updates}")
+        print(f"  shapes with new search evidence: {iteration.shapes_with_search_progress}")
         print(f"  no-deployment streak: {iteration.no_deployment_streak}")
 
     result = OptimizationLoop().run(

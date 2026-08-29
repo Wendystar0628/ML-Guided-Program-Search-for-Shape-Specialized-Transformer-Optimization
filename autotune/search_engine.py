@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -131,6 +132,7 @@ class SearchResult:
     formal_challenger_measurement: TrialMeasurement | None
     formal_comparison: PairedMeasurement | None
     stop_reason: str
+    new_level1_trials: int = 0
 
     def __post_init__(self) -> None:
         formal = self.formal_challenger_measurement
@@ -156,6 +158,8 @@ class SearchResult:
                 raise ValueError("selected measurement requires a selected config")
             if self.selected_measurement.config_id != self.selected_config.config_id:
                 raise ValueError("selected config and measurement identities disagree")
+        if self.new_level1_trials < 0:
+            raise ValueError("new_level1_trials must not be negative")
 
     @property
     def deployment_approved(self) -> bool:
@@ -173,6 +177,12 @@ class SearchResult:
             return self.formal_comparison is None
         comparison = self.formal_comparison
         return comparison is not None and comparison.promotes
+
+    @property
+    def made_search_progress(self) -> bool:
+        """Whether this run added a new Screen point or Formal decision."""
+
+        return self.new_level1_trials > 0 or self.formal_challenger_measurement is not None
 
 
 @dataclass(slots=True)
@@ -213,9 +223,6 @@ def _screening_trial_target(branch: BranchSpace) -> int:
 
 def _screening_trial_total(branches: tuple[BranchSpace, ...]) -> int:
     return sum(_screening_trial_target(branch) for branch in branches)
-
-
-_MAX_CONSECUTIVE_DUPLICATE_ASKS = 8
 
 
 def _completed_config_ids(
@@ -382,6 +389,20 @@ class SearchEngine:
                     locked_challenger,
                     deadline=final_deadline,
                 )
+                if (
+                    locked_challenger is not None
+                    and formal_challenger_measurement is not None
+                ):
+                    self.storage.record_challenger_attempt(
+                        case_id=request.case_id,
+                        environment=request.environment,
+                        incumbent_id=(
+                            None
+                            if request.incumbent is None
+                            else request.incumbent.config_id
+                        ),
+                        challenger_id=locked_challenger.config_id,
+                    )
                 stop_reason = (
                     "no_feasible_screen"
                     if not survivors
@@ -403,7 +424,13 @@ class SearchEngine:
             raise
 
         completed_level1 = sum(
-            len(backend.completed_trials(run_state.studies[branch.branch_id], branch))
+            len(
+                _completed_config_ids(
+                    backend,
+                    run_state.studies[branch.branch_id],
+                    branch,
+                )
+            )
             for branch in plan.search_space.branches
         )
         return SearchResult(
@@ -417,6 +444,7 @@ class SearchEngine:
             formal_challenger_measurement=formal_challenger_measurement,
             formal_comparison=formal_comparison,
             stop_reason=stop_reason,
+            new_level1_trials=run_state.budget.new_level1_trials,
         )
 
     def _enqueue_initial_configs(
@@ -496,7 +524,8 @@ class SearchEngine:
                     max_trials=plan.request.budget.max_trials,
                 ):
                     return False
-                self._ask_and_measure(plan, state, backend, branch)
+                if not self._ask_and_measure(plan, state, backend, branch):
+                    return False
                 completed_ids = _completed_config_ids(backend, study, branch)
         return True
 
@@ -546,7 +575,6 @@ class SearchEngine:
         deadline: float,
     ) -> None:
         budget = plan.request.budget
-        no_progress = {branch.branch_id: 0 for branch in survivors}
         for branch in survivors:
             target = min(budget.min_trials_per_branch, branch.cardinality)
             study = state.studies[branch.branch_id]
@@ -557,13 +585,9 @@ class SearchEngine:
                     max_trials=budget.max_trials,
                 ):
                     break
-                if self._ask_and_measure(plan, state, backend, branch):
-                    no_progress[branch.branch_id] = 0
-                    completed_ids = _completed_config_ids(backend, study, branch)
-                else:
-                    no_progress[branch.branch_id] += 1
-                    if no_progress[branch.branch_id] >= _MAX_CONSECUTIVE_DUPLICATE_ASKS:
-                        break
+                if not self._ask_and_measure(plan, state, backend, branch):
+                    break
+                completed_ids = _completed_config_ids(backend, study, branch)
 
         active = [
             branch
@@ -576,7 +600,6 @@ class SearchEngine:
                 )
             )
             < branch.cardinality
-            and no_progress[branch.branch_id] < _MAX_CONSECUTIVE_DUPLICATE_ASKS
         ]
         cursor = 0
         while active and state.budget.can_start(
@@ -585,18 +608,14 @@ class SearchEngine:
         ):
             index = cursor % len(active)
             branch = active[index]
-            if self._ask_and_measure(plan, state, backend, branch):
-                no_progress[branch.branch_id] = 0
-            else:
-                no_progress[branch.branch_id] += 1
+            progressed = self._ask_and_measure(plan, state, backend, branch)
             completed_ids = _completed_config_ids(
                 backend,
                 state.studies[branch.branch_id],
                 branch,
             )
             if (
-                len(completed_ids) >= branch.cardinality
-                or no_progress[branch.branch_id] >= _MAX_CONSECUTIVE_DUPLICATE_ASKS
+                len(completed_ids) >= branch.cardinality or not progressed
             ):
                 active.pop(index)
                 if active:
@@ -645,21 +664,72 @@ class SearchEngine:
         branch: BranchSpace,
     ) -> bool:
         study = state.studies[branch.branch_id]
+        seen = _completed_config_ids(backend, study, branch)
+        if len(seen) >= branch.cardinality:
+            return False
+
         trial, config = backend.ask(study, branch)
-        previous = backend.measurement_for(study, branch, config.config_id)
-        try:
-            measurement = (
-                previous
-                if previous is not None
-                else self._measure_screen(plan.request, config)
+        if config.config_id in seen:
+            backend.reject_duplicate(study, trial, config.config_id)
+            config = self._uniform_unseen_config(
+                plan,
+                state,
+                backend,
+                branch,
             )
+            if config is None:
+                return False
+            try:
+                measurement = self._measure_screen(plan.request, config)
+                backend.record_completed(
+                    study,
+                    branch,
+                    config,
+                    measurement,
+                    source="uniform_unseen_fallback",
+                )
+                return True
+            finally:
+                state.budget.new_level1_trials += 1
+
+        try:
+            measurement = self._measure_screen(plan.request, config)
             backend.tell(study, trial, config, measurement)
-            return previous is None
+            return True
         except Exception as exc:  # noqa: BLE001 - persist infrastructure Trial failure
             backend.fail_infrastructure(study, trial, exc)
             return False
         finally:
             state.budget.new_level1_trials += 1
+
+    @staticmethod
+    def _uniform_unseen_config(
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        branch: BranchSpace,
+    ) -> ConfigSpec | None:
+        """Sample exactly once from the branch points not yet measured."""
+
+        study = state.studies[branch.branch_id]
+        seen_indices = sorted(
+            index
+            for completed in backend.completed_trials(study, branch)
+            if (index := branch.index_for(completed.config)) is not None
+        )
+        seen_indices = sorted(set(seen_indices))
+        remaining = branch.cardinality - len(seen_indices)
+        if remaining <= 0:
+            return None
+        rng = random.Random(
+            f"{plan.request.seed}:{branch.branch_id}:{len(seen_indices)}"
+        )
+        candidate_index = rng.randrange(remaining)
+        for seen_index in seen_indices:
+            if seen_index > candidate_index:
+                break
+            candidate_index += 1
+        return branch.config_at(candidate_index)
 
     def _measure_screen(
         self,
@@ -719,7 +789,21 @@ class SearchEngine:
             if best is not None:
                 configs.append(best.config)
         configs.extend(completed.config for completed in ranked)
-        values = _unique_configs(configs)[:target]
+        incumbent_id = (
+            None
+            if plan.request.incumbent is None
+            else plan.request.incumbent.config_id
+        )
+        attempted = self.storage.attempted_challenger_ids(
+            case_id=plan.request.case_id,
+            environment=plan.request.environment,
+            incumbent_id=incumbent_id,
+        )
+        values = tuple(
+            config
+            for config in _unique_configs(configs)
+            if config.config_id != incumbent_id and config.config_id not in attempted
+        )[:target]
         return values
 
     def _evaluate_promotions(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,11 +22,11 @@ class StudyIdentity:
 
     @property
     def study_name(self) -> str:
-        return f"{_slug(self.case_id)}-{_slug(self.environment)}-{self.branch_id[:12]}"
+        return f"{_slug(self.case_id)}-{_slug(self.environment)}-{self.branch_id}"
 
 
 class SearchStorage:
-    """One SQLite database; Optuna owns all trial persistence."""
+    """One SQLite database for Optuna trials and rejected challenger memory."""
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
@@ -35,6 +36,62 @@ class SearchStorage:
     def database_url(self) -> str:
         self.root.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{self.database_path.as_posix()}"
+
+    def attempted_challenger_ids(
+        self,
+        *,
+        case_id: str,
+        environment: str,
+        incumbent_id: str | None,
+    ) -> frozenset[str]:
+        """Return challengers already decided against the same incumbent."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT challenger_id
+                FROM formal_attempts
+                WHERE case_id = ? AND environment = ? AND incumbent_id = ?
+                """,
+                (case_id, environment, incumbent_id or ""),
+            )
+        return frozenset(str(row[0]) for row in rows)
+
+    def record_challenger_attempt(
+        self,
+        *,
+        case_id: str,
+        environment: str,
+        incumbent_id: str | None,
+        challenger_id: str,
+    ) -> None:
+        """Persist one completed Formal decision as a branch-local tabu entry."""
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO formal_attempts (
+                    case_id, environment, incumbent_id, challenger_id
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (case_id, environment, incumbent_id or "", challenger_id),
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        self.root.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self.database_path, timeout=30.0)
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS formal_attempts (
+                case_id TEXT NOT NULL,
+                environment TEXT NOT NULL,
+                incumbent_id TEXT NOT NULL,
+                challenger_id TEXT NOT NULL,
+                PRIMARY KEY (case_id, environment, incumbent_id, challenger_id)
+            )
+            """
+        )
+        return connection
 
 
 __all__ = ["SearchStorage", "StudyIdentity"]
