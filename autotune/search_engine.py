@@ -1,4 +1,4 @@
-"""Branch screening, constraint-aware TPE, and multi-fidelity promotion."""
+"""Fair branch screening, adaptive TPE budgets, and fidelity promotion."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import math
 import random
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from optuna.study import Study
@@ -40,8 +40,6 @@ class SearchBudget:
     max_seconds: float
     max_trials: int | None = None
     max_structure_branches: int = DEFAULT_MAX_STRUCTURE_BRANCHES
-    min_trials_per_branch: int = 5
-    survivor_count: int = 3
     promote_fraction: float = 0.2
     enhanced_top_k: int = 8
 
@@ -59,12 +57,7 @@ class SearchBudget:
             or self.max_trials <= 0
         ):
             raise ValueError("max_trials must be a positive integer or null")
-        for name in (
-            "min_trials_per_branch",
-            "survivor_count",
-            "enhanced_top_k",
-            "max_structure_branches",
-        ):
+        for name in ("enhanced_top_k", "max_structure_branches"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
@@ -137,6 +130,10 @@ class SearchResult:
     best_screen_config_id: str | None = None
     best_screen_median_ms: float | None = None
     screen_failure_counts: tuple[tuple[str, int], ...] = ()
+    level1_space_exhausted: bool = False
+    rising_rounds: int = 0
+    rising_eliminated_branches: int = 0
+    rising_active_branches: int = 0
 
     def __post_init__(self) -> None:
         formal = self.formal_challenger_measurement
@@ -164,6 +161,14 @@ class SearchResult:
                 raise ValueError("selected config and measurement identities disagree")
         if self.new_level1_trials < 0:
             raise ValueError("new_level1_trials must not be negative")
+        for name in (
+            "rising_rounds",
+            "rising_eliminated_branches",
+            "rising_active_branches",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
         if not 0 <= self.feasible_level1 <= self.completed_level1:
             raise ValueError("feasible_level1 must be within completed_level1")
         if self.best_screen_median_ms is not None and (
@@ -171,15 +176,15 @@ class SearchResult:
             or self.best_screen_median_ms <= 0.0
         ):
             raise ValueError("best_screen_median_ms must be finite and positive")
-        if (self.best_screen_config_id is None) != (
-            self.best_screen_median_ms is None
-        ):
+        if (self.best_screen_config_id is None) != (self.best_screen_median_ms is None):
             raise ValueError("best Screen identity and latency must be set together")
         for measurement in self.enhanced_measurements:
             if measurement.fidelity is not Fidelity.ENHANCED:
                 raise ValueError("enhanced measurements must use Enhanced fidelity")
         normalized_failures = tuple(
-            sorted((str(kind), int(count)) for kind, count in self.screen_failure_counts)
+            sorted(
+                (str(kind), int(count)) for kind, count in self.screen_failure_counts
+            )
         )
         if any(not kind or count <= 0 for kind, count in normalized_failures):
             raise ValueError("screen failure counts must be positive")
@@ -230,6 +235,31 @@ class _BudgetState:
 class _RunState:
     studies: dict[str, Study]
     budget: _BudgetState = field(default_factory=_BudgetState)
+    rising_rounds: int = 0
+    rising_eliminated_branches: int = 0
+
+
+_RISING_GROWTH_WINDOW = 3
+_SCREEN_EVALUATION_SECONDS = "screen_evaluation_seconds"
+
+
+@dataclass(frozen=True, slots=True)
+class _BranchProgress:
+    """Rebuilt branch trajectory used by the cost-aware Rising Bandit."""
+
+    branch: BranchSpace
+    pulls: int
+    best_curve_ms: tuple[float | None, ...]
+    best_latency_ms: float | None
+    recent_gain_ms_per_pull: float
+    mean_trial_seconds: float | None
+    unseen_configs: int
+    optimistic_latency_ms: float | None
+    ready_for_elimination: bool
+
+    @property
+    def exhausted(self) -> bool:
+        return self.unseen_configs <= 0
 
 
 def _unique_configs(configs: list[ConfigSpec]) -> tuple[ConfigSpec, ...]:
@@ -247,10 +277,6 @@ def _screening_trial_target(branch: BranchSpace) -> int:
     return min(3, branch.cardinality)
 
 
-def _screening_trial_total(branches: tuple[BranchSpace, ...]) -> int:
-    return sum(_screening_trial_target(branch) for branch in branches)
-
-
 def _completed_config_ids(
     backend: OptunaBackend,
     study: Study,
@@ -260,6 +286,89 @@ def _completed_config_ids(
         completed.config.config_id
         for completed in backend.completed_trials(study, branch)
     }
+
+
+def _branch_progress(
+    backend: OptunaBackend,
+    study: Study,
+    branch: BranchSpace,
+    *,
+    remaining_seconds: float,
+    remaining_trials: int | None = None,
+    growth_window: int = _RISING_GROWTH_WINDOW,
+) -> _BranchProgress:
+    """Reconstruct one monotone best curve from compatible Optuna history."""
+
+    if growth_window <= 0:
+        raise ValueError("growth_window must be positive")
+    ordered = sorted(
+        backend.completed_trials(study, branch),
+        key=lambda completed: completed.number,
+    )
+    unique: list[CompletedTrial] = []
+    seen_indices: set[int] = set()
+    for completed in ordered:
+        index = branch.index_for(completed.config)
+        if index is None or index in seen_indices:
+            continue
+        seen_indices.add(index)
+        unique.append(completed)
+
+    best_latency: float | None = None
+    best_curve: list[float | None] = []
+    costs: list[float] = []
+    for completed in unique:
+        measurement = completed.measurement
+        if measurement.feasible:
+            latency = measurement.median_ms or measurement.objective_ms
+            best_latency = (
+                latency if best_latency is None else min(best_latency, latency)
+            )
+        best_curve.append(best_latency)
+        raw_cost = measurement.metrics.get(_SCREEN_EVALUATION_SECONDS)
+        if (
+            not isinstance(raw_cost, bool)
+            and isinstance(raw_cost, (int, float))
+            and math.isfinite(float(raw_cost))
+            and float(raw_cost) > 0.0
+        ):
+            costs.append(float(raw_cost))
+
+    pulls = len(unique)
+    unseen = max(0, branch.cardinality - len(seen_indices))
+    mean_cost = None if not costs else sum(costs) / len(costs)
+    recent_gain = 0.0
+    enough_curve = pulls >= growth_window + 1
+    if enough_curve:
+        previous = best_curve[-growth_window - 1]
+        current = best_curve[-1]
+        if previous is not None and current is not None:
+            recent_gain = max(0.0, (previous - current) / growth_window)
+        else:
+            enough_curve = False
+
+    ready = enough_curve and best_latency is not None and mean_cost is not None
+    optimistic: float | None = None
+    if ready:
+        trial_limit = unseen if remaining_trials is None else remaining_trials
+        affordable = min(
+            unseen,
+            max(0, trial_limit),
+            math.floor(max(0.0, remaining_seconds) / mean_cost),
+        )
+        optimistic = max(0.0, best_latency - affordable * recent_gain)
+
+    return _BranchProgress(
+        branch=branch,
+        pulls=pulls,
+        best_curve_ms=tuple(best_curve),
+        best_latency_ms=best_latency,
+        recent_gain_ms_per_pull=recent_gain,
+        mean_trial_seconds=mean_cost,
+        unseen_configs=unseen,
+        optimistic_latency_ms=optimistic,
+        ready_for_elimination=ready,
+    )
 
 
 def _screen_failure_kind(measurement: TrialMeasurement) -> str:
@@ -316,15 +425,6 @@ class SearchEngine:
             max_branches=request.budget.max_structure_branches,
             required_configs=required_configs,
         )
-        screening_trial_total = _screening_trial_total(search_space.branches)
-        if (
-            request.budget.max_trials is not None
-            and request.budget.max_trials < screening_trial_total
-        ):
-            raise ValueError(
-                "max_trials is smaller than fair structure screening coverage: "
-                f"need at least {screening_trial_total} trials"
-            )
         identities = tuple(
             StudyIdentity(
                 case_id=request.case_id,
@@ -340,7 +440,7 @@ class SearchEngine:
         )
 
     def run(self, request: SearchRequest) -> SearchResult:
-        """Execute screening, TPE, and multi-fidelity promotion in order."""
+        """Execute fair screening, adaptive TPE, and fidelity promotion."""
 
         plan = self.plan(request)
         backend = OptunaBackend(self.storage, seed=request.seed)
@@ -364,6 +464,7 @@ class SearchEngine:
         locked_challenger: ConfigSpec | None = None
         formal_challenger_measurement: TrialMeasurement | None = None
         formal_comparison: PairedMeasurement | None = None
+        active: tuple[BranchSpace, ...] = ()
 
         try:
             self._enqueue_initial_configs(plan, run_state, backend)
@@ -378,19 +479,17 @@ class SearchEngine:
                 selected_measurement = None
                 stop_reason = "insufficient_screen_budget"
             else:
-                survivors = self._select_survivors(plan, run_state, backend)
-                self._run_tpe(
+                active = self._run_rising_bandit(
                     plan,
                     run_state,
                     backend,
-                    survivors,
                     deadline=level1_deadline,
                 )
                 promoted = self._select_promotions(
                     plan,
                     run_state,
                     backend,
-                    survivors,
+                    active,
                 )
                 enhanced = self._evaluate_promotions(
                     request,
@@ -427,7 +526,11 @@ class SearchEngine:
                     )
                 stop_reason = (
                     "no_feasible_screen"
-                    if not survivors
+                    if not self._ranked_level1(
+                        run_state,
+                        backend,
+                        plan.search_space.branches,
+                    )
                     else "no_feasible_enhanced"
                     if locked_challenger is None
                     else "formal_not_run"
@@ -455,6 +558,17 @@ class SearchEngine:
             )
             for branch in plan.search_space.branches
         )
+        level1_space_exhausted = all(
+            len(
+                _completed_config_ids(
+                    backend,
+                    run_state.studies[branch.branch_id],
+                    branch,
+                )
+            )
+            >= branch.cardinality
+            for branch in plan.search_space.branches
+        )
         (
             feasible_level1,
             best_screen_config_id,
@@ -467,9 +581,7 @@ class SearchEngine:
             selected_measurement=selected_measurement,
             branch_count=len(plan.search_space.branches),
             completed_level1=completed_level1,
-            enhanced_measurements=tuple(
-                measurement for _, measurement in enhanced
-            ),
+            enhanced_measurements=tuple(measurement for _, measurement in enhanced),
             locked_challenger=locked_challenger,
             formal_challenger_measurement=formal_challenger_measurement,
             formal_comparison=formal_comparison,
@@ -479,6 +591,10 @@ class SearchEngine:
             best_screen_config_id=best_screen_config_id,
             best_screen_median_ms=best_screen_median_ms,
             screen_failure_counts=screen_failure_counts,
+            level1_space_exhausted=level1_space_exhausted,
+            rising_rounds=run_state.rising_rounds,
+            rising_eliminated_branches=run_state.rising_eliminated_branches,
+            rising_active_branches=len(active),
         )
 
     @staticmethod
@@ -501,8 +617,7 @@ class SearchEngine:
                     previous = best_feasible.get(completed.config.config_id)
                     if (
                         previous is None
-                        or measurement.objective_ms
-                        < previous.measurement.objective_ms
+                        or measurement.objective_ms < previous.measurement.objective_ms
                     ):
                         best_feasible[completed.config.config_id] = completed
                     continue
@@ -596,69 +711,118 @@ class SearchEngine:
                 completed_ids = _completed_config_ids(backend, study, branch)
         return True
 
-    def _select_survivors(
-        self,
+    @staticmethod
+    def _remaining_trials(
         plan: SearchPlan,
         state: _RunState,
-        backend: OptunaBackend,
-    ) -> tuple[BranchSpace, ...]:
-        ranked: list[tuple[CompletedTrial, BranchSpace]] = []
-        for branch in plan.search_space.branches:
-            study = state.studies[branch.branch_id]
-            completed_ids = _completed_config_ids(backend, study, branch)
-            if len(completed_ids) < _screening_trial_target(branch):
-                continue
-            best = backend.best_feasible(study, branch)
-            if best is not None:
-                ranked.append((best, branch))
-        ranked.sort(key=lambda item: item[0].measurement.objective_ms)
-        survivors = [
-            branch for _, branch in ranked[: plan.request.budget.survivor_count]
-        ]
-        incumbent = plan.request.incumbent
-        incumbent_branch = (
-            None if incumbent is None else plan.search_space.branch_for(incumbent)
-        )
-        if incumbent_branch is not None and incumbent_branch not in survivors:
-            incumbent_best = backend.best_feasible(
-                state.studies[incumbent_branch.branch_id],
-                incumbent_branch,
-            )
-            if incumbent_best is not None:
-                if len(survivors) >= plan.request.budget.survivor_count:
-                    survivors[-1] = incumbent_branch
-                else:
-                    survivors.append(incumbent_branch)
-        survivors = list(dict.fromkeys(survivors))
-        return tuple(survivors)
+    ) -> int | None:
+        maximum = plan.request.budget.max_trials
+        if maximum is None:
+            return None
+        return max(0, maximum - state.budget.new_level1_trials)
 
-    def _run_tpe(
+    def _rising_snapshots(
         self,
         plan: SearchPlan,
         state: _RunState,
         backend: OptunaBackend,
-        survivors: tuple[BranchSpace, ...],
         *,
         deadline: float,
-    ) -> None:
-        budget = plan.request.budget
-        for branch in survivors:
-            target = min(budget.min_trials_per_branch, branch.cardinality)
-            study = state.studies[branch.branch_id]
-            completed_ids = _completed_config_ids(backend, study, branch)
-            while len(completed_ids) < target:
-                if not state.budget.can_start(
-                    deadline=deadline,
-                    max_trials=budget.max_trials,
-                ):
-                    break
-                if not self._ask_and_measure(plan, state, backend, branch):
-                    break
-                completed_ids = _completed_config_ids(backend, study, branch)
+    ) -> dict[str, _BranchProgress]:
+        remaining_seconds = max(0.0, deadline - time.monotonic())
+        remaining_trials = self._remaining_trials(plan, state)
+        return {
+            branch.branch_id: _branch_progress(
+                backend,
+                state.studies[branch.branch_id],
+                branch,
+                remaining_seconds=remaining_seconds,
+                remaining_trials=remaining_trials,
+            )
+            for branch in plan.search_space.branches
+        }
 
-        active = [
+    def _prune_rising_branches(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        active: tuple[BranchSpace, ...],
+        *,
+        deadline: float,
+    ) -> tuple[BranchSpace, ...]:
+        """Drop exhausted or uncompetitive branches from future Screen pulls."""
+
+        snapshots = self._rising_snapshots(
+            plan,
+            state,
+            backend,
+            deadline=deadline,
+        )
+        feasible = [
+            snapshot
+            for snapshot in snapshots.values()
+            if snapshot.best_latency_ms is not None
+        ]
+        best = min(
+            feasible,
+            key=lambda snapshot: (
+                snapshot.best_latency_ms,
+                snapshot.branch.branch_id,
+            ),
+            default=None,
+        )
+        values: list[BranchSpace] = []
+        eliminated = 0
+        for branch in plan.search_space.branches:
+            if branch not in active:
+                continue
+            snapshot = snapshots[branch.branch_id]
+            if snapshot.exhausted:
+                continue
+            if best is not None and branch.branch_id == best.branch.branch_id:
+                values.append(branch)
+                continue
+            if snapshot.best_latency_ms is None:
+                no_feasible_target = min(
+                    branch.cardinality,
+                    max(
+                        _RISING_GROWTH_WINDOW + 1,
+                        startup_trial_count(branch),
+                    ),
+                )
+                if snapshot.pulls < no_feasible_target:
+                    values.append(branch)
+                else:
+                    eliminated += 1
+                continue
+            if not snapshot.ready_for_elimination:
+                values.append(branch)
+                continue
+            if (
+                best is not None
+                and snapshot.optimistic_latency_ms is not None
+                and snapshot.optimistic_latency_ms < best.best_latency_ms
+            ):
+                values.append(branch)
+            else:
+                eliminated += 1
+        state.rising_eliminated_branches += eliminated
+        return tuple(values)
+
+    def _run_rising_bandit(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        *,
+        deadline: float,
+    ) -> tuple[BranchSpace, ...]:
+        """Allocate one TPE pull per active branch, then prune by potential."""
+
+        active = tuple(
             branch
-            for branch in survivors
+            for branch in plan.search_space.branches
             if len(
                 _completed_config_ids(
                     backend,
@@ -667,26 +831,60 @@ class SearchEngine:
                 )
             )
             < branch.cardinality
-        ]
-        cursor = 0
+        )
+        # Compatible history can already prove a branch uncompetitive. Costless
+        # legacy Trials remain active until one new measured pull supplies cost.
+        active = self._prune_rising_branches(
+            plan,
+            state,
+            backend,
+            active,
+            deadline=deadline,
+        )
+        budget = plan.request.budget
         while active and state.budget.can_start(
             deadline=deadline,
             max_trials=budget.max_trials,
         ):
-            index = cursor % len(active)
-            branch = active[index]
-            progressed = self._ask_and_measure(plan, state, backend, branch)
-            completed_ids = _completed_config_ids(
+            progressed = False
+            complete_round = True
+            stalled: set[str] = set()
+            for branch in active:
+                if not state.budget.can_start(
+                    deadline=deadline,
+                    max_trials=budget.max_trials,
+                ):
+                    complete_round = False
+                    break
+                if self._ask_and_measure(plan, state, backend, branch):
+                    progressed = True
+                else:
+                    stalled.add(branch.branch_id)
+                    complete_round = False
+            if stalled:
+                active = tuple(
+                    branch for branch in active if branch.branch_id not in stalled
+                )
+            if not progressed:
+                break
+            if not complete_round:
+                # Keep observations from a partial round, but do not use that
+                # unequal allocation to eliminate another branch.
+                if not state.budget.can_start(
+                    deadline=deadline,
+                    max_trials=budget.max_trials,
+                ):
+                    break
+                continue
+            state.rising_rounds += 1
+            active = self._prune_rising_branches(
+                plan,
+                state,
                 backend,
-                state.studies[branch.branch_id],
-                branch,
+                active,
+                deadline=deadline,
             )
-            if len(completed_ids) >= branch.cardinality or not progressed:
-                active.pop(index)
-                if active:
-                    cursor %= len(active)
-            else:
-                cursor += 1
+        return active
 
     def _ask_and_measure(
         self,
@@ -770,6 +968,7 @@ class SearchEngine:
         request: SearchRequest,
         config: ConfigSpec,
     ) -> TrialMeasurement:
+        started_ns = time.monotonic_ns()
         build_result = self.plan_builder.evaluate(
             config,
             request.execution_context,
@@ -782,7 +981,7 @@ class SearchEngine:
                 if rejection is not None and hasattr(rejection, "to_dict")
                 else {"reason": "plan_rejected"}
             )
-            return TrialMeasurement.infeasible(
+            measurement = TrialMeasurement.infeasible(
                 config_id=config.config_id,
                 fidelity=Fidelity.SCREEN,
                 scope=request.scope,
@@ -791,38 +990,48 @@ class SearchEngine:
                 failure_kind="plan_rejection",
                 metrics={"plan_rejection": details},
             )
-        measurement = self.evaluator.evaluate(config, Fidelity.SCREEN)
-        self._validate_measurement(
+        else:
+            measurement = self.evaluator.evaluate(config, Fidelity.SCREEN)
+            self._validate_measurement(
+                measurement,
+                config=config,
+                fidelity=Fidelity.SCREEN,
+                scope=request.scope,
+            )
+        return replace(
             measurement,
-            config=config,
-            fidelity=Fidelity.SCREEN,
-            scope=request.scope,
+            metrics={
+                **measurement.metrics,
+                _SCREEN_EVALUATION_SECONDS: max(
+                    1,
+                    time.monotonic_ns() - started_ns,
+                )
+                / 1_000_000_000.0,
+            },
         )
-        return measurement
 
     def _select_promotions(
         self,
         plan: SearchPlan,
         state: _RunState,
         backend: OptunaBackend,
-        survivors: tuple[BranchSpace, ...],
+        active: tuple[BranchSpace, ...],
     ) -> tuple[ConfigSpec, ...]:
-        ranked = self._ranked_level1(state, backend, survivors)
+        ranked = self._ranked_level1(
+            state,
+            backend,
+            plan.search_space.branches,
+        )
         if not ranked:
             return ()
         budget = plan.request.budget
         target = max(
             1,
-            len(survivors),
+            len(active),
             math.ceil(len(ranked) * budget.promote_fraction),
         )
         target = min(target, budget.enhanced_top_k, len(ranked))
-        configs: list[ConfigSpec] = []
-        for branch in survivors:
-            best = backend.best_feasible(state.studies[branch.branch_id], branch)
-            if best is not None:
-                configs.append(best.config)
-        configs.extend(completed.config for completed in ranked)
+        configs = [completed.config for completed in ranked]
         incumbent_id = (
             None if plan.request.incumbent is None else plan.request.incumbent.config_id
         )

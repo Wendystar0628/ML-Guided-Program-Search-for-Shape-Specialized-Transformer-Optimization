@@ -97,9 +97,7 @@ class SearchRunLog:
                 "challenger": (
                     None if formal is None else _measurement_summary(formal)
                 ),
-                "paired_speedup": (
-                    None if comparison is None else comparison.speedup
-                ),
+                "paired_speedup": (None if comparison is None else comparison.speedup),
                 "paired_ratios": (
                     [] if comparison is None else list(comparison.paired_ratios)
                 ),
@@ -124,6 +122,14 @@ class SearchRunLog:
                     "best_config_id": result.best_screen_config_id,
                     "best_median_ms": result.best_screen_median_ms,
                     "failure_counts_total": dict(result.screen_failure_counts),
+                    "scheduler": {
+                        "algorithm": "cost_aware_rising_bandit",
+                        "growth_window": 3,
+                        "completed_rounds": result.rising_rounds,
+                        "eliminated_branches": (result.rising_eliminated_branches),
+                        "active_branches": result.rising_active_branches,
+                        "space_exhausted": result.level1_space_exhausted,
+                    },
                 },
                 "enhanced": [
                     _measurement_summary(measurement)
@@ -150,9 +156,7 @@ class SearchRunLog:
                 "iteration": iteration.index,
                 "elapsed_seconds": round(now - self._last_iteration, 3),
                 "deployment_updates": iteration.deployment_updates,
-                "shapes_with_search_progress": (
-                    iteration.shapes_with_search_progress
-                ),
+                "shapes_with_search_progress": (iteration.shapes_with_search_progress),
                 "no_deployment_streak": iteration.no_deployment_streak,
             }
         )

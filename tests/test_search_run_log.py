@@ -54,9 +54,7 @@ def _shape_result() -> ShapeSearchResult:
             selected_measurement=challenger_formal,
             branch_count=4,
             completed_level1=12,
-            enhanced_measurements=(
-                _measurement(challenger, 1.01, Fidelity.ENHANCED),
-            ),
+            enhanced_measurements=(_measurement(challenger, 1.01, Fidelity.ENHANCED),),
             locked_challenger=challenger,
             formal_challenger_measurement=challenger_formal,
             formal_comparison=comparison,
@@ -117,9 +115,10 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
     ]
     shape_event = events[1]
     assert shape_event["screen"]["new_trials"] == 3
-    assert shape_event["screen"]["failure_counts_total"] == {
-        "accuracy_constraint": 2
-    }
+    assert shape_event["screen"]["failure_counts_total"] == {"accuracy_constraint": 2}
+    assert shape_event["screen"]["scheduler"]["algorithm"] == (
+        "cost_aware_rising_bandit"
+    )
     assert shape_event["decision"]["deployment_updated"] is True
     assert shape_event["decision"]["formal"]["promotion_wins"] == 13
     assert len(shape_event["decision"]["formal"]["paired_ratios"]) == 13
@@ -191,9 +190,7 @@ def test_screen_failure_summary_preserves_the_primary_constraint() -> None:
         == "execution_path_constraint"
     )
     assert (
-        _screen_failure_kind(
-            infeasible(ConstraintVector(runtime=1.0), "out_of_memory")
-        )
+        _screen_failure_kind(infeasible(ConstraintVector(runtime=1.0), "out_of_memory"))
         == "out_of_memory"
     )
 

@@ -26,7 +26,10 @@ class _SearchSweep:
             shape_results=tuple(
                 SimpleNamespace(
                     deployment_updated=updated,
-                    search_result=SimpleNamespace(made_search_progress=True),
+                    search_result=SimpleNamespace(
+                        made_search_progress=True,
+                        level1_space_exhausted=False,
+                    ),
                 )
                 for updated in updates
             ),
@@ -86,6 +89,7 @@ def test_no_new_evidence_stops_an_exhausted_search_immediately() -> None:
             result = super().run(request)
             for item in result.shape_results:
                 item.search_result.made_search_progress = False
+                item.search_result.level1_space_exhausted = True
             return result
 
     result = OptimizationLoop(_ExhaustedSweep([(0, (False,))])).run(

@@ -101,7 +101,10 @@ class OptimizationLoop:
                     ),
                     exit_code=search_result.exit_code,
                 )
-            if deployment_updates == 0 and shapes_with_search_progress == 0:
+            if deployment_updates == 0 and all(
+                item.search_result.level1_space_exhausted
+                for item in search_result.shape_results
+            ):
                 return OptimizationResult(
                     iterations_run=iteration_index,
                     total_deployment_updates=total_deployment_updates,

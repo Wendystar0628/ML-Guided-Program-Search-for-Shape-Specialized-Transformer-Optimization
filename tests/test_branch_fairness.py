@@ -19,6 +19,8 @@ from autotune.search_engine import (
     SearchEngine,
     SearchPlan,
     SearchRequest,
+    _branch_progress,
+    _completed_config_ids,
     _RunState,
 )
 from autotune.search_space import BranchSpace, ParameterDomain, StructureSpec
@@ -81,6 +83,21 @@ class _RaisingEvaluator:
     def compare(self, challenger: ConfigSpec, incumbent: ConfigSpec) -> object:
         del challenger, incumbent
         raise RuntimeError("paired benchmark infrastructure failed")
+
+
+class _InfeasibleEvaluator:
+    def __init__(self, scope: EvaluationScope) -> None:
+        self.scope = scope
+
+    def evaluate(self, config: ConfigSpec, fidelity: Fidelity) -> TrialMeasurement:
+        return TrialMeasurement.infeasible(
+            config_id=config.config_id,
+            fidelity=fidelity,
+            scope=self.scope,
+            penalty_ms=1_000_000_000.0,
+            constraints=ConstraintVector(runtime=1.0),
+            failure_kind="constraint_violation",
+        )
 
 
 @dataclass(frozen=True)
@@ -169,7 +186,6 @@ def _request(
         budget=SearchBudget(
             max_seconds=max_seconds,
             max_trials=max_trials,
-            survivor_count=1,
         ),
     )
 
@@ -193,7 +209,7 @@ def _plan(request: SearchRequest, branches: tuple[BranchSpace, ...]) -> SearchPl
     )
 
 
-def test_screening_uses_default_plus_startup_samples_and_best_latency(
+def test_screening_reuses_history_and_reaches_three_unique_points(
     tmp_path,
 ) -> None:
     branches = (
@@ -234,10 +250,6 @@ def test_screening_uses_default_plus_startup_samples_and_best_latency(
     for branch in branches:
         completed = backend.completed_trials(studies[branch.branch_id], branch)
         assert len({trial.config.config_id for trial in completed}) == 3
-
-    # The first branch wins because its best observation is 1 ms, even
-    # though its other completed observations are 100 ms.
-    assert engine._select_survivors(plan, state, backend) == (branches[0],)
 
 
 def test_duplicate_tpe_proposal_uses_one_unseen_point_without_extra_budget(
@@ -317,6 +329,7 @@ def test_exhausted_finite_branch_does_not_ask_or_measure(
     assert not engine._ask_and_measure(plan, state, backend, branch)
     assert state.budget.new_level1_trials == 0
     assert evaluator.calls == []
+    assert engine._select_promotions(plan, state, backend, ()) == (branch.config_at(0),)
 
 
 def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -> None:
@@ -362,7 +375,7 @@ def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -
     ) == frozenset({rejected.config_id})
 
 
-def test_plan_rejects_trial_cap_below_fair_screening_total(
+def test_plan_allows_trial_cap_below_already_persisted_screen_coverage(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -384,8 +397,231 @@ def test_plan_rejects_trial_cap_below_fair_screening_total(
         plan_builder=_PlanBuilder(),
     )
 
-    with pytest.raises(ValueError, match="fair structure screening.*at least 6"):
-        engine.plan(_request(max_trials=5))
+    plan = engine.plan(_request(max_trials=1))
+
+    assert len(plan.search_space.branches) == 2
+
+
+def test_branch_progress_reconstructs_best_curve_and_recent_gain(tmp_path) -> None:
+    branch = _branch(
+        PrecisionPlan.INPUT_DTYPE,
+        choices=tuple(range(1, 13)),
+    )
+    backend = OptunaBackend(SearchStorage(tmp_path), seed=7)
+    study = backend.create_study(StudyIdentity("curve", branch.branch_id, "test"))
+    values: tuple[float | None, ...] = (10.0, 8.0, 9.0, None, 7.0)
+    for index, latency in enumerate(values):
+        config = branch.config_at(index)
+        measurement = (
+            _measurement(config, latency)
+            if latency is not None
+            else TrialMeasurement.infeasible(
+                config_id=config.config_id,
+                fidelity=Fidelity.SCREEN,
+                scope=EvaluationScope.RESIDENT,
+                penalty_ms=1_000_000_000.0,
+                constraints=ConstraintVector(runtime=1.0),
+                failure_kind="constraint_violation",
+            )
+        )
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            measurement,
+            source="history",
+        )
+
+    progress = _branch_progress(
+        backend,
+        study,
+        branch,
+        remaining_seconds=30.0,
+    )
+
+    assert progress.pulls == 5
+    assert progress.best_curve_ms == (10.0, 8.0, 8.0, 8.0, 7.0)
+    assert progress.best_latency_ms == 7.0
+    assert progress.recent_gain_ms_per_pull == pytest.approx(1.0 / 3.0)
+    assert progress.mean_trial_seconds is None
+    assert not progress.ready_for_elimination
+
+
+def test_branch_progress_uses_screen_cost_for_optimistic_bound(tmp_path) -> None:
+    branches = (
+        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 13))),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 13))),
+    )
+    backend = OptunaBackend(SearchStorage(tmp_path), seed=9)
+    progress_values = []
+    for branch, cost in zip(branches, (1.0, 10.0), strict=True):
+        study = backend.create_study(StudyIdentity("cost", branch.branch_id, "test"))
+        for index, latency in enumerate((10.0, 9.0, 8.5, 8.0)):
+            config = branch.config_at(index)
+            measurement = replace(
+                _measurement(config, latency),
+                metrics={"screen_evaluation_seconds": cost},
+            )
+            backend.record_completed(
+                study,
+                branch,
+                config,
+                measurement,
+                source="history",
+            )
+        progress_values.append(
+            _branch_progress(
+                backend,
+                study,
+                branch,
+                remaining_seconds=30.0,
+            )
+        )
+
+    cheap, expensive = progress_values
+    assert cheap.mean_trial_seconds == 1.0
+    assert cheap.optimistic_latency_ms == pytest.approx(8.0 - 8 * (2.0 / 3.0))
+    assert expensive.mean_trial_seconds == 10.0
+    assert expensive.optimistic_latency_ms == pytest.approx(6.0)
+
+
+def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
+    branches = (
+        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 13))),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 13))),
+        _branch(PrecisionPlan.FP16_ATTENTION_BRANCH, choices=tuple(range(1, 13))),
+    )
+    curves = (
+        (1.0, 1.0, 1.0, 1.0),
+        (1.2, 1.2, 1.2, 1.2),
+        (1.4, 1.3, 1.2, 1.1),
+    )
+    request = _request(max_trials=100)
+    plan = _plan(request, branches)
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    studies = {}
+    for branch, curve in zip(branches, curves, strict=True):
+        study = backend.create_study(plan.identity_for(branch.branch_id))
+        studies[branch.branch_id] = study
+        for index, latency in enumerate(curve):
+            config = branch.config_at(index)
+            backend.record_completed(
+                study,
+                branch,
+                config,
+                replace(
+                    _measurement(config, latency),
+                    metrics={"screen_evaluation_seconds": 1.0},
+                ),
+                source="history",
+            )
+    state = _RunState(studies=studies)
+
+    active = engine._prune_rising_branches(
+        plan,
+        state,
+        backend,
+        branches,
+        deadline=time.monotonic() + 30.0,
+    )
+
+    assert active == (branches[0], branches[2])
+    assert state.rising_eliminated_branches == 1
+
+
+def test_historical_screening_first_new_pull_supplies_cost(tmp_path) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 9)))
+    request = _request(max_trials=1)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_RecordingEvaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    for index in range(3):
+        config = branch.config_at(index)
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            _measurement(config, float(10 - index)),
+            source="legacy_history",
+        )
+    state = _RunState(studies={branch.branch_id: study})
+
+    active = engine._run_rising_bandit(
+        plan,
+        state,
+        backend,
+        deadline=time.monotonic() + 30.0,
+    )
+    completed = sorted(
+        backend.completed_trials(study, branch),
+        key=lambda trial: trial.number,
+    )
+    progress = _branch_progress(
+        backend,
+        study,
+        branch,
+        remaining_seconds=30.0,
+    )
+
+    assert active == (branch,)
+    assert state.budget.new_level1_trials == 1
+    assert len(completed) == 4
+    assert "screen_evaluation_seconds" not in completed[0].measurement.metrics
+    assert completed[-1].measurement.metrics["screen_evaluation_seconds"] > 0.0
+    assert progress.mean_trial_seconds is not None
+    assert progress.ready_for_elimination
+
+
+def test_no_feasible_branch_stops_at_tpe_startup_threshold(tmp_path) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 17)))
+    request = _request(max_trials=20)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_InfeasibleEvaluator(request.scope),  # type: ignore[arg-type]
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    for index in range(3):
+        config = branch.config_at(index)
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            TrialMeasurement.infeasible(
+                config_id=config.config_id,
+                fidelity=Fidelity.SCREEN,
+                scope=request.scope,
+                penalty_ms=1_000_000_000.0,
+                constraints=ConstraintVector(runtime=1.0),
+                failure_kind="constraint_violation",
+            ),
+            source="history",
+        )
+    state = _RunState(studies={branch.branch_id: study})
+
+    active = engine._run_rising_bandit(
+        plan,
+        state,
+        backend,
+        deadline=time.monotonic() + 30.0,
+    )
+
+    assert active == ()
+    assert state.budget.new_level1_trials == 7
+    assert len(_completed_config_ids(backend, study, branch)) == 10
+    assert engine._select_promotions(plan, state, backend, active) == ()
 
 
 def test_plan_keeps_unique_warm_start_branches(
