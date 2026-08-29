@@ -39,6 +39,7 @@ _FP16_FIELDS = {
     PrecisionPlan.FP16_FFN_BRANCH: frozenset(
         {"ffn_input_projection", "ffn_output_projection"}
     ),
+    PrecisionPlan.FP16_FFN_OUTPUT: frozenset({"ffn_output_projection"}),
     PrecisionPlan.FP16_CORE: frozenset(_PROJECTION_FIELDS),
 }
 
@@ -105,6 +106,7 @@ def test_precision_plans_bind_exactly_their_projection_roles(
             "attention_output_projection",
         ),
         (PrecisionPlan.FP16_FFN_BRANCH, "ffn_input_projection"),
+        (PrecisionPlan.FP16_FFN_OUTPUT, "ffn_output_projection"),
         (PrecisionPlan.FP16_CORE, "ffn_output_projection"),
     ),
 )
@@ -223,7 +225,9 @@ def _assert_new_signature_fields(signature: dict[str, object]) -> None:
     assert signature["qkv_projection_compute_dtype"] == "float32"
     assert signature["attention_output_projection_compute_dtype"] == "float32"
     assert signature["ffn_input_projection_compute_dtype"] == "float32"
+    assert signature["ffn_activation_output_dtype"] == "float32"
     assert signature["ffn_output_projection_compute_dtype"] == "float32"
+    assert signature["ffn_launch"] is None
     assert signature["qkv_projection_calls"] == 1
     assert signature["qkv_materialization_calls"] == 1
     assert signature["attention_output_bridge_calls"] == 1

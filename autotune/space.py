@@ -25,6 +25,7 @@ from solution.config import (
     RuntimeBackend,
     ScheduleConfig,
     TritonAttentionParams,
+    TritonFFNParams,
     TritonNormParams,
 )
 
@@ -53,6 +54,7 @@ _FP16_PROJECTION_FIELDS = {
         "ffn_input_projection",
         "ffn_output_projection",
     ),
+    PrecisionPlan.FP16_FFN_OUTPUT: ("ffn_output_projection",),
     PrecisionPlan.FP16_CORE: _PROJECTION_FIELDS,
 }
 
@@ -479,11 +481,19 @@ class BranchSpace:
                 num_warps=int(parameters["initial_num_warps"]),
             )
 
+        ffn_launch = None
+        if self.structure.ffn is FFNBackend.TRITON_EXACT_GELU:
+            ffn_launch = TritonFFNParams(
+                block_size=int(parameters["ffn_block_size"]),
+                num_warps=int(parameters["ffn_num_warps"]),
+            )
+
         schedule_values: dict[str, Any] = {
             "runtime": self.structure.runtime,
             "attention_launch": attention_launch,
             "residual_norm_launch": residual_launch,
             "initial_norm_launch": initial_launch,
+            "ffn_launch": ffn_launch,
             "compile_mode": parameters.get("compile_mode"),
             "batch_tile_size": parameters.get("batch_tile_size"),
             "reuse_unchanged_input": bool(
@@ -547,6 +557,11 @@ class BranchSpace:
             values.update(
                 initial_block_rows=config.schedule.initial_norm_launch.block_rows,
                 initial_num_warps=config.schedule.initial_norm_launch.num_warps,
+            )
+        if config.schedule.ffn_launch is not None:
+            values.update(
+                ffn_block_size=config.schedule.ffn_launch.block_size,
+                ffn_num_warps=config.schedule.ffn_launch.num_warps,
             )
         if config.schedule.compile_mode is not None:
             values["compile_mode"] = config.schedule.compile_mode
@@ -637,6 +652,17 @@ def _domains_for_structure(
                 ),
             )
         )
+    model_width = int(context.execution_context.d_model)
+    if model_width == 1024:
+        norm_rows = (1, 2)
+        norm_warps = (4, 8)
+    elif model_width == 32:
+        norm_rows = (1, 2, 4, 8)
+        norm_warps = (1, 2, 4)
+    else:
+        norm_rows = (1, 2, 4, 8)
+        norm_warps = (1, 2, 4, 8)
+
     if structure.residual_norm in {
         ResidualNormBackend.TRITON,
         ResidualNormBackend.TRITON_MIXED,
@@ -645,14 +671,14 @@ def _domains_for_structure(
             (
                 ParameterDomain(
                     "residual_block_rows",
-                    (1, 2, 4, 8),
-                    2,
+                    norm_rows,
+                    2 if 2 in norm_rows else norm_rows[0],
                     True,
                 ),
                 ParameterDomain(
                     "residual_num_warps",
-                    (1, 2, 4, 8),
-                    2,
+                    norm_warps,
+                    4 if model_width == 1024 else 2,
                     True,
                 ),
             )
@@ -662,14 +688,31 @@ def _domains_for_structure(
             (
                 ParameterDomain(
                     "initial_block_rows",
-                    (1, 2, 4, 8),
-                    2,
+                    norm_rows,
+                    2 if 2 in norm_rows else norm_rows[0],
                     True,
                 ),
                 ParameterDomain(
                     "initial_num_warps",
+                    norm_warps,
+                    4 if model_width == 1024 else 2,
+                    True,
+                ),
+            )
+        )
+    if structure.ffn is FFNBackend.TRITON_EXACT_GELU:
+        domains.extend(
+            (
+                ParameterDomain(
+                    "ffn_block_size",
+                    (128, 256, 512, 1024),
+                    256,
+                    True,
+                ),
+                ParameterDomain(
+                    "ffn_num_warps",
                     (1, 2, 4, 8),
-                    2,
+                    4,
                     True,
                 ),
             )
@@ -766,6 +809,11 @@ def _structure_specs(scope: str) -> tuple[StructureSpec, ...]:
         ):
             continue
         if ffn is FFNBackend.COMPILED and runtime is RuntimeBackend.COMPILED_FORWARD:
+            continue
+        if ffn is FFNBackend.TRITON_EXACT_GELU and (
+            precision_plan is not PrecisionPlan.FP16_FFN_OUTPUT
+            or runtime is RuntimeBackend.COMPILED_FORWARD
+        ):
             continue
         for attention_output_bridge in _attention_output_bridge_choices(attention):
             structure = StructureSpec(

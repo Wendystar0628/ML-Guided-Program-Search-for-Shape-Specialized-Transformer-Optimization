@@ -1,4 +1,4 @@
-"""Forward-only causal FP16 attention for the exact Shape 11 Dh8 family."""
+"""Forward-only causal FP16 attention for the official Dh8 shape family."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - exercised without the optional runtime
 
 TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND = "triton_dh8_causal_attention_bsd"
 _BATCH_SIZE = 64
-_NUM_HEADS = 16
+_SUPPORTED_NUM_HEADS = frozenset({4, 16})
 _SEQUENCE_LENGTH = 128
 _HEAD_DIM = 8
 _PADDED_HEAD_DIM = 16
@@ -210,14 +210,15 @@ if (
         num_warps: int,
         num_stages: int,
     ) -> torch.Tensor:
+        batch_size, num_heads, sequence_length, head_dim = query.shape
         output = torch.empty(
-            (_BATCH_SIZE, _SEQUENCE_LENGTH, _NUM_HEADS * _HEAD_DIM),
+            (batch_size, sequence_length, num_heads * head_dim),
             dtype=query.dtype,
             device=query.device,
         )
         grid = (
-            _SEQUENCE_LENGTH // block_m,
-            _BATCH_SIZE * _NUM_HEADS,
+            sequence_length // block_m,
+            batch_size * num_heads,
         )
         wrap_triton(_dh8_causal_attention_kernel)[grid](
             query,
@@ -229,9 +230,9 @@ if (
             *key.stride(),
             *value.stride(),
             *output.stride(),
-            NUM_HEADS=_NUM_HEADS,
-            SEQ_LEN=_SEQUENCE_LENGTH,
-            HEAD_DIM=_HEAD_DIM,
+            NUM_HEADS=num_heads,
+            SEQ_LEN=sequence_length,
+            HEAD_DIM=head_dim,
             PADDED_HEAD_DIM=_PADDED_HEAD_DIM,
             BLOCK_M=block_m,
             BLOCK_N=block_n,
@@ -277,7 +278,7 @@ def can_use_triton_dh8_causal_attention(
     num_warps: int = _NUM_WARPS,
     num_stages: int = _NUM_STAGES,
 ) -> bool:
-    """Validate the exact Shape 11 tensor contract."""
+    """Validate the official B64/S128/Dh8 tensor-family contract."""
 
     if not triton_dh8_causal_attention_available():
         return False
@@ -287,11 +288,14 @@ def can_use_triton_dh8_causal_attention(
         return False
     if valid_token_mask is not None or query.device.type != "cuda":
         return False
-    if query.ndim != 4 or tuple(query.shape) != (
-        _BATCH_SIZE,
-        _NUM_HEADS,
-        _SEQUENCE_LENGTH,
-        _HEAD_DIM,
+    if query.ndim != 4:
+        return False
+    batch_size, num_heads, sequence_length, head_dim = query.shape
+    if (
+        batch_size != _BATCH_SIZE
+        or num_heads not in _SUPPORTED_NUM_HEADS
+        or sequence_length != _SEQUENCE_LENGTH
+        or head_dim != _HEAD_DIM
     ):
         return False
     if query.shape != key.shape or query.shape != value.shape:
@@ -320,7 +324,7 @@ def prevalidated_triton_dh8_causal_attention_bsd(
     num_warps: int = _NUM_WARPS,
     num_stages: int = _NUM_STAGES,
 ) -> tuple[torch.Tensor, str]:
-    """Run the exact specialization after immutable plan validation."""
+    """Run the Dh8 family specialization after immutable plan validation."""
 
     _validate_launch_config(block_m, block_n, num_warps, num_stages)
     resolved_scale = 1.0 / math.sqrt(_HEAD_DIM) if scale is None else float(scale)

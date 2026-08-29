@@ -20,6 +20,7 @@ from .config import (
 )
 from .operators import (
     triton_dh8_causal_attention_available,
+    triton_exact_gelu_available,
     triton_initial_fp16_layer_norm_available,
     triton_mixed_residual_layer_norm_available,
     triton_residual_layer_norm_available,
@@ -120,6 +121,7 @@ class HardwareCapabilities:
     triton_residual_norm: bool
     triton_mixed_residual_norm: bool
     triton_initial_norm: bool
+    triton_exact_gelu: bool
 
     @classmethod
     def detect(cls, device: torch.device) -> HardwareCapabilities:
@@ -159,6 +161,7 @@ class HardwareCapabilities:
             triton_residual_norm=triton_residual_layer_norm_available(),
             triton_mixed_residual_norm=(triton_mixed_residual_layer_norm_available()),
             triton_initial_norm=triton_initial_fp16_layer_norm_available(),
+            triton_exact_gelu=triton_exact_gelu_available(),
         )
 
 
@@ -497,15 +500,15 @@ class PlanBuilder:
                     "Dh8 Triton attention is unavailable",
                 )
             if (
-                context.batch_size,
-                context.num_heads,
-                context.seq_len,
-                head_dim,
-            ) != (64, 16, 128, 8):
+                context.batch_size != 64
+                or context.num_heads not in {4, 16}
+                or context.seq_len != 128
+                or head_dim != 8
+            ):
                 reject(
                     "unsupported_shape",
                     "program.attention",
-                    "Dh8 Triton template requires B64/H16/S128/Dh8",
+                    "Dh8 Triton template requires B64/H{4,16}/S128/Dh8",
                 )
             return
         raise AssertionError(f"unhandled attention backend: {backend}")
@@ -540,27 +543,64 @@ class PlanBuilder:
         hardware: HardwareCapabilities,
         reject: Any,
     ) -> None:
-        if config.program.ffn is FFNBackend.TORCH:
+        backend = config.program.ffn
+        if backend is FFNBackend.TORCH:
             return
         if context.device.type != "cuda":
-            reject("requires_cuda", "program.ffn", "compiled FFN requires CUDA")
+            reject("requires_cuda", "program.ffn", "selected FFN requires CUDA")
         if not context.inference:
             reject(
                 "requires_inference",
                 "program.ffn",
-                "compiled FFN is available only for inference",
-            )
-        if not hardware.torch_compile:
-            reject(
-                "backend_unavailable",
-                "program.ffn",
-                "torch.compile is unavailable",
+                "selected FFN is available only for inference",
             )
         if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
             reject(
                 "nested_compilation",
                 "program.ffn",
-                "compiled FFN cannot be nested in compiled forward",
+                "specialized FFN cannot be nested in compiled forward",
+            )
+        if backend is FFNBackend.COMPILED:
+            if not hardware.torch_compile:
+                reject(
+                    "backend_unavailable",
+                    "program.ffn",
+                    "torch.compile is unavailable",
+                )
+            return
+        if backend is not FFNBackend.TRITON_EXACT_GELU:
+            raise AssertionError(f"unhandled FFN backend: {backend}")
+        if not hardware.triton_exact_gelu:
+            reject(
+                "backend_unavailable",
+                "program.ffn",
+                "Triton Exact-GELU is unavailable",
+            )
+        if config.program.precision_plan is not PrecisionPlan.FP16_FFN_OUTPUT:
+            reject(
+                "precision_incompatible",
+                "program.precision_plan",
+                "Triton Exact-GELU requires the FP16 FFN output plan",
+            )
+        if context.dtype != torch.float32:
+            reject(
+                "requires_float32_input",
+                "program.ffn",
+                "fused Exact-GELU cast requires FP32 FFN input",
+            )
+        launch = config.schedule.ffn_launch
+        assert launch is not None
+        if launch.block_size not in {128, 256, 512, 1024}:
+            reject(
+                "unsupported_launch_value",
+                "schedule.ffn_launch.block_size",
+                "Triton Exact-GELU supports block sizes 128, 256, 512, and 1024",
+            )
+        if launch.num_warps not in {1, 2, 4, 8}:
+            reject(
+                "unsupported_launch_value",
+                "schedule.ffn_launch.num_warps",
+                "Triton Exact-GELU supports 1, 2, 4, or 8 warps",
             )
 
     @staticmethod
@@ -624,11 +664,11 @@ class PlanBuilder:
                     "program.residual_norm",
                     "Triton residual norm is unavailable",
                 )
-            if context.d_model != 128:
+            if context.d_model not in {32, 128, 1024}:
                 reject(
                     "unsupported_shape",
                     "program.residual_norm",
-                    "current Triton residual norm template requires D128",
+                    "Triton residual norm supports D32, D128, and D1024",
                 )
             if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
                 reject(
@@ -644,11 +684,11 @@ class PlanBuilder:
                     "program.residual_norm",
                     "Triton mixed residual norm is unavailable",
                 )
-            if context.d_model != 128:
+            if context.d_model not in {32, 128, 1024}:
                 reject(
                     "unsupported_shape",
                     "program.residual_norm",
-                    "mixed Triton norm template requires D128",
+                    "mixed Triton norm supports D32, D128, and D1024",
                 )
             fp16_outputs = {
                 ProjectionBackend.AUTOCAST_FP16,
@@ -706,11 +746,11 @@ class PlanBuilder:
                 "program.initial_norm",
                 "Triton initial norm requires CUDA FP32 input",
             )
-        if context.d_model != 128:
+        if context.d_model not in {32, 128, 1024}:
             reject(
                 "unsupported_shape",
                 "program.initial_norm",
-                "Triton initial norm template requires D128",
+                "Triton initial norm supports D32, D128, and D1024",
             )
         if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
             reject(
@@ -758,6 +798,11 @@ class PlanBuilder:
             ffn_output_projection,
             inner_context,
         )
+        ffn_activation_output_dtype = (
+            "float16"
+            if config.program.ffn is FFNBackend.TRITON_EXACT_GELU
+            else ffn_input_projection_dtype
+        )
         attention_compute_dtype = (
             "float16"
             if attention_backend
@@ -790,6 +835,7 @@ class PlanBuilder:
                 attention_output_projection_dtype
             ),
             ffn_input_projection_compute_dtype=ffn_input_projection_dtype,
+            ffn_activation_output_dtype=ffn_activation_output_dtype,
             ffn_output_projection_compute_dtype=ffn_output_projection_dtype,
             attention_calls=layers,
             qkv_projection_calls=layers,
@@ -805,6 +851,7 @@ class PlanBuilder:
             attention_launch=config.schedule.attention_launch,
             residual_norm_launch=config.schedule.residual_norm_launch,
             initial_norm_launch=config.schedule.initial_norm_launch,
+            ffn_launch=config.schedule.ffn_launch,
         )
         return ExecutionPlan(
             config=config,
@@ -824,6 +871,7 @@ class PlanBuilder:
             ffn_backend=config.program.ffn,
             ffn_input_projection_backend=ffn_input_projection,
             ffn_input_projection_compute_dtype=ffn_input_projection_dtype,
+            ffn_activation_output_dtype=ffn_activation_output_dtype,
             ffn_output_projection_backend=ffn_output_projection,
             ffn_output_projection_compute_dtype=ffn_output_projection_dtype,
             precision_plan=config.program.precision_plan,
@@ -837,6 +885,7 @@ class PlanBuilder:
             attention_launch=config.schedule.attention_launch,
             residual_norm_launch=config.schedule.residual_norm_launch,
             initial_norm_launch=config.schedule.initial_norm_launch,
+            ffn_launch=config.schedule.ffn_launch,
             expected_trace=expected,
         )
 

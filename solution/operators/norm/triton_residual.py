@@ -1,4 +1,4 @@
-"""Triton residual-plus-LayerNorm for contiguous width-128 tensors."""
+"""Triton residual-plus-LayerNorm for contiguous official model widths."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ except ImportError:  # pragma: no cover - exercised by environments without Trit
 
 
 TRITON_RESIDUAL_LAYER_NORM_BACKEND = "triton_residual_layer_norm"
-_WIDTH = 128
 _BLOCK_ROWS = 2
 _NUM_WARPS = 2
+_SUPPORTED_WIDTHS = frozenset({32, 128, 1024})
 _SUPPORTED_BLOCK_ROWS = frozenset({1, 2, 4, 8})
 _SUPPORTED_NUM_WARPS = frozenset({1, 2, 4, 8})
 
@@ -94,9 +94,10 @@ def can_use_triton_residual_layer_norm(
         return False
     if value.ndim < 2 or not value.is_contiguous() or not update.is_contiguous():
         return False
-    if value.shape[-1] != _WIDTH:
+    if value.shape[-1] not in _SUPPORTED_WIDTHS:
         return False
-    if tuple(layer_norm.normalized_shape) != (_WIDTH,):
+    width = value.shape[-1]
+    if tuple(layer_norm.normalized_shape) != (width,):
         return False
     if layer_norm.weight is None or layer_norm.bias is None:
         return False
@@ -124,7 +125,8 @@ def triton_residual_layer_norm(
     assert triton is not None
     assert layer_norm.weight is not None
     assert layer_norm.bias is not None
-    row_count = value.numel() // _WIDTH
+    width = value.shape[-1]
+    row_count = value.numel() // width
     residual = torch.empty_like(value)
     normalized = torch.empty_like(value)
     try:
@@ -137,7 +139,7 @@ def triton_residual_layer_norm(
             normalized,
             row_count,
             eps=layer_norm.eps,
-            width=_WIDTH,
+            width=width,
             block_rows=block_rows,
             num_warps=num_warps,
         )

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar
 
-CONFIG_SCHEMA_VERSION = 2
+CONFIG_SCHEMA_VERSION = 3
 
 
 class AttentionBackend(StrEnum):
@@ -37,6 +37,7 @@ class PrecisionPlan(StrEnum):
     FP16_QKV_ATTENTION = "fp16_qkv_attention"
     FP16_ATTENTION_BRANCH = "fp16_attention_branch"
     FP16_FFN_BRANCH = "fp16_ffn_branch"
+    FP16_FFN_OUTPUT = "fp16_ffn_output"
     FP16_CORE = "fp16_core"
 
 
@@ -59,6 +60,7 @@ class FFNBackend(StrEnum):
 
     TORCH = "torch"
     COMPILED = "compiled"
+    TRITON_EXACT_GELU = "triton_exact_gelu"
 
 
 class ResidualNormBackend(StrEnum):
@@ -110,6 +112,7 @@ _PRECISION_FP16_PROJECTIONS = {
     PrecisionPlan.FP16_FFN_BRANCH: frozenset(
         {"ffn_input_projection", "ffn_output_projection"}
     ),
+    PrecisionPlan.FP16_FFN_OUTPUT: frozenset({"ffn_output_projection"}),
     PrecisionPlan.FP16_CORE: frozenset(_PROJECTION_FIELDS),
 }
 
@@ -237,6 +240,37 @@ class TritonNormParams:
 
 
 @dataclass(frozen=True, slots=True)
+class TritonFFNParams:
+    """Launch parameters for the fused Exact-GELU and output-cast primitive."""
+
+    block_size: int
+    num_warps: int
+
+    _FIELDS: ClassVar[frozenset[str]] = frozenset({"block_size", "num_warps"})
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "block_size",
+            _power_of_two(self.block_size, field="ffn_launch.block_size"),
+        )
+        if self.num_warps not in {1, 2, 4, 8}:
+            raise ValueError("ffn_launch.num_warps must be one of 1, 2, 4, 8")
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "block_size": self.block_size,
+            "num_warps": self.num_warps,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> TritonFFNParams:
+        value = _mapping(payload, field="ffn_launch")
+        _exact_fields(value, cls._FIELDS, field="ffn_launch")
+        return cls(**value)
+
+
+@dataclass(frozen=True, slots=True)
 class ProgramConfig:
     """High-level execution structure independently sampled from scheduling."""
 
@@ -345,6 +379,7 @@ class ScheduleConfig:
     attention_launch: TritonAttentionParams | None = None
     residual_norm_launch: TritonNormParams | None = None
     initial_norm_launch: TritonNormParams | None = None
+    ffn_launch: TritonFFNParams | None = None
     compile_mode: str | None = None
     batch_tile_size: int | None = None
     microbatch_size: int | None = None
@@ -356,6 +391,7 @@ class ScheduleConfig:
             "attention_launch",
             "residual_norm_launch",
             "initial_norm_launch",
+            "ffn_launch",
             "compile_mode",
             "batch_tile_size",
             "microbatch_size",
@@ -374,6 +410,10 @@ class ScheduleConfig:
             value = getattr(self, field_name)
             if value is not None and not isinstance(value, TritonNormParams):
                 raise TypeError(f"{field_name} must be TritonNormParams or None")
+        if self.ffn_launch is not None and not isinstance(
+            self.ffn_launch, TritonFFNParams
+        ):
+            raise TypeError("ffn_launch must be TritonFFNParams or None")
         compile_mode = self.compile_mode
         if runtime is RuntimeBackend.COMPILED_FORWARD:
             if compile_mode is None:
@@ -424,6 +464,9 @@ class ScheduleConfig:
                 if self.initial_norm_launch is None
                 else self.initial_norm_launch.to_dict()
             ),
+            "ffn_launch": (
+                None if self.ffn_launch is None else self.ffn_launch.to_dict()
+            ),
             "compile_mode": self.compile_mode,
             "batch_tile_size": self.batch_tile_size,
             "microbatch_size": self.microbatch_size,
@@ -450,6 +493,11 @@ class ScheduleConfig:
                 None
                 if value["initial_norm_launch"] is None
                 else TritonNormParams.from_dict(value["initial_norm_launch"])
+            ),
+            ffn_launch=(
+                None
+                if value["ffn_launch"] is None
+                else TritonFFNParams.from_dict(value["ffn_launch"])
             ),
             compile_mode=value["compile_mode"],
             batch_tile_size=value["batch_tile_size"],
@@ -499,6 +547,9 @@ class ConfigSpec:
             raise ValueError(
                 "initial_norm_launch must be present exactly for Triton initial norm"
             )
+        triton_ffn = self.program.ffn is FFNBackend.TRITON_EXACT_GELU
+        if triton_ffn != (self.schedule.ffn_launch is not None):
+            raise ValueError("ffn_launch must be present exactly for Triton Exact-GELU")
 
     @property
     def attention_output_layout(self) -> AttentionOutputLayout:
@@ -597,6 +648,7 @@ __all__ = [
     "RuntimeBackend",
     "ScheduleConfig",
     "TritonAttentionParams",
+    "TritonFFNParams",
     "TritonNormParams",
     "portable_config",
     "portable_streamed_config",

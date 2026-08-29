@@ -23,6 +23,13 @@ from .attention import (
     triton_shape13_causal_attention,
     triton_shape13_causal_attention_available,
 )
+from .ffn import (
+    TRITON_EXACT_GELU_BACKEND,
+    can_use_triton_exact_gelu,
+    prevalidated_triton_exact_gelu,
+    triton_exact_gelu,
+    triton_exact_gelu_available,
+)
 from .norm import (
     TRITON_INITIAL_FP16_LAYER_NORM_BACKEND,
     TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND,
@@ -47,6 +54,7 @@ __all__ = [
     "MIXED_FP16_CUDNN_BACKEND",
     "MIXED_FP16_EFFICIENT_BACKEND",
     "TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND",
+    "TRITON_EXACT_GELU_BACKEND",
     "TRITON_INITIAL_FP16_LAYER_NORM_BACKEND",
     "TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND",
     "TRITON_RESIDUAL_LAYER_NORM_BACKEND",
@@ -59,6 +67,7 @@ __all__ = [
     "can_use_residual_add",
     "can_use_residual_layer_norm",
     "can_use_triton_dh8_causal_attention",
+    "can_use_triton_exact_gelu",
     "can_use_triton_initial_fp16_layer_norm",
     "can_use_triton_mixed_residual_layer_norm",
     "can_use_triton_residual_layer_norm",
@@ -68,6 +77,7 @@ __all__ = [
     "mixed_fp16_efficient_attention",
     "prevalidated_mixed_fp16_efficient_attention",
     "prevalidated_triton_dh8_causal_attention_bsd",
+    "prevalidated_triton_exact_gelu",
     "prevalidated_triton_shape13_causal_attention",
     "prevalidated_triton_shape13_causal_attention_bsd",
     "reference_causal_attention",
@@ -75,6 +85,8 @@ __all__ = [
     "residual_layer_norm",
     "split_qkv",
     "triton_dh8_causal_attention_available",
+    "triton_exact_gelu",
+    "triton_exact_gelu_available",
     "triton_initial_fp16_layer_norm",
     "triton_initial_fp16_layer_norm_available",
     "triton_mixed_residual_layer_norm",

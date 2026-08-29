@@ -20,6 +20,7 @@ from .config import (
     ResidualNormBackend,
     RuntimeBackend,
     TritonAttentionParams,
+    TritonFFNParams,
     TritonNormParams,
 )
 
@@ -84,6 +85,7 @@ class ExpectedExecutionTrace:
     qkv_projection_compute_dtype: str
     attention_output_projection_compute_dtype: str
     ffn_input_projection_compute_dtype: str
+    ffn_activation_output_dtype: str
     ffn_output_projection_compute_dtype: str
     attention_calls: int
     qkv_projection_calls: int
@@ -99,6 +101,7 @@ class ExpectedExecutionTrace:
     attention_launch: TritonAttentionParams | None = None
     residual_norm_launch: TritonNormParams | None = None
     initial_norm_launch: TritonNormParams | None = None
+    ffn_launch: TritonFFNParams | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +128,7 @@ class ExpectedExecutionTrace:
             "ffn_input_projection_compute_dtype": (
                 self.ffn_input_projection_compute_dtype
             ),
+            "ffn_activation_output_dtype": self.ffn_activation_output_dtype,
             "ffn_output_projection_compute_dtype": (
                 self.ffn_output_projection_compute_dtype
             ),
@@ -156,6 +160,9 @@ class ExpectedExecutionTrace:
                 if self.initial_norm_launch is None
                 else self.initial_norm_launch.to_dict()
             ),
+            "ffn_launch": (
+                None if self.ffn_launch is None else self.ffn_launch.to_dict()
+            ),
             "complete": True,
         }
 
@@ -179,6 +186,7 @@ class ExecutionPlan:
     ffn_backend: FFNBackend
     ffn_input_projection_backend: ProjectionBackend
     ffn_input_projection_compute_dtype: str
+    ffn_activation_output_dtype: str
     ffn_output_projection_backend: ProjectionBackend
     ffn_output_projection_compute_dtype: str
     precision_plan: PrecisionPlan
@@ -192,6 +200,7 @@ class ExecutionPlan:
     attention_launch: TritonAttentionParams | None
     residual_norm_launch: TritonNormParams | None
     initial_norm_launch: TritonNormParams | None
+    ffn_launch: TritonFFNParams | None
     expected_trace: ExpectedExecutionTrace
 
     @property
@@ -258,6 +267,7 @@ class ExecutionPlan:
             "ffn_input_projection_compute_dtype": (
                 self.ffn_input_projection_compute_dtype
             ),
+            "ffn_activation_output_dtype": self.ffn_activation_output_dtype,
             "ffn_output_projection_backend": (self.ffn_output_projection_backend.value),
             "ffn_output_projection_compute_dtype": (
                 self.ffn_output_projection_compute_dtype
@@ -270,6 +280,9 @@ class ExecutionPlan:
             "batch_tile_size": self.batch_tile_size,
             "microbatch_size": self.microbatch_size,
             "reuse_unchanged_input": self.reuse_unchanged_input,
+            "ffn_launch": (
+                None if self.ffn_launch is None else self.ffn_launch.to_dict()
+            ),
             "outer_batch_size": self.outer_context.batch_size,
             "inner_batch_size": self.inner_context.batch_size,
             "causal_mask": causal_mask,

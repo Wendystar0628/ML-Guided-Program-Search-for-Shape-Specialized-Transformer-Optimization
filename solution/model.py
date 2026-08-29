@@ -28,6 +28,7 @@ from .operators import (
     MIXED_FP16_CUDNN_BACKEND,
     MIXED_FP16_EFFICIENT_BACKEND,
     TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
+    TRITON_EXACT_GELU_BACKEND,
     TRITON_MIXED_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_RESIDUAL_LAYER_NORM_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
@@ -37,6 +38,7 @@ from .operators import (
     mixed_fp16_efficient_attention,
     prevalidated_mixed_fp16_efficient_attention,
     prevalidated_triton_dh8_causal_attention_bsd,
+    prevalidated_triton_exact_gelu,
     prevalidated_triton_shape13_causal_attention,
     prevalidated_triton_shape13_causal_attention_bsd,
     reference_causal_attention,
@@ -75,6 +77,7 @@ class _ExecutionObservation:
     ffn_backends: list[str] = field(default_factory=list)
     ffn_input_projection_backends: list[str] = field(default_factory=list)
     ffn_input_projection_compute_dtypes: list[str] = field(default_factory=list)
+    ffn_activation_output_dtypes: list[str] = field(default_factory=list)
     ffn_output_projection_backends: list[str] = field(default_factory=list)
     ffn_output_projection_compute_dtypes: list[str] = field(default_factory=list)
     layer_input_dtypes: list[str] = field(default_factory=list)
@@ -82,6 +85,7 @@ class _ExecutionObservation:
     attention_launches: list[dict[str, int] | None] = field(default_factory=list)
     residual_norm_launches: list[dict[str, int] | None] = field(default_factory=list)
     initial_norm_launches: list[dict[str, int] | None] = field(default_factory=list)
+    ffn_launches: list[dict[str, int] | None] = field(default_factory=list)
 
     @staticmethod
     def _uniform(values: list[Any]) -> Any | None:
@@ -106,6 +110,7 @@ class _ExecutionObservation:
             and len(self.ffn_backends) == expected_layers
             and len(self.ffn_input_projection_backends) == expected_layers
             and len(self.ffn_input_projection_compute_dtypes) == expected_layers
+            and len(self.ffn_activation_output_dtypes) == expected_layers
             and len(self.ffn_output_projection_backends) == expected_layers
             and len(self.ffn_output_projection_compute_dtypes) == expected_layers
             and len(self.layer_input_dtypes) == expected_layers
@@ -113,6 +118,7 @@ class _ExecutionObservation:
             and len(self.attention_launches) == expected_layers
             and len(self.residual_norm_launches) == 2 * expected_layers
             and len(self.initial_norm_launches) == (1 if expected_layers else 0)
+            and len(self.ffn_launches) == expected_layers
         )
         precision_plan = _infer_precision_plan(
             self._uniform(self.qkv_projection_backends),
@@ -152,6 +158,9 @@ class _ExecutionObservation:
             "ffn_input_projection_compute_dtype": self._uniform(
                 self.ffn_input_projection_compute_dtypes
             ),
+            "ffn_activation_output_dtype": self._uniform(
+                self.ffn_activation_output_dtypes
+            ),
             "ffn_output_projection_compute_dtype": self._uniform(
                 self.ffn_output_projection_compute_dtypes
             ),
@@ -171,6 +180,7 @@ class _ExecutionObservation:
             "attention_launch": self._uniform(self.attention_launches),
             "residual_norm_launch": self._uniform(self.residual_norm_launches),
             "initial_norm_launch": self._uniform(self.initial_norm_launches),
+            "ffn_launch": self._uniform(self.ffn_launches),
             "complete": complete,
         }
 
@@ -193,6 +203,7 @@ def _infer_precision_plan(
         (True, False, False, False): PrecisionPlan.FP16_QKV_ATTENTION,
         (True, True, False, False): PrecisionPlan.FP16_ATTENTION_BRANCH,
         (False, False, True, True): PrecisionPlan.FP16_FFN_BRANCH,
+        (False, False, False, True): PrecisionPlan.FP16_FFN_OUTPUT,
         (True, True, True, True): PrecisionPlan.FP16_CORE,
     }
     plan = plans.get(mask)
@@ -554,27 +565,57 @@ class _TransformerBlock(nn.Module):
                 plan.ffn_output_projection_backend,
             )
 
-        if observation is not None:
+        projected: torch.Tensor | None = None
+        hidden: torch.Tensor | None = None
+        observed_update: torch.Tensor | None = None
+        if observation is not None or plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU:
             projected = self.ffn_in.forward_backend(
                 normalized,
                 plan.ffn_input_projection_backend,
             )
-            hidden = F.gelu(projected, approximate="none")
+            if plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU:
+                launch = plan.ffn_launch
+                if launch is None:
+                    raise RuntimeError(
+                        "Triton Exact-GELU plan is missing launch parameters"
+                    )
+                hidden, actual_marker = prevalidated_triton_exact_gelu(
+                    projected,
+                    output_dtype=torch.float16,
+                    block_size=launch.block_size,
+                    num_warps=launch.num_warps,
+                )
+                _strict_backend_marker(
+                    actual_marker,
+                    expected_marker=TRITON_EXACT_GELU_BACKEND,
+                    planned_backend=plan.ffn_backend.value,
+                )
+            else:
+                hidden = F.gelu(projected, approximate="none")
             observed_update = self.ffn_out.forward_backend(
                 hidden,
                 plan.ffn_output_projection_backend,
             )
+        if observation is not None:
+            assert projected is not None and hidden is not None
+            assert observed_update is not None
             observation.ffn_input_projection_backends.append(
                 plan.ffn_input_projection_backend.value
             )
             observation.ffn_input_projection_compute_dtypes.append(
                 str(projected.dtype).removeprefix("torch.")
             )
+            observation.ffn_activation_output_dtypes.append(
+                str(hidden.dtype).removeprefix("torch.")
+            )
             observation.ffn_output_projection_backends.append(
                 plan.ffn_output_projection_backend.value
             )
             observation.ffn_output_projection_compute_dtypes.append(
                 str(observed_update.dtype).removeprefix("torch.")
+            )
+            observation.ffn_launches.append(
+                None if plan.ffn_launch is None else plan.ffn_launch.to_dict()
             )
         if plan.ffn_backend is FFNBackend.COMPILED:
             ffn_update = self.compiled_ffn.run(
@@ -583,6 +624,10 @@ class _TransformerBlock(nn.Module):
                 plan_key=plan.config_id,
             )
             actual_ffn_backend = FFNBackend.COMPILED
+        elif plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU:
+            assert observed_update is not None
+            ffn_update = observed_update
+            actual_ffn_backend = FFNBackend.TRITON_EXACT_GELU
         else:
             ffn_update = (
                 observed_update if observation is not None else exact_ffn(normalized)
