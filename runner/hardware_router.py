@@ -586,6 +586,7 @@ def _incremental_prior(
         "mixed_fp16_efficient",
         "mixed_fp16_cudnn",
         "triton_shape13_causal_attention",
+        "triton_dh8_causal_attention_bsd",
     }:
         # The candidate halves Q/K/V element width around the measured
         # Attention family. Attention share is a transparent ordering signal;
@@ -600,7 +601,10 @@ def _incremental_prior(
         )
         has_incremental_model = True
 
-    if policy.attention == "triton_shape13_causal_attention":
+    if policy.attention in {
+        "triton_shape13_causal_attention",
+        "triton_dh8_causal_attention_bsd",
+    }:
         specialization_relative = analysis.attention_fraction * 0.15
         relative += specialization_relative
         reasons.extend(

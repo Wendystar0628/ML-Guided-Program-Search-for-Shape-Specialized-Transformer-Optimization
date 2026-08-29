@@ -261,6 +261,20 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
             "torch",
         ),
         (
+            "graph-fp16-shadow-efficient-compiled-norm",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
             "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
             "safe",
             "safe_streaming",
@@ -268,7 +282,21 @@ def test_causal_solution_matches_official_baseline_without_input_mutation(
             "torch",
         ),
         (
-            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+            "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "compiled-shape11-dh8-triton-fp16-shadow",
+            "safe",
+            "safe_streaming",
+            "eager",
+            "torch",
+        ),
+        (
+            "compiled-shape13-triton-attention-fp16-shadow",
             "safe",
             "safe_streaming",
             "eager",
@@ -294,6 +322,7 @@ def test_explicit_policy_reports_one_honest_execution_plan(
     assert path["attention_backend"] == attention
     assert path["runtime_wrapper"] == wrapper
     assert path["residual_norm_backend"] == residual_norm
+    assert path["use_triton_initial_fp16_norm"] is False
     assert "batch_strategy" not in path
     assert "batch_tile_size" not in path
     assert "layer_backends" not in path
@@ -542,6 +571,7 @@ def test_mixed_residual_stream_keeps_branch_updates_in_fp16(
     )
     plan = SimpleNamespace(
         residual_norm_backend="triton_mixed_residual_layer_norm",
+        use_triton_initial_fp16_norm=False,
     )
 
     output = solution._forward_eager(torch.zeros(2, 4, 8), None, plan)

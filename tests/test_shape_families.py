@@ -3,6 +3,7 @@ from __future__ import annotations
 from solution.shape_families import (
     is_compiled_forward_candidate_workload,
     is_graph_mixed_fp16_core_candidate_workload,
+    is_measured_fp16_shadow_workload,
     is_measured_mixed_fp16_core_efficient_workload,
     is_measured_streamed_mixed_fp16_core_cudnn_workload,
     is_measured_triton_residual_norm_workload,
@@ -10,6 +11,7 @@ from solution.shape_families import (
     is_shape05_graph_mixed_residual_norm_workload,
     is_shape06_batch_tiled_workload,
     is_shape08_fp16_shadow_workload,
+    is_shape11_triton_dh8_attention_workload,
     is_shape13_triton_attention_tensor_family,
     is_shape13_triton_attention_workload,
     is_streamed_mixed_fp16_core_cudnn_slice,
@@ -138,6 +140,32 @@ def test_solution_predicates_cover_runtime_slices_without_broadening_deployment(
     }
     assert is_shape08_fp16_shadow_workload(**shape08)
     assert not is_shape08_fp16_shadow_workload(**{**shape08, "batch_size": 32})
+
+    shape11 = {
+        "batch_size": 64,
+        "seq_len": 128,
+        "d_model": 128,
+        "num_heads": 16,
+        "ffn_dim": 128,
+        "num_layers": 4,
+    }
+    assert is_shape11_triton_dh8_attention_workload(**shape11)
+    assert not is_shape11_triton_dh8_attention_workload(
+        **{**shape11, "num_heads": 8}
+    )
+    assert is_measured_fp16_shadow_workload(**shape11)
+    assert is_measured_fp16_shadow_workload(**shape08)
+    assert is_measured_fp16_shadow_workload(
+        batch_size=10_000,
+        seq_len=128,
+        d_model=128,
+        num_heads=4,
+        ffn_dim=128,
+        num_layers=4,
+    )
+    assert not is_measured_fp16_shadow_workload(
+        **{**shape11, "ffn_dim": 256}
+    )
 
     assert is_shape13_triton_attention_tensor_family(
         batch_size=64,

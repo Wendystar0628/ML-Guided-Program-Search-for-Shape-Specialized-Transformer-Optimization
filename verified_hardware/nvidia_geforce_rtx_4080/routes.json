@@ -22,7 +22,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "compiled-mixed-fp16-core-shape13-triton-attention"
+      "policy": "compiled-shape13-triton-attention-fp16-shadow"
     },
     {
       "match": {
@@ -66,7 +66,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "compiled-mixed-fp16-core-efficient"
+      "policy": "compiled-shape11-dh8-triton-fp16-shadow"
     },
     {
       "match": {
@@ -88,7 +88,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm"
+      "policy": "graph-fp16-shadow-efficient-compiled-norm"
     },
     {
       "match": {
@@ -110,7 +110,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm"
+      "policy": "graph-fp16-shadow-efficient-compiled-norm"
     },
     {
       "match": {
@@ -154,7 +154,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "compiled-mixed-fp16-core-efficient"
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm"
     },
     {
       "match": {
@@ -176,7 +176,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+      "policy": "batch-tiled-shape06-triton-mixed-norm-fp16-shadow"
     },
     {
       "match": {
@@ -198,7 +198,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input"
+      "policy": "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input"
     },
     {
       "match": {
@@ -286,7 +286,7 @@
         "causal": true,
         "dtype": "float32"
       },
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm"
+      "policy": "graph-fp16-shadow-efficient-compiled-norm"
     }
   ]
 }

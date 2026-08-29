@@ -15,16 +15,19 @@ from policy_registry import (
 )
 
 from .kernels import (
+    triton_dh8_causal_attention_available,
+    triton_initial_fp16_layer_norm_available,
     triton_mixed_residual_layer_norm_available,
     triton_residual_layer_norm_available,
     triton_shape13_causal_attention_available,
 )
 from .shape_families import (
     is_compiled_forward_candidate_workload,
+    is_measured_fp16_shadow_workload,
     is_mixed_fp16_core_efficient_runtime_family,
     is_shape05_graph_mixed_residual_norm_workload,
     is_shape06_batch_tiled_workload,
-    is_shape08_fp16_shadow_workload,
+    is_shape11_triton_dh8_attention_workload,
     is_shape13_triton_attention_workload,
     is_streamed_mixed_fp16_core_cudnn_slice,
 )
@@ -58,12 +61,14 @@ class ExecutionPlan:
     selected_policy: str
     attention_backend: str
     attention_compute_dtype: str
+    attention_output_layout: str
     linear_backend: str
     linear_compute_dtype: str
     runtime_wrapper: str
     compile_mode: str | None
     batch_tile_size: int | None
     reuse_unchanged_input: bool
+    use_triton_initial_fp16_norm: bool
     residual_norm_backend: str
     has_valid_token_mask: bool
     required_components: tuple[str, ...]
@@ -96,7 +101,10 @@ class ExecutionPlan:
 
         if not causal:
             causal_mask = "none"
-        elif self.attention_backend == "triton_shape13_causal_attention":
+        elif self.attention_backend in {
+            "triton_shape13_causal_attention",
+            "triton_dh8_causal_attention_bsd",
+        }:
             causal_mask = "online_causal"
         elif self.attention_backend in {
             "causal_sdpa",
@@ -119,11 +127,13 @@ class ExecutionPlan:
             "qkv_projection": "packed",
             "attention_backend": self.attention_backend,
             "attention_compute_dtype": self.attention_compute_dtype,
+            "attention_output_layout": self.attention_output_layout,
             "linear_backend": self.linear_backend,
             "linear_compute_dtype": self.linear_compute_dtype,
             "runtime_wrapper": self.runtime_wrapper,
             "compile_mode": self.compile_mode,
             "reuse_unchanged_input": self.reuse_unchanged_input,
+            "use_triton_initial_fp16_norm": self.use_triton_initial_fp16_norm,
             "residual_norm_backend": self.residual_norm_backend,
             "causal_mask": causal_mask,
             "valid_token_mask": (
@@ -147,10 +157,12 @@ class _Capabilities:
     graph_triton_mixed_residual_layer_norm: bool
     batch_tiled_triton_mixed_residual_layer_norm: bool
     triton_shape13_causal_attention: bool
+    triton_dh8_causal_attention_bsd: bool
     mixed_fp16_cudnn_attention: bool
     mixed_fp16_efficient_attention: bool
     mixed_fp16_core: bool
     fp16_shadow_weights: bool
+    triton_initial_fp16_layer_norm: bool
 
 
 def _capabilities(context: ExecutionContext) -> _Capabilities:
@@ -290,8 +302,19 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
         and is_shape13_triton_attention_workload(**exact_shape)
         and triton_shape13_causal_attention_available()
     )
+    triton_dh8_attention = bool(
+        compiled_forward
+        and compute_capability is not None
+        and compute_capability >= (8, 0)
+        and is_shape11_triton_dh8_attention_workload(**exact_shape)
+        and triton_dh8_causal_attention_available()
+    )
     fp16_shadow_weights = bool(
-        compiled_forward and is_shape08_fp16_shadow_workload(**exact_shape)
+        (compiled_forward or cuda_graph or batch_tiled_cuda_graph)
+        and is_measured_fp16_shadow_workload(**exact_shape)
+    )
+    triton_initial_fp16_layer_norm = bool(
+        batch_tiled_cuda_graph and triton_initial_fp16_layer_norm_available()
     )
     return _Capabilities(
         causal_sdpa=causal_sdpa,
@@ -305,6 +328,7 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             batch_tiled_triton_mixed_residual
         ),
         triton_shape13_causal_attention=triton_shape13_attention,
+        triton_dh8_causal_attention_bsd=triton_dh8_attention,
         mixed_fp16_cudnn_attention=(
             inference
             and context.causal
@@ -338,6 +362,7 @@ def _capabilities(context: ExecutionContext) -> _Capabilities:
             and mixed_fp16_core_shape
         ),
         fp16_shadow_weights=fp16_shadow_weights,
+        triton_initial_fp16_layer_norm=triton_initial_fp16_layer_norm,
     )
 
 
@@ -397,12 +422,22 @@ def _resolved_components(
     ):
         resolved.add(ExecutionComponent.TRITON_SHAPE13_CAUSAL_ATTENTION)
     if (
+        spec.attention == "triton_dh8_causal_attention_bsd"
+        and capabilities.triton_dh8_causal_attention_bsd
+    ):
+        resolved.add(ExecutionComponent.TRITON_DH8_CAUSAL_ATTENTION_BSD)
+    if (
         spec.linear_compute in {"float16", "float16_shadow"}
         and capabilities.mixed_fp16_core
     ):
         resolved.add(ExecutionComponent.MIXED_FP16_CORE)
     if spec.linear_compute == "float16_shadow" and capabilities.fp16_shadow_weights:
         resolved.add(ExecutionComponent.FP16_SHADOW_WEIGHTS)
+    if (
+        spec.triton_initial_fp16_norm
+        and capabilities.triton_initial_fp16_layer_norm
+    ):
+        resolved.add(ExecutionComponent.TRITON_INITIAL_FP16_LAYER_NORM)
     return frozenset(resolved)
 
 
@@ -443,6 +478,7 @@ def resolve_execution_plan(
                 "mixed_fp16_cudnn",
                 "mixed_fp16_efficient",
                 "triton_shape13_causal_attention",
+                "triton_dh8_causal_attention_bsd",
             }
             else str(context.dtype).removeprefix("torch.")
         )
@@ -462,6 +498,7 @@ def resolve_execution_plan(
         selected_policy=selected_policy,
         attention_backend=attention_backend,
         attention_compute_dtype=attention_compute_dtype,
+        attention_output_layout=(spec.attention_output_layout if fully_applied else "bhsd"),
         linear_backend=linear_backend,
         linear_compute_dtype=linear_compute_dtype,
         runtime_wrapper=runtime_wrapper,
@@ -469,6 +506,9 @@ def resolve_execution_plan(
         batch_tile_size=(spec.batch_tile_size if fully_applied else None),
         reuse_unchanged_input=(
             spec.reuse_unchanged_input if fully_applied else False
+        ),
+        use_triton_initial_fp16_norm=(
+            spec.triton_initial_fp16_norm if fully_applied else False
         ),
         residual_norm_backend=(
             spec.residual_norm.value

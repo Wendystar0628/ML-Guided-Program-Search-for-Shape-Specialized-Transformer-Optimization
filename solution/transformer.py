@@ -26,11 +26,13 @@ from .kernels import (
     mixed_fp16_cudnn_attention,
     mixed_fp16_efficient_attention,
     prevalidated_mixed_fp16_efficient_attention,
+    prevalidated_triton_dh8_causal_attention_bsd,
     prevalidated_triton_shape13_causal_attention,
     reference_causal_attention,
     residual_add,
     residual_layer_norm,
     split_qkv,
+    triton_initial_fp16_layer_norm,
     triton_mixed_residual_layer_norm,
     triton_residual_layer_norm,
 )
@@ -150,7 +152,16 @@ class _SelfAttention(nn.Module):
                 packed_qkv,
                 self.num_heads,
             )
-            if plan.attention_backend == "triton_shape13_causal_attention":
+            if plan.attention_backend == "triton_dh8_causal_attention_bsd":
+                context, actual_attention_backend = (
+                    prevalidated_triton_dh8_causal_attention_bsd(
+                        query,
+                        key,
+                        projected_value,
+                        scale=self.scale,
+                    )
+                )
+            elif plan.attention_backend == "triton_shape13_causal_attention":
                 context, actual_attention_backend = (
                     prevalidated_triton_shape13_causal_attention(
                         query,
@@ -209,11 +220,17 @@ class _SelfAttention(nn.Module):
                     causal=causal,
                 )
                 actual_attention_backend = "safe_streaming"
-            context = (
-                context.transpose(1, 2)
-                .contiguous()
-                .view(batch_size, sequence_length, self.d_model)
-            )
+            if plan.attention_output_layout == "bhsd":
+                context = (
+                    context.transpose(1, 2)
+                    .contiguous()
+                    .view(batch_size, sequence_length, self.d_model)
+                )
+            elif plan.attention_output_layout != "bsd":
+                raise RuntimeError(
+                    f"unsupported attention output layout: "
+                    f"{plan.attention_output_layout}"
+                )
             output = (
                 self.out_proj.forward_fp16_shadow(context)
                 if shadow_core
@@ -591,8 +608,17 @@ class UserOptimizedTransformer(nn.Module):
         if not self.layers:
             value = self.final_norm(value)
         else:
-            normalized = self.layers[0].norm1(value)
-            if plan.residual_norm_backend == ResidualNormBackend.TRITON_MIXED:
+            if plan.use_triton_initial_fp16_norm:
+                normalized = triton_initial_fp16_layer_norm(
+                    value,
+                    self.layers[0].norm1,
+                )
+            else:
+                normalized = self.layers[0].norm1(value)
+            if (
+                plan.residual_norm_backend == ResidualNormBackend.TRITON_MIXED
+                and not plan.use_triton_initial_fp16_norm
+            ):
                 normalized = normalized.to(torch.float16)
             for layer_index, layer in enumerate(self.layers):
                 attention_update = layer.attention_update(

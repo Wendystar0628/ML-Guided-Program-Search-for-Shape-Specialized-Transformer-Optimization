@@ -1,2 +1,4 @@
 # Preserve the acquired official benchmark bytes across platforms.
 /official/torch_transformer_benchmark.py -text
+/official/snapshot.json -text
+/official/test_shapes.json -text

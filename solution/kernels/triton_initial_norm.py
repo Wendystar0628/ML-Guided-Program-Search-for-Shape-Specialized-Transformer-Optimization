@@ -1,0 +1,124 @@
+"""FP32-input LayerNorm with direct FP16 output for one Shape 06 graph tile."""
+
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+try:
+    import triton
+    import triton.language as tl
+except ImportError:  # pragma: no cover - exercised without the optional runtime.
+    triton = None
+    tl = None
+
+
+TRITON_INITIAL_FP16_LAYER_NORM_BACKEND = "triton_initial_fp16_layer_norm"
+_TILE_BATCH = 128
+_TILE_SEQUENCE = 128
+_WIDTH = 128
+_BLOCK_ROWS = 2
+
+
+if triton is not None and tl is not None:
+
+    @triton.jit
+    def _initial_fp16_layer_norm_kernel(
+        value,
+        weight,
+        bias,
+        normalized,
+        row_count,
+        eps: tl.constexpr,
+        width: tl.constexpr,
+        block_rows: tl.constexpr,
+    ) -> None:
+        row_start = tl.program_id(0) * block_rows
+        rows = row_start + tl.arange(0, block_rows)[:, None]
+        columns = tl.arange(0, width)[None, :]
+        offsets = rows * width + columns
+        mask = rows < row_count
+
+        input_value = tl.load(value + offsets, mask=mask, other=0.0).to(tl.float32)
+        mean = tl.sum(input_value, axis=1) / width
+        centered = input_value - mean[:, None]
+        variance = tl.sum(centered * centered, axis=1) / width
+        reciprocal_std = tl.rsqrt(variance + eps)
+        scale = tl.load(weight + columns).to(tl.float32)
+        shift = tl.load(bias + columns).to(tl.float32)
+        output = centered * reciprocal_std[:, None] * scale + shift
+        tl.store(normalized + offsets, output.to(tl.float16), mask=mask)
+
+
+def triton_initial_fp16_layer_norm_available() -> bool:
+    """Return whether the optional Triton runtime can load this specialization."""
+
+    return triton is not None and tl is not None
+
+
+def can_use_triton_initial_fp16_layer_norm(
+    value: torch.Tensor,
+    layer_norm: nn.LayerNorm,
+) -> bool:
+    """Return whether the exact initial LayerNorm specialization can run."""
+
+    if triton is None or tl is None or not isinstance(layer_norm, nn.LayerNorm):
+        return False
+    if torch.is_grad_enabled() or value.device.type != "cuda":
+        return False
+    if value.dtype != torch.float32 or tuple(value.shape) != (
+        _TILE_BATCH,
+        _TILE_SEQUENCE,
+        _WIDTH,
+    ):
+        return False
+    if not value.is_contiguous():
+        return False
+    if tuple(layer_norm.normalized_shape) != (_WIDTH,):
+        return False
+    if layer_norm.weight is None or layer_norm.bias is None:
+        return False
+    return all(
+        parameter.device == value.device and parameter.dtype == torch.float32
+        for parameter in (layer_norm.weight, layer_norm.bias)
+    )
+
+
+def triton_initial_fp16_layer_norm(
+    value: torch.Tensor,
+    layer_norm: nn.LayerNorm,
+) -> torch.Tensor:
+    """Normalize one graph tile in FP32 and write the branch stream as FP16."""
+
+    if not can_use_triton_initial_fp16_layer_norm(value, layer_norm):
+        raise RuntimeError(
+            "Triton initial FP16 LayerNorm is ineligible for the requested input"
+        )
+    assert triton is not None
+    assert layer_norm.weight is not None
+    assert layer_norm.bias is not None
+    row_count = value.numel() // _WIDTH
+    normalized = torch.empty_like(value, dtype=torch.float16)
+    try:
+        _initial_fp16_layer_norm_kernel[(triton.cdiv(row_count, _BLOCK_ROWS),)](
+            value,
+            layer_norm.weight,
+            layer_norm.bias,
+            normalized,
+            row_count,
+            eps=layer_norm.eps,
+            width=_WIDTH,
+            block_rows=_BLOCK_ROWS,
+            num_warps=_BLOCK_ROWS,
+        )
+    except Exception as exc:
+        raise RuntimeError("Triton initial FP16 LayerNorm execution failed") from exc
+    return normalized
+
+
+__all__ = [
+    "TRITON_INITIAL_FP16_LAYER_NORM_BACKEND",
+    "can_use_triton_initial_fp16_layer_norm",
+    "triton_initial_fp16_layer_norm",
+    "triton_initial_fp16_layer_norm_available",
+]

@@ -19,6 +19,8 @@ class ExecutionComponent(StrEnum):
     TRITON_RESIDUAL_LAYER_NORM = "triton_residual_layer_norm"
     TRITON_MIXED_RESIDUAL_LAYER_NORM = "triton_mixed_residual_layer_norm"
     TRITON_SHAPE13_CAUSAL_ATTENTION = "triton_shape13_causal_attention"
+    TRITON_DH8_CAUSAL_ATTENTION_BSD = "triton_dh8_causal_attention_bsd"
+    TRITON_INITIAL_FP16_LAYER_NORM = "triton_initial_fp16_layer_norm"
     MIXED_FP16_EFFICIENT_ATTENTION = "mixed_fp16_efficient_attention"
     MIXED_FP16_CUDNN_ATTENTION = "mixed_fp16_cudnn_attention"
     MIXED_FP16_CORE = "mixed_fp16_core"
@@ -64,6 +66,8 @@ class PolicySpec:
     compile_mode: str | None = None
     batch_tile_size: int | None = None
     reuse_unchanged_input: bool = False
+    attention_output_layout: str = "bhsd"
+    triton_initial_fp16_norm: bool = False
     routable: bool = True
 
     def __post_init__(self) -> None:
@@ -75,8 +79,25 @@ class PolicySpec:
             "mixed_fp16_efficient",
             "mixed_fp16_cudnn",
             "triton_shape13_causal_attention",
+            "triton_dh8_causal_attention_bsd",
         }:
             raise ValueError(f"unsupported attention backend: {self.attention}")
+        if self.attention_output_layout not in {"bhsd", "bsd"}:
+            raise ValueError(
+                f"unsupported attention output layout: {self.attention_output_layout}"
+            )
+        expected_attention_layout = (
+            "bsd"
+            if self.attention == "triton_dh8_causal_attention_bsd"
+            else "bhsd"
+        )
+        if self.attention_output_layout != expected_attention_layout:
+            raise ValueError(
+                f"attention backend {self.attention!r} requires "
+                f"{expected_attention_layout!r} output layout"
+            )
+        if not isinstance(self.triton_initial_fp16_norm, bool):
+            raise TypeError("triton_initial_fp16_norm must be a bool")
         if self.linear_compute not in {"input", "float16", "float16_shadow"}:
             raise ValueError(f"unsupported linear compute mode: {self.linear_compute}")
         try:
@@ -115,6 +136,16 @@ class PolicySpec:
             raise ValueError(
                 "batch_tile_size is valid only for batch-tiled CUDA Graph runtime"
             )
+        if self.triton_initial_fp16_norm and not (
+            runtime is RuntimeWrapper.BATCH_TILED_CUDA_GRAPH
+            and self.batch_tile_size == 128
+            and self.linear_compute == "float16_shadow"
+            and backend is ResidualNormBackend.TRITON_MIXED
+        ):
+            raise ValueError(
+                "triton_initial_fp16_norm requires the fixed 128-row batch-tiled "
+                "FP16-shadow and Triton-mixed-norm execution contract"
+            )
         if not isinstance(self.reuse_unchanged_input, bool):
             raise TypeError("reuse_unchanged_input must be a bool")
         if self.reuse_unchanged_input and runtime is not RuntimeWrapper.CUDA_GRAPH:
@@ -144,6 +175,8 @@ class PolicySpec:
             components.add(ExecutionComponent.MIXED_FP16_CUDNN_ATTENTION)
         elif self.attention == "triton_shape13_causal_attention":
             components.add(ExecutionComponent.TRITON_SHAPE13_CAUSAL_ATTENTION)
+        elif self.attention == "triton_dh8_causal_attention_bsd":
+            components.add(ExecutionComponent.TRITON_DH8_CAUSAL_ATTENTION_BSD)
         if self.linear_compute in {"float16", "float16_shadow"}:
             components.add(ExecutionComponent.MIXED_FP16_CORE)
         if self.linear_compute == "float16_shadow":
@@ -165,6 +198,8 @@ class PolicySpec:
             components.add(ExecutionComponent.TRITON_RESIDUAL_LAYER_NORM)
         elif self.residual_norm is ResidualNormBackend.TRITON_MIXED:
             components.add(ExecutionComponent.TRITON_MIXED_RESIDUAL_LAYER_NORM)
+        if self.triton_initial_fp16_norm:
+            components.add(ExecutionComponent.TRITON_INITIAL_FP16_LAYER_NORM)
         return frozenset(components)
 
 
@@ -227,10 +262,25 @@ _POLICY_SPECS = {
         residual_norm=ResidualNormBackend.COMPILED,
         runtime=RuntimeWrapper.CUDA_GRAPH,
     ),
+    "graph-fp16-shadow-efficient-compiled-norm": PolicySpec(
+        "graph-fp16-shadow-efficient-compiled-norm",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16_shadow",
+        residual_norm=ResidualNormBackend.COMPILED,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
+    ),
     "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input": PolicySpec(
         "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
         attention="mixed_fp16_efficient",
         linear_compute="float16",
+        residual_norm=ResidualNormBackend.TRITON_MIXED,
+        runtime=RuntimeWrapper.CUDA_GRAPH,
+        reuse_unchanged_input=True,
+    ),
+    "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input": PolicySpec(
+        "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
+        attention="mixed_fp16_efficient",
+        linear_compute="float16_shadow",
         residual_norm=ResidualNormBackend.TRITON_MIXED,
         runtime=RuntimeWrapper.CUDA_GRAPH,
         reuse_unchanged_input=True,
@@ -243,13 +293,14 @@ _POLICY_SPECS = {
         runtime=RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
         batch_tile_size=128,
     ),
-    "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm": PolicySpec(
-        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+    "batch-tiled-shape06-triton-mixed-norm-fp16-shadow": PolicySpec(
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
         attention="mixed_fp16_efficient",
-        linear_compute="float16",
+        linear_compute="float16_shadow",
         residual_norm=ResidualNormBackend.TRITON_MIXED,
         runtime=RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
         batch_tile_size=128,
+        triton_initial_fp16_norm=True,
     ),
     "compiled-mixed-fp16-core-efficient": PolicySpec(
         "compiled-mixed-fp16-core-efficient",
@@ -263,10 +314,17 @@ _POLICY_SPECS = {
         linear_compute="float16_shadow",
         runtime=RuntimeWrapper.COMPILED_FORWARD,
     ),
-    "compiled-mixed-fp16-core-shape13-triton-attention": PolicySpec(
-        "compiled-mixed-fp16-core-shape13-triton-attention",
+    "compiled-shape11-dh8-triton-fp16-shadow": PolicySpec(
+        "compiled-shape11-dh8-triton-fp16-shadow",
+        attention="triton_dh8_causal_attention_bsd",
+        linear_compute="float16_shadow",
+        runtime=RuntimeWrapper.COMPILED_FORWARD,
+        attention_output_layout="bsd",
+    ),
+    "compiled-shape13-triton-attention-fp16-shadow": PolicySpec(
+        "compiled-shape13-triton-attention-fp16-shadow",
         attention="triton_shape13_causal_attention",
-        linear_compute="float16",
+        linear_compute="float16_shadow",
         runtime=RuntimeWrapper.COMPILED_FORWARD,
         compile_mode="max-autotune-no-cudagraphs",
     ),

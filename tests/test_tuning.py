@@ -188,6 +188,49 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "runtime_wrappers": ["cuda_graph"],
             },
         },
+        "graph-fp16-shadow-efficient-compiled-norm": {
+            "requested_policy": "graph-fp16-shadow-efficient-compiled-norm",
+            "selected_policy": "graph-fp16-shadow-efficient-compiled-norm",
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "fp16_shadow",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "cuda_graph",
+            "residual_norm_backend": "compiled_residual_layer_norm",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["fp16_shadow"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["compiled_residual_layer_norm"],
+                "runtime_wrappers": ["cuda_graph"],
+            },
+        },
+        "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input": {
+            "requested_policy": (
+                "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input"
+            ),
+            "selected_policy": (
+                "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input"
+            ),
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "fp16_shadow",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "cuda_graph",
+            "residual_norm_backend": "triton_mixed_residual_layer_norm",
+            "reuse_unchanged_input": True,
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["fp16_shadow"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["triton_mixed_residual_layer_norm"],
+                "runtime_wrappers": ["cuda_graph"],
+            },
+        },
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm": {
             "requested_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
             "selected_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
@@ -208,25 +251,22 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "runtime_wrappers": ["batch_tiled_cuda_graph"],
             },
         },
-        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm": {
-            "requested_policy": (
-                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
-            ),
-            "selected_policy": (
-                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
-            ),
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow": {
+            "requested_policy": "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
+            "selected_policy": "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
             "attention_backend": "mixed_fp16_efficient",
             "attention_compute_dtype": "float16",
-            "linear_backend": "autocast_fp16",
+            "linear_backend": "fp16_shadow",
             "linear_compute_dtype": "float16",
             "runtime_wrapper": "batch_tiled_cuda_graph",
             "batch_tile_size": 128,
+            "use_triton_initial_fp16_norm": True,
             "residual_norm_backend": "triton_mixed_residual_layer_norm",
             "observed_execution": {
                 "complete": True,
                 "attention_backends": ["mixed_fp16_efficient"],
                 "attention_compute_dtypes": ["float16"],
-                "linear_backends": ["autocast_fp16"],
+                "linear_backends": ["fp16_shadow"],
                 "linear_compute_dtypes": ["float16"],
                 "residual_norm_backends": ["triton_mixed_residual_layer_norm"],
                 "runtime_wrappers": ["batch_tiled_cuda_graph"],
@@ -252,12 +292,33 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "runtime_wrappers": ["compiled_forward"],
             },
         },
-        "compiled-mixed-fp16-core-shape13-triton-attention": {
-            "requested_policy": ("compiled-mixed-fp16-core-shape13-triton-attention"),
-            "selected_policy": ("compiled-mixed-fp16-core-shape13-triton-attention"),
+        "compiled-shape11-dh8-triton-fp16-shadow": {
+            "requested_policy": "compiled-shape11-dh8-triton-fp16-shadow",
+            "selected_policy": "compiled-shape11-dh8-triton-fp16-shadow",
+            "attention_backend": "triton_dh8_causal_attention_bsd",
+            "attention_compute_dtype": "float16",
+            "attention_output_layout": "bsd",
+            "linear_backend": "fp16_shadow",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "compiled_forward",
+            "compile_mode": "max-autotune",
+            "residual_norm_backend": "torch",
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["triton_dh8_causal_attention_bsd"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["fp16_shadow"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": ["torch"],
+                "runtime_wrappers": ["compiled_forward"],
+            },
+        },
+        "compiled-shape13-triton-attention-fp16-shadow": {
+            "requested_policy": "compiled-shape13-triton-attention-fp16-shadow",
+            "selected_policy": "compiled-shape13-triton-attention-fp16-shadow",
             "attention_backend": "triton_shape13_causal_attention",
             "attention_compute_dtype": "float16",
-            "linear_backend": "autocast_fp16",
+            "linear_backend": "fp16_shadow",
             "linear_compute_dtype": "float16",
             "runtime_wrapper": "compiled_forward",
             "compile_mode": "max-autotune-no-cudagraphs",
@@ -266,14 +327,17 @@ def _execution_path(candidate_id: str) -> dict[str, Any]:
                 "complete": True,
                 "attention_backends": ["triton_shape13_causal_attention"],
                 "attention_compute_dtypes": ["float16"],
-                "linear_backends": ["autocast_fp16"],
+                "linear_backends": ["fp16_shadow"],
                 "linear_compute_dtypes": ["float16"],
                 "residual_norm_backends": ["torch"],
                 "runtime_wrappers": ["compiled_forward"],
             },
         },
     }
-    return paths[candidate_id]
+    return {
+        "use_triton_initial_fp16_norm": False,
+        **paths[candidate_id],
+    }
 
 
 def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
@@ -287,6 +351,7 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
+            "graph-fp16-shadow-efficient-compiled-norm",
         ],
         "official_02": ["graph-fused-norm"],
         "official_03": ["graph-fused-norm"],
@@ -296,12 +361,13 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+            "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
         ],
         "official_06": [
             "mixed-fp16-core-efficient",
             "mixed-fp16-core-efficient-triton-norm",
             "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
-            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+            "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
         ],
         "official_07": [
             "graph-mixed-fp16-efficient",
@@ -318,24 +384,27 @@ def test_candidates_are_small_and_specific_to_official_shape_families() -> None:
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
+            "graph-fp16-shadow-efficient-compiled-norm",
         ],
         "official_10": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
+            "graph-fp16-shadow-efficient-compiled-norm",
         ],
         "official_11": [
             "graph-mixed-fp16-efficient",
             "graph-mixed-fp16-efficient-compiled-norm",
             "graph-mixed-fp16-core-efficient-compiled-norm",
             "compiled-mixed-fp16-core-efficient",
+            "compiled-shape11-dh8-triton-fp16-shadow",
         ],
         "official_12": ["graph-fused-norm"],
         "official_13": [
             "mixed-fp16-efficient",
             "mixed-fp16-core-efficient",
             "compiled-mixed-fp16-core-efficient",
-            "compiled-mixed-fp16-core-shape13-triton-attention",
+            "compiled-shape13-triton-attention-fp16-shadow",
         ],
     }
 

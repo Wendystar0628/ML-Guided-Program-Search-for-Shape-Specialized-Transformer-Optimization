@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "artifact_kind": "final_performance",
-  "created_at": "2026-08-29T02:31:14.977177+00:00",
+  "created_at": "2026-08-29T06:05:10.205868+00:00",
   "hardware_identity": {
     "id": "nvidia_geforce_rtx_4080",
     "environment": {
@@ -14,8 +14,8 @@
       "total_memory_bytes": 17170956288,
       "driver": "610.88"
     },
-    "profile_sha256": "deeb3447aecc309246eaa56b547c0464d87ce5b317e19a8c29d7810c79c31c30",
-    "source_probe_run_id": "20260829T015038.442357Z-a94d0be0"
+    "profile_sha256": "f51575585b27e9fac56f2a0e900eca078a241cb62398ea3a3383651b939c6d02",
+    "source_probe_run_id": "20260829T052332.284705Z-33a27252"
   },
   "workload_identity": {
     "set_id": "official_transformer_v1",
@@ -28,13 +28,13 @@
   },
   "source": {
     "official_sha256": "d4f45c9336880b31ab1ae8a8f354aa05862772553162851257490bb936878762",
-    "solution_sha256": "8ed02ebea7050679e3a5833e08b19c68ba40861f6dae6e9a992fc3eb849bc258"
+    "solution_sha256": "67c99918effd4c8d37882c7844b368b653bc7e9a98f6e8e64c7206ba4ef2d022"
   },
   "scopes": {
     "resident": {
       "validation_level": "formal",
       "comparison_mode": "paired",
-      "measured_at": "2026-08-29T02:17:56.277265+00:00",
+      "measured_at": "2026-08-29T05:54:51.129243+00:00",
       "protocol": {
         "preset": "formal",
         "accuracy_trials": 5,
@@ -43,18 +43,18 @@
         "rounds": 3
       },
       "case_count": 13,
-      "geomean_speedup": 9.19227607983743,
+      "geomean_speedup": 16.997856353878394,
       "evidence": {
-        "manifest_sha256": "52d4043b26951526a942e73f005ff1556fa0a0a73af79580b6a36e316c48e36b",
-        "profile_sha256": "deeb3447aecc309246eaa56b547c0464d87ce5b317e19a8c29d7810c79c31c30",
-        "source_probe_run_id": "20260829T015038.442357Z-a94d0be0",
-        "route_table_sha256": "1d2e1f14b5306940ed48d8ec4efb8ea8598a8cb861e11e709cde43fe39dff111"
+        "manifest_sha256": "228f478bdfa6ac33cdd4ba847be0c119f46d2fa3c77ffb7e846aad5cec99c9c0",
+        "profile_sha256": "f51575585b27e9fac56f2a0e900eca078a241cb62398ea3a3383651b939c6d02",
+        "source_probe_run_id": "20260829T052332.284705Z-33a27252",
+        "route_table_sha256": "23b07b547f3f19b687b0aed80a971e0905a1dd2441560a18502d52bfbcfbcfc9"
       }
     },
     "streamed": {
       "validation_level": "provisional",
       "comparison_mode": "target_only",
-      "measured_at": "2026-08-29T02:28:27.879555+00:00",
+      "measured_at": "2026-08-29T06:02:17.359099+00:00",
       "protocol": {
         "preset": "formal",
         "accuracy_trials": 1,
@@ -64,9 +64,9 @@
       },
       "case_count": 1,
       "evidence": {
-        "manifest_sha256": "52d4043b26951526a942e73f005ff1556fa0a0a73af79580b6a36e316c48e36b",
-        "profile_sha256": "deeb3447aecc309246eaa56b547c0464d87ce5b317e19a8c29d7810c79c31c30",
-        "source_probe_run_id": "20260829T015038.442357Z-a94d0be0"
+        "manifest_sha256": "228f478bdfa6ac33cdd4ba847be0c119f46d2fa3c77ffb7e846aad5cec99c9c0",
+        "profile_sha256": "f51575585b27e9fac56f2a0e900eca078a241cb62398ea3a3383651b939c6d02",
+        "source_probe_run_id": "20260829T052332.284705Z-33a27252"
       }
     }
   },
@@ -76,23 +76,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+      "policy": "graph-fp16-shadow-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 1.7210879921913147,
-        "baseline_p90": 2.1531392097473145,
-        "target_median": 0.36454400420188904,
-        "target_p90": 0.38338559567928326
+        "baseline_median": 4.5024800300598145,
+        "baseline_p90": 4.92444486618042,
+        "target_median": 0.33587199449539185,
+        "target_p90": 0.34416639804840093
       },
-      "speedup": 4.7212077893294735,
+      "speedup": 13.40534520249079,
       "performance": {
-        "achieved_tflops": 20.641078413767552,
-        "measured_compute_roof_tflops": 88.07276150333762,
-        "project_estimated_mfu": 0.23436392888606464,
-        "peak_device_allocated_bytes": 85776384,
+        "achieved_tflops": 22.403122318384412,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.25947133303310344,
+        "peak_device_allocated_bytes": 86573056,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 1223.9100982522427,
+          "estimated_traffic_gbps": 1328.390265673435,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -111,16 +111,16 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 1.8422719836235046,
-        "baseline_p90": 2.265372705459595,
+        "baseline_median": 4.809760093688965,
+        "baseline_p90": 5.18547511100769,
         "target_median": 0.13312000036239624,
-        "target_p90": 0.13414399325847626
+        "target_p90": 0.15063039958477023
       },
-      "speedup": 13.839182531612357,
+      "speedup": 36.13101022081748,
       "performance": {
         "achieved_tflops": 0.8831999975956404,
-        "measured_compute_roof_tflops": 47.172559421293904,
-        "project_estimated_mfu": 0.01872274916668948,
+        "measured_compute_roof_tflops": 47.02853274639986,
+        "project_estimated_mfu": 0.018780088299974684,
         "peak_device_allocated_bytes": 19685376,
         "logical_operator": {
           "estimated_bytes": 8519680,
@@ -144,16 +144,16 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 1.923088014125824,
-        "baseline_p90": 2.2849759817123414,
+        "baseline_median": 4.685935974121094,
+        "baseline_p90": 5.070432186126709,
         "target_median": 0.13926400244235992,
         "target_p90": 0.14028799533843994
       },
-      "speedup": 13.80893827837364,
+      "speedup": 33.647862275540724,
       "performance": {
         "achieved_tflops": 3.3769411172470583,
-        "measured_compute_roof_tflops": 47.172559421293904,
-        "project_estimated_mfu": 0.07158698104734787,
+        "measured_compute_roof_tflops": 47.02853274639986,
+        "project_estimated_mfu": 0.07180621890666088,
         "peak_device_allocated_bytes": 22831104,
         "logical_operator": {
           "estimated_bytes": 29360128,
@@ -177,16 +177,16 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 1.9395520091056824,
-        "baseline_p90": 2.4190208435058596,
+        "baseline_median": 4.607919931411743,
+        "baseline_p90": 4.996156930923462,
         "target_median": 0.22118400037288666,
         "target_p90": 0.22220799326896667
       },
-      "speedup": 8.768952572680922,
+      "speedup": 20.83297129830099,
       "performance": {
         "achieved_tflops": 8.504888874550783,
-        "measured_compute_roof_tflops": 47.172559421293904,
-        "project_estimated_mfu": 0.18029314031054328,
+        "measured_compute_roof_tflops": 47.02853274639986,
+        "project_estimated_mfu": 0.18084529492793608,
         "peak_device_allocated_bytes": 35420160,
         "logical_operator": {
           "estimated_bytes": 112721920,
@@ -208,23 +208,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+      "policy": "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
       "latency_ms": {
-        "baseline_median": 2.3633921146392822,
-        "baseline_p90": 2.862592077255249,
-        "target_median": 0.5017600059509277,
-        "target_p90": 0.7590911984443666
+        "baseline_median": 4.357055902481079,
+        "baseline_p90": 4.798230218887329,
+        "target_median": 0.4689919948577881,
+        "target_p90": 0.47319039702415466
       },
-      "speedup": 4.7102042542434575,
+      "speedup": 9.290256444147333,
       "performance": {
-        "achieved_tflops": 29.992750664690906,
-        "measured_compute_roof_tflops": 88.07276150333762,
-        "project_estimated_mfu": 0.34054513736979053,
-        "peak_device_allocated_bytes": 52205568,
+        "achieved_tflops": 32.088314762309196,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.3716445273938318,
+        "peak_device_allocated_bytes": 53002240,
         "logical_operator": {
           "estimated_bytes": 890765312,
           "arithmetic_intensity_flops_per_byte": 16.894644,
-          "estimated_traffic_gbps": 1775.2816115980297,
+          "estimated_traffic_gbps": 1899.3187981174515,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -241,23 +241,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+      "policy": "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
       "latency_ms": {
-        "baseline_median": 486.329345703125,
-        "baseline_p90": 491.7831634521485,
-        "target_median": 45.32326316833496,
-        "target_p90": 46.174311065673834
+        "baseline_median": 480.94309997558594,
+        "baseline_p90": 482.1247863769531,
+        "target_median": 38.951934814453125,
+        "target_p90": 39.37609405517578
       },
-      "speedup": 10.730236785838898,
+      "speedup": 12.34709141578076,
       "performance": {
-        "achieved_tflops": 25.94067059190505,
-        "measured_compute_roof_tflops": 88.07276150333763,
-        "project_estimated_mfu": 0.2945368142103958,
-        "peak_device_allocated_bytes": 1349509120,
+        "achieved_tflops": 30.18375969256732,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.3495861091181191,
+        "peak_device_allocated_bytes": 1350305792,
         "logical_operator": {
           "estimated_bytes": 69469732864,
           "arithmetic_intensity_flops_per_byte": 16.924145,
-          "estimated_traffic_gbps": 1532.7610592816923,
+          "estimated_traffic_gbps": 1783.4732265526188,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -274,23 +274,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "compiled-mixed-fp16-core-efficient",
+      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 2.0264159440994263,
-        "baseline_p90": 2.467817568778992,
-        "target_median": 0.14028799533843994,
-        "target_p90": 0.18554879575967792
+        "baseline_median": 4.544880151748657,
+        "baseline_p90": 4.977571058273316,
+        "target_median": 0.1955839991569519,
+        "target_p90": 0.19671040624380115
       },
-      "speedup": 14.44468530048325,
+      "speedup": 23.23748451478124,
       "performance": {
-        "achieved_tflops": 4.798598699596231,
-        "measured_compute_roof_tflops": 88.07276150333763,
-        "project_estimated_mfu": 0.05448448098694375,
-        "peak_device_allocated_bytes": 12865280,
+        "achieved_tflops": 3.4419267164068112,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.039864144855177135,
+        "peak_device_allocated_bytes": 33982208,
         "logical_operator": {
           "estimated_bytes": 111247360,
           "arithmetic_intensity_flops_per_byte": 6.051252,
-          "estimated_traffic_gbps": 792.9927270798872,
+          "estimated_traffic_gbps": 568.7958139700703,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -298,8 +298,8 @@
         "passed": true,
         "trial_count": 5,
         "failed_elements": 0,
-        "max_abs_error": 0.0018016695976257324,
-        "max_relative_error": 867.3460083007812
+        "max_abs_error": 0.0018820613622665405,
+        "max_relative_error": 616.6293334960938
       }
     },
     {
@@ -309,21 +309,21 @@
       "validation_level": "formal",
       "policy": "compiled-shape08-fp16-shadow-weights",
       "latency_ms": {
-        "baseline_median": 14.34931230545044,
-        "baseline_p90": 14.863565158843993,
-        "target_median": 6.147071838378906,
-        "target_p90": 6.366208076477051
+        "baseline_median": 14.104576110839844,
+        "baseline_p90": 14.556377601623536,
+        "target_median": 6.157311916351318,
+        "target_p90": 6.367641448974609
       },
-      "speedup": 2.33433294464875,
+      "speedup": 2.290703524923566,
       "performance": {
-        "achieved_tflops": 68.48364797750898,
-        "measured_compute_roof_tflops": 88.07276150333763,
-        "project_estimated_mfu": 0.7775803416237119,
+        "achieved_tflops": 68.3697544628305,
+        "measured_compute_roof_tflops": 86.3414160497114,
+        "project_estimated_mfu": 0.7918535228037765,
         "peak_device_allocated_bytes": 293972992,
         "logical_operator": {
           "estimated_bytes": 3657433088,
           "arithmetic_intensity_flops_per_byte": 115.100917,
-          "estimated_traffic_gbps": 594.9878550572676,
+          "estimated_traffic_gbps": 593.998345006259,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -340,23 +340,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+      "policy": "graph-fp16-shadow-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 2.4436320066452026,
-        "baseline_p90": 3.652198314666748,
-        "target_median": 0.35225600004196167,
-        "target_p90": 0.37324800491333016
+        "baseline_median": 4.184544086456299,
+        "baseline_p90": 4.643616104125977,
+        "target_median": 0.3256320059299469,
+        "target_p90": 0.33710080087184907
       },
-      "speedup": 6.937091224433681,
+      "speedup": 12.850530691864847,
       "performance": {
-        "achieved_tflops": 21.361116276525173,
-        "measured_compute_roof_tflops": 88.07276150333762,
-        "project_estimated_mfu": 0.2425394175441594,
-        "peak_device_allocated_bytes": 85776384,
+        "achieved_tflops": 23.10762222070628,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.26763079965473324,
+        "peak_device_allocated_bytes": 86573056,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 1266.6046510119095,
+          "estimated_traffic_gbps": 1370.1634970611096,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -373,23 +373,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "graph-mixed-fp16-core-efficient-compiled-norm",
+      "policy": "graph-fp16-shadow-efficient-compiled-norm",
       "latency_ms": {
-        "baseline_median": 1.7731520533561707,
-        "baseline_p90": 2.528278493881226,
-        "target_median": 0.3481599986553192,
-        "target_p90": 0.4064095944166193
+        "baseline_median": 4.551664113998413,
+        "baseline_p90": 4.94013433456421,
+        "target_median": 0.31539198756217957,
+        "target_p90": 0.32880640029907227
       },
-      "speedup": 5.092922967039655,
+      "speedup": 14.431768381880824,
       "performance": {
-        "achieved_tflops": 21.61242361288434,
-        "measured_compute_roof_tflops": 88.07276150333762,
-        "project_estimated_mfu": 0.24539282343344385,
-        "peak_device_allocated_bytes": 85776384,
+        "achieved_tflops": 23.857871070730763,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.2763201272607633,
+        "peak_device_allocated_bytes": 86573056,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 1281.5058873024366,
+          "estimated_traffic_gbps": 1414.649406437561,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -406,23 +406,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "compiled-mixed-fp16-core-efficient",
+      "policy": "compiled-shape11-dh8-triton-fp16-shadow",
       "latency_ms": {
-        "baseline_median": 7.58732795715332,
-        "baseline_p90": 8.080076789855957,
-        "target_median": 0.38707199692726135,
-        "target_p90": 0.5867519855499272
+        "baseline_median": 7.535104036331177,
+        "baseline_p90": 8.008883380889893,
+        "target_median": 0.2754560112953186,
+        "target_p90": 0.39301119744777724
       },
-      "speedup": 19.601851896765172,
+      "speedup": 27.3550175975384,
       "performance": {
-        "achieved_tflops": 19.439746186066827,
-        "measured_compute_roof_tflops": 88.07276150333762,
-        "project_estimated_mfu": 0.22072370451708995,
-        "peak_device_allocated_bytes": 18513920,
+        "achieved_tflops": 27.31681672371577,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.31638138420138967,
+        "peak_device_allocated_bytes": 19310592,
         "logical_operator": {
           "estimated_bytes": 446169088,
           "arithmetic_intensity_flops_per_byte": 16.864865,
-          "estimated_traffic_gbps": 1152.6772578276805,
+          "estimated_traffic_gbps": 1619.7471454767365,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -431,7 +431,7 @@
         "trial_count": 5,
         "failed_elements": 0,
         "max_abs_error": 0.0013092756271362305,
-        "max_relative_error": 158.3451385498047
+        "max_relative_error": 119.93059539794922
       }
     },
     {
@@ -441,21 +441,21 @@
       "validation_level": "formal",
       "policy": "graph-fused-norm",
       "latency_ms": {
-        "baseline_median": 1.9303359985351562,
-        "baseline_p90": 2.7319679975509668,
-        "target_median": 0.19763199985027313,
-        "target_p90": 0.19865599274635315
+        "baseline_median": 4.655296087265015,
+        "baseline_p90": 5.075542259216308,
+        "target_median": 0.19865599274635315,
+        "target_p90": 0.19968000054359436
       },
-      "speedup": 9.76732512952147,
+      "speedup": 23.433957480502308,
       "performance": {
-        "achieved_tflops": 8.49973057638762,
-        "measured_compute_roof_tflops": 47.17255942129391,
-        "project_estimated_mfu": 0.18018379076015964,
+        "achieved_tflops": 8.455917834529245,
+        "measured_compute_roof_tflops": 47.02853274639986,
+        "project_estimated_mfu": 0.17980399006125838,
         "peak_device_allocated_bytes": 35420160,
         "logical_operator": {
           "estimated_bytes": 112721920,
           "arithmetic_intensity_flops_per_byte": 14.902326,
-          "estimated_traffic_gbps": 570.3626947326275,
+          "estimated_traffic_gbps": 567.42270113102,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -472,23 +472,23 @@
       "scope": "resident",
       "execution_mode": "resident",
       "validation_level": "formal",
-      "policy": "compiled-mixed-fp16-core-shape13-triton-attention",
+      "policy": "compiled-shape13-triton-attention-fp16-shadow",
       "latency_ms": {
-        "baseline_median": 117.48659133911133,
-        "baseline_p90": 118.66910858154297,
-        "target_median": 3.202560067176819,
-        "target_p90": 3.5208192825317384
+        "baseline_median": 116.45550537109375,
+        "baseline_p90": 117.04934692382812,
+        "target_median": 2.9025280475616455,
+        "target_p90": 3.27383029460907
       },
-      "speedup": 36.68521085466488,
+      "speedup": 40.12209476112579,
       "performance": {
-        "achieved_tflops": 37.57187706960707,
-        "measured_compute_roof_tflops": 88.07276150333763,
-        "project_estimated_mfu": 0.42660042024665296,
-        "peak_device_allocated_bytes": 194861568,
+        "achieved_tflops": 41.4556521695229,
+        "measured_compute_roof_tflops": 86.34141604971137,
+        "project_estimated_mfu": 0.48013634784093256,
+        "peak_device_allocated_bytes": 212302848,
         "logical_operator": {
           "estimated_bytes": 3558342656,
           "arithmetic_intensity_flops_per_byte": 33.815235,
-          "estimated_traffic_gbps": 1111.0931821293887,
+          "estimated_traffic_gbps": 1225.9460021374439,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },
@@ -507,19 +507,19 @@
       "validation_level": "provisional",
       "policy": "mixed-fp16-core-cudnn",
       "latency_ms": {
-        "target_median": 17206.558349609375,
-        "target_p90": 17208.097998046876,
-        "host_end_to_end": 18879.74319999921
+        "target_median": 17085.4111328125,
+        "target_p90": 17086.25478515625,
+        "host_end_to_end": 20553.711799992016
       },
       "performance": {
-        "achieved_tflops": 80.85659640538078,
-        "measured_compute_roof_tflops": 88.07276150333762,
-        "project_estimated_mfu": 0.9180658699150318,
+        "achieved_tflops": 81.42992481627091,
+        "measured_compute_roof_tflops": 86.34141604971138,
+        "project_estimated_mfu": 0.9431154658082899,
         "peak_device_allocated_bytes": 7845867008,
         "logical_operator": {
           "estimated_bytes": 707839131648,
           "arithmetic_intensity_flops_per_byte": 1965.508379,
-          "estimated_traffic_gbps": 41.13775208649262,
+          "estimated_traffic_gbps": 41.4294468038054,
           "scope": "current_operator_boundary_logical_estimate_not_measured_dram_traffic"
         }
       },

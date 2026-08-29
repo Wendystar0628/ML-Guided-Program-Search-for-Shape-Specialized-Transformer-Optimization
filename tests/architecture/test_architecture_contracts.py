@@ -8,6 +8,7 @@ import pytest
 from policy_registry import (
     POLICY_SPECS,
     ROUTABLE_POLICY_IDS,
+    ExecutionComponent,
     PolicySpec,
     ResidualNormBackend,
     RuntimeWrapper,
@@ -37,12 +38,15 @@ EXPECTED_EXPLICIT_POLICIES = frozenset(
         "graph-mixed-fp16-efficient",
         "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
+        "graph-fp16-shadow-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+        "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
-        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
         "compiled-mixed-fp16-core-efficient",
         "compiled-shape08-fp16-shadow-weights",
-        "compiled-mixed-fp16-core-shape13-triton-attention",
+        "compiled-shape11-dh8-triton-fp16-shadow",
+        "compiled-shape13-triton-attention-fp16-shadow",
     }
 )
 EXPECTED_ROUTABLE_POLICIES = EXPECTED_EXPLICIT_POLICIES - {"safe"}
@@ -105,9 +109,17 @@ def test_candidates_derive_capabilities_from_policy_specs() -> None:
     )
     assert (
         POLICY_SPECS[
-            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
+            "batch-tiled-shape06-triton-mixed-norm-fp16-shadow"
         ].residual_norm
         is ResidualNormBackend.TRITON_MIXED
+    )
+    shape06 = POLICY_SPECS[
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow"
+    ]
+    assert shape06.triton_initial_fp16_norm is True
+    assert (
+        ExecutionComponent.TRITON_INITIAL_FP16_LAYER_NORM
+        in shape06.required_components
     )
     assert (
         POLICY_SPECS["compiled-mixed-fp16-core-efficient"].compile_mode
@@ -115,7 +127,7 @@ def test_candidates_derive_capabilities_from_policy_specs() -> None:
     )
     assert (
         POLICY_SPECS[
-            "compiled-mixed-fp16-core-shape13-triton-attention"
+            "compiled-shape13-triton-attention-fp16-shadow"
         ].compile_mode
         == "max-autotune-no-cudagraphs"
     )
@@ -156,6 +168,36 @@ def test_input_reuse_is_owned_only_by_cuda_graph_specs() -> None:
         PolicySpec("eager-versioned", reuse_unchanged_input=True)
 
 
+def test_attention_layout_is_bound_to_the_backend_contract() -> None:
+    assert (
+        PolicySpec(
+            "dh8-bsd",
+            attention="triton_dh8_causal_attention_bsd",
+            attention_output_layout="bsd",
+        ).attention_output_layout
+        == "bsd"
+    )
+    with pytest.raises(ValueError, match="requires 'bsd' output layout"):
+        PolicySpec("dh8-wrong-layout", attention="triton_dh8_causal_attention_bsd")
+    with pytest.raises(ValueError, match="requires 'bhsd' output layout"):
+        PolicySpec("sdpa-wrong-layout", attention_output_layout="bsd")
+
+
+def test_initial_norm_is_bound_to_the_fixed_shape06_runtime_contract() -> None:
+    with pytest.raises(ValueError, match="fixed 128-row batch-tiled"):
+        PolicySpec("eager-initial-norm", triton_initial_fp16_norm=True)
+    with pytest.raises(ValueError, match="fixed 128-row batch-tiled"):
+        PolicySpec(
+            "wrong-tile-initial-norm",
+            attention="mixed_fp16_efficient",
+            linear_compute="float16_shadow",
+            residual_norm=ResidualNormBackend.TRITON_MIXED,
+            runtime=RuntimeWrapper.BATCH_TILED_CUDA_GRAPH,
+            batch_tile_size=64,
+            triton_initial_fp16_norm=True,
+        )
+
+
 def test_candidate_registry_contains_only_distinct_strategies() -> None:
     assert set(CANDIDATE_SPECS) == {
         "eager-sdpa",
@@ -170,12 +212,15 @@ def test_candidate_registry_contains_only_distinct_strategies() -> None:
         "graph-mixed-fp16-efficient",
         "graph-mixed-fp16-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
+        "graph-fp16-shadow-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input",
+        "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
-        "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
         "compiled-mixed-fp16-core-efficient",
         "compiled-shape08-fp16-shadow-weights",
-        "compiled-mixed-fp16-core-shape13-triton-attention",
+        "compiled-shape11-dh8-triton-fp16-shadow",
+        "compiled-shape13-triton-attention-fp16-shadow",
     }
 
 

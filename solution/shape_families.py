@@ -155,6 +155,83 @@ def is_shape08_fp16_shadow_workload(
     )
 
 
+def is_shape11_triton_dh8_attention_workload(
+    *,
+    batch_size: int,
+    seq_len: int,
+    d_model: int,
+    num_heads: int,
+    ffn_dim: int,
+    num_layers: int,
+) -> bool:
+    """Match the exact workload measured for the padded-D16 Dh8 kernel."""
+
+    return bool(
+        batch_size == 64
+        and seq_len == 128
+        and d_model == 128
+        and num_heads == 16
+        and ffn_dim == 128
+        and num_layers == 4
+    )
+
+
+def is_measured_fp16_shadow_workload(
+    *,
+    batch_size: int,
+    seq_len: int,
+    d_model: int,
+    num_heads: int,
+    ffn_dim: int,
+    num_layers: int,
+) -> bool:
+    """Limit persistent FP16 weights to workloads with paired GPU evidence."""
+
+    short_d128 = bool(
+        batch_size == 64
+        and seq_len == 128
+        and d_model == 128
+        and num_heads in {1, 2, 4, 16}
+        and ffn_dim == 128
+        and num_layers == 4
+    )
+    return bool(
+        short_d128
+        or is_shape05_graph_mixed_residual_norm_workload(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            d_model=d_model,
+            num_heads=num_heads,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+        )
+        or is_shape06_batch_tiled_workload(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            d_model=d_model,
+            num_heads=num_heads,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+        )
+        or is_shape08_fp16_shadow_workload(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            d_model=d_model,
+            num_heads=num_heads,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+        )
+        or is_shape13_triton_attention_workload(
+            batch_size=batch_size,
+            seq_len=seq_len,
+            d_model=d_model,
+            num_heads=num_heads,
+            ffn_dim=ffn_dim,
+            num_layers=num_layers,
+        )
+    )
+
+
 def is_shape13_triton_attention_tensor_family(
     *,
     batch_size: int,
@@ -281,6 +358,7 @@ def is_measured_triton_residual_norm_workload(
 __all__ = [
     "is_compiled_forward_candidate_workload",
     "is_graph_mixed_fp16_core_candidate_workload",
+    "is_measured_fp16_shadow_workload",
     "is_measured_mixed_fp16_core_efficient_workload",
     "is_measured_streamed_mixed_fp16_core_cudnn_workload",
     "is_measured_triton_residual_norm_workload",
@@ -288,6 +366,7 @@ __all__ = [
     "is_shape05_graph_mixed_residual_norm_workload",
     "is_shape06_batch_tiled_workload",
     "is_shape08_fp16_shadow_workload",
+    "is_shape11_triton_dh8_attention_workload",
     "is_shape13_triton_attention_tensor_family",
     "is_shape13_triton_attention_workload",
     "is_streamed_mixed_fp16_core_cudnn_slice",

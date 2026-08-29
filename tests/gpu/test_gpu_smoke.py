@@ -83,7 +83,7 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
         ),
         (
             "official_06",
-            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+            "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
         ),
         ("official_07", "graph-mixed-fp16-efficient"),
         ("official_07", "graph-mixed-fp16-efficient-compiled-norm"),
@@ -91,11 +91,17 @@ def _assert_policy_executed(result: dict[str, object], policy: str) -> None:
             "official_07",
             "graph-mixed-fp16-core-efficient-compiled-norm",
         ),
+        ("official_01", "graph-fp16-shadow-efficient-compiled-norm"),
+        (
+            "official_05",
+            "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
+        ),
         ("official_13", "compiled-mixed-fp16-core-efficient"),
         ("official_08", "compiled-shape08-fp16-shadow-weights"),
+        ("official_11", "compiled-shape11-dh8-triton-fp16-shadow"),
         (
             "official_13",
-            "compiled-mixed-fp16-core-shape13-triton-attention",
+            "compiled-shape13-triton-attention-fp16-shadow",
         ),
     ],
 )

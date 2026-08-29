@@ -13,8 +13,8 @@ winner for that exact hardware and software stack.
 | --- | --- |
 | What is the problem? | One Transformer execution path cannot efficiently cover launch-bound, throughput-bound, memory-traffic-bound, and capacity-bound shapes on the same consumer GPU. |
 | What is the insight? | Use theory and hardware signals only to narrow the candidates; let complete-workload correctness and GPU measurements choose an exact per-shape route. |
-| What did this project build? | The routing and calibration loop, immutable execution plans, streamed Shape 14 scheduler, custom mixed residual-normalization and Shape 13 online-attention Triton kernels, and the result/route integrity path. |
-| What is verified? | On one disclosed RTX 4080 stack, all 13 resident shapes pass and reach **9.192x** geometric-mean speedup; the extreme Shape 14 completes in **17.207 s** using **7.307 GiB** peak allocation. |
+| What did this project build? | The routing and calibration loop, immutable execution plans, streamed Shape 14 scheduler, FP16 shadow-weight paths, and guarded Triton kernels for normalization and shape-specific attention. |
+| What is verified? | On one disclosed RTX 4080 stack, all 13 resident shapes pass and reach **16.998x** project geometric-mean speedup; the extreme Shape 14 completes in **17.085 s** using **7.307 GiB** peak allocation. |
 | Why does it matter? | Many optimized stacks assume data-center GPUs. This approach makes fixed-shape Transformer inference tunable on local hardware and makes a sequence-100000 workload executable within a 16 GiB device. |
 
 Start with the [final machine-readable result](results/final/nvidia_geforce_rtx_4080.json),
@@ -39,12 +39,12 @@ The current competition workload is split by execution reality:
 The checked RTX 4080 performance record is the only numeric source for this
 summary:
 
-- Resident Formal: **13/13 successful**, **9.192276080x** unweighted
-  geometric-mean speedup, per-shape speedups from **2.334x** to **36.685x**,
-  zero failed output elements, and maximum absolute error **0.00180167**.
-- Streamed Shape 14 Formal: **17.206558 s** target median, **17.208098 s**
-  target P90, **18.879743 s** host-streamed end-to-end time, **80.8566 useful
-  TFLOP/s**, **91.8066% project-estimated MFU**, and **7.307 GiB**
+- Resident Formal: **13/13 successful**, **16.997856354x** unweighted project
+  geometric-mean speedup, per-shape speedups from **2.291x** to **40.122x**,
+  zero failed output elements, and maximum absolute error **0.00188206**.
+- Streamed Shape 14 Formal: **17.085411 s** target median, **17.086255 s**
+  target P90, **20.553712 s** host-streamed end-to-end time, **81.4299 useful
+  TFLOP/s**, **94.3115% project-estimated MFU**, and **7.307 GiB**
   (**7,845,867,008 bytes**) peak device allocation.
 - The streamed artifact selected `mixed-fp16-core-cudnn`, timing microbatch
   size `2`, and microbatch count `16`. These are measured outputs of the joint
@@ -63,18 +63,23 @@ measured DRAM bandwidth counter.
 
 The largest verified method changes are shape-specific rather than global:
 
-- Shape 05 combines a mixed FP16 core, Efficient SDPA, the custom Triton mixed
-  residual/LayerNorm boundary, version-aware unchanged-input Graph staging,
-  and CUDA Graph replay: **0.501760 ms**, **4.710x**.
-- Shape 06 uses batch-tiled Graph replay with a mixed-precision Triton
-  residual-plus-LayerNorm kernel: **45.323263 ms**, **10.730x**.
-- Shapes 07 and 11 use one compiled fixed-plan forward: **0.140288 ms / 14.445x**
-  and **0.387072 ms / 19.602x**, respectively.
+- Shape 05 combines FP16 shadow weights, Efficient SDPA, the custom Triton
+  mixed residual/LayerNorm boundary, version-aware unchanged-input Graph
+  staging, and CUDA Graph replay: **0.468992 ms**, **9.290x**.
+- Shape 06 uses batch-tiled Graph replay, FP16 shadow weights, a dedicated
+  FP32-to-FP16 initial LayerNorm kernel, and mixed residual/LayerNorm fusion:
+  **38.951935 ms**, **12.347x**.
+- Shape 07 uses a Graph-composed mixed-FP16 fixed plan:
+  **0.195584 ms**, **23.237x**.
+- Shape 11 uses a compiled fixed plan with a guarded `head_dim=8` online
+  attention Triton kernel that writes the flattened BSD layout directly:
+  **0.275456 ms**, **27.355x**.
 - Shape 08 keeps the official FP32 parameters authoritative and supplies its
   compiled path with derived, non-persistent FP16 shadow weights:
-  **6.147072 ms**, **2.334x**.
-- Shape 13 uses a guarded Triton online causal-attention kernel inside the
-  compiled forward: **3.202560 ms**, **36.685x**.
+  **6.157312 ms**, **2.291x**.
+- Shape 13 uses FP16 shadow weights and a guarded Triton online
+  causal-attention kernel inside the compiled forward:
+  **2.902528 ms**, **40.122x**.
 
 See [TECHNICAL_REPORT.md](TECHNICAL_REPORT.md) for the per-shape table,
 measurement interpretation, and optimization insights. The geometric mean and
@@ -94,10 +99,10 @@ replay; they are not unrelated model implementations.
 | Graph | `graph`, `graph-fused-norm` | Remove repeated launch overhead; optionally compile residual + LayerNorm |
 | Mixed attention | `mixed-fp16-efficient`, `mixed-fp16-cudnn` | Run selected FP32-model attention in FP16 with an explicit SDPA backend |
 | Mixed core | `mixed-fp16-core-efficient`, `mixed-fp16-core-cudnn` | Extend FP16 execution to attention and linear compute for throughput-bound shapes |
-| Graph compositions | `graph-mixed-fp16-efficient`, `graph-mixed-fp16-efficient-compiled-norm`, `graph-mixed-fp16-core-efficient-compiled-norm`, `graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input` | Compose full-forward graph replay with mixed attention or mixed core and an explicit residual-to-normalization boundary; the Shape 05 specialization also reuses unchanged input staging by tensor identity and version |
-| Batch-tiled Graph | `batch-tiled-mixed-fp16-core-efficient-compiled-norm`, `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm` | Split the exact high-batch resident shape into fixed tiles and replay one captured full-model graph per tile; Shape 06 can fuse its FP32 residual stream with FP16 branch output in Triton |
-| Compiled forward | `compiled-mixed-fp16-core-efficient`, `compiled-shape08-fp16-shadow-weights`, `compiled-mixed-fp16-core-shape13-triton-attention` | Compile and cache one full fixed-plan forward for guarded shapes; Shapes 07/11 use the general path, Shape 08 derives non-persistent FP16 shadows from authoritative FP32 weights, and Shape 13 embeds its dedicated Triton attention |
-| Custom Triton | `mixed-fp16-core-efficient-triton-norm`, `graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input`, `batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm`, `compiled-mixed-fp16-core-shape13-triton-attention` | Provide narrow specializations for mixed residual-plus-LayerNorm and Shape 13 online causal attention without turning the registry into a general kernel zoo |
+| Graph compositions | `graph-mixed-fp16-efficient`, `graph-mixed-fp16-efficient-compiled-norm`, `graph-mixed-fp16-core-efficient-compiled-norm`, `graph-fp16-shadow-efficient-compiled-norm`, `graph-mixed-fp16-core-efficient-triton-mixed-norm-reuse-input`, `graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input` | Compose full-forward Graph replay with mixed attention/core, optional FP16 shadow weights, and an explicit residual-to-normalization boundary; the Shape 05 specialization also reuses unchanged input staging by tensor identity and version |
+| Batch-tiled Graph | `batch-tiled-mixed-fp16-core-efficient-compiled-norm`, `batch-tiled-shape06-triton-mixed-norm-fp16-shadow` | Split the exact high-batch resident shape into fixed tiles and replay one captured full-model Graph per tile; the Shape 06 specialization adds FP16 shadow weights and dedicated Triton normalization paths |
+| Compiled forward | `compiled-mixed-fp16-core-efficient`, `compiled-shape08-fp16-shadow-weights`, `compiled-shape11-dh8-triton-fp16-shadow`, `compiled-shape13-triton-attention-fp16-shadow` | Compile and cache one full fixed-plan forward for guarded shapes; Shape 08 derives non-persistent FP16 shadows, while Shapes 11 and 13 embed dedicated online-attention Triton kernels |
+| Custom Triton | `mixed-fp16-core-efficient-triton-norm` and the guarded Graph, batch-tiled, Shape 11, and Shape 13 specializations above | Provide narrow kernels for initial or residual LayerNorm boundaries and online causal attention without turning the registry into a general kernel zoo |
 
 `safe` is an internal, non-routable diagnostic fallback. A specialized policy
 is accepted only when its requested backend is observed during execution;
@@ -138,9 +143,9 @@ one pipeline. An attention residual is paired with the same block's `norm2`,
 while an FFN residual is paired with the next block's `norm1` or the final
 normalization. Compiled and Triton backends can therefore return both the
 updated residual stream and its normalized view without changing the supplied
-pre-normalization mathematics. Shape 13 separately replaces only its guarded
-causal-attention core with an online Triton kernel; other shapes retain their
-selected library attention backend.
+pre-normalization mathematics. Shapes 11 and 13 separately replace only their
+guarded causal-attention cores with online Triton kernels; other shapes retain
+their selected library attention backend.
 
 ## Contribution boundary
 
@@ -151,8 +156,8 @@ Project-owned work includes:
 - hardware probing, explainable candidate ranking, real-GPU calibration,
   observed-path checks, and atomic route promotion;
 - mixed-core integration, full-forward compilation, batch-tiled Graph replay,
-  dynamic Shape 14 scheduling, guarded compiled/Triton residual-to-norm
-  implementations, and the exact-Shape-13 Triton online attention path;
+  dynamic Shape 14 scheduling, guarded compiled/Triton normalization
+  implementations, and exact-Shape-11/13 Triton online attention paths;
 - paired/streamed measurement services, correctness checks, compact metrics,
   and verified-hardware artifacts.
 

@@ -170,6 +170,7 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
             "selected_policy": ("batch-tiled-mixed-fp16-core-efficient-compiled-norm"),
             "runtime_wrapper": "batch_tiled_cuda_graph",
             "batch_tile_size": 128,
+            "use_triton_initial_fp16_norm": False,
         }
     )
     batch_tiled_path["observed_execution"]["runtime_wrappers"] = [
@@ -178,15 +179,14 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
     mixed_residual_path = deepcopy(batch_tiled_path)
     mixed_residual_path.update(
         {
-            "requested_policy": (
-                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
-            ),
-            "selected_policy": (
-                "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm"
-            ),
+            "requested_policy": "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
+            "selected_policy": "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
+            "linear_backend": "fp16_shadow",
             "residual_norm_backend": "triton_mixed_residual_layer_norm",
+            "use_triton_initial_fp16_norm": True,
         }
     )
+    mixed_residual_path["observed_execution"]["linear_backends"] = ["fp16_shadow"]
     mixed_residual_path["observed_execution"]["residual_norm_backends"] = [
         "triton_mixed_residual_layer_norm"
     ]
@@ -203,7 +203,7 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
             batch_tiled_path,
         ),
         (
-            "batch-tiled-mixed-fp16-core-efficient-triton-mixed-norm",
+            "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
             mixed_residual_path,
         ),
     ):
@@ -218,6 +218,12 @@ def test_composite_evidence_rejects_residual_norm_fallbacks() -> None:
     assert not CANDIDATE_SPECS[
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm"
     ].evidence_matches(runtime_fallback)
+
+    initial_norm_fallback = deepcopy(mixed_residual_path)
+    initial_norm_fallback["use_triton_initial_fp16_norm"] = False
+    assert not CANDIDATE_SPECS[
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow"
+    ].evidence_matches(initial_norm_fallback)
 
 
 def test_compiled_forward_evidence_requires_inner_and_outer_execution() -> None:
@@ -256,13 +262,13 @@ def test_compiled_forward_evidence_requires_inner_and_outer_execution() -> None:
 
 
 def test_shape13_triton_evidence_rejects_an_efficient_attention_fallback() -> None:
-    policy = "compiled-mixed-fp16-core-shape13-triton-attention"
+    policy = "compiled-shape13-triton-attention-fp16-shadow"
     path = {
         "requested_policy": policy,
         "selected_policy": policy,
         "attention_backend": "triton_shape13_causal_attention",
         "attention_compute_dtype": "float16",
-        "linear_backend": "autocast_fp16",
+        "linear_backend": "fp16_shadow",
         "linear_compute_dtype": "float16",
         "runtime_wrapper": "compiled_forward",
         "compile_mode": "max-autotune-no-cudagraphs",
@@ -271,7 +277,7 @@ def test_shape13_triton_evidence_rejects_an_efficient_attention_fallback() -> No
             "complete": True,
             "attention_backends": ["triton_shape13_causal_attention"],
             "attention_compute_dtypes": ["float16"],
-            "linear_backends": ["autocast_fp16"],
+            "linear_backends": ["fp16_shadow"],
             "linear_compute_dtypes": ["float16"],
             "residual_norm_backends": ["torch"],
             "runtime_wrappers": ["compiled_forward"],
@@ -283,6 +289,84 @@ def test_shape13_triton_evidence_rejects_an_efficient_attention_fallback() -> No
     fallback = deepcopy(path)
     fallback["observed_execution"]["attention_backends"] = ["mixed_fp16_efficient"]
     assert not candidate.evidence_matches(fallback)
+    shadow_fallback = deepcopy(path)
+    shadow_fallback["observed_execution"]["linear_backends"] = ["autocast_fp16"]
+    assert not candidate.evidence_matches(shadow_fallback)
     wrong_mode = deepcopy(path)
     wrong_mode["compile_mode"] = "max-autotune"
     assert not candidate.evidence_matches(wrong_mode)
+
+
+def test_shape11_dh8_evidence_rejects_attention_or_shadow_fallbacks() -> None:
+    policy = "compiled-shape11-dh8-triton-fp16-shadow"
+    path = {
+        "requested_policy": policy,
+        "selected_policy": policy,
+        "attention_backend": "triton_dh8_causal_attention_bsd",
+        "attention_compute_dtype": "float16",
+        "attention_output_layout": "bsd",
+        "linear_backend": "fp16_shadow",
+        "linear_compute_dtype": "float16",
+        "runtime_wrapper": "compiled_forward",
+        "compile_mode": "max-autotune",
+        "residual_norm_backend": "torch",
+        "observed_execution": {
+            "complete": True,
+            "attention_backends": ["triton_dh8_causal_attention_bsd"],
+            "attention_compute_dtypes": ["float16"],
+            "linear_backends": ["fp16_shadow"],
+            "linear_compute_dtypes": ["float16"],
+            "residual_norm_backends": ["torch"],
+            "runtime_wrappers": ["compiled_forward"],
+        },
+    }
+    candidate = CANDIDATE_SPECS[policy]
+
+    assert candidate.evidence_matches(path)
+    attention_fallback = deepcopy(path)
+    attention_fallback["observed_execution"]["attention_backends"] = [
+        "mixed_fp16_efficient"
+    ]
+    assert not candidate.evidence_matches(attention_fallback)
+    shadow_fallback = deepcopy(path)
+    shadow_fallback["observed_execution"]["linear_backends"] = ["autocast_fp16"]
+    assert not candidate.evidence_matches(shadow_fallback)
+
+
+def test_graph_shadow_evidence_rejects_autocast_weight_fallbacks() -> None:
+    paths = {
+        "graph-fp16-shadow-efficient-compiled-norm": {
+            "residual_norm_backend": "compiled_residual_layer_norm",
+        },
+        "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input": {
+            "residual_norm_backend": "triton_mixed_residual_layer_norm",
+            "reuse_unchanged_input": True,
+        },
+    }
+
+    for policy, additions in paths.items():
+        path = {
+            "requested_policy": policy,
+            "selected_policy": policy,
+            "attention_backend": "mixed_fp16_efficient",
+            "attention_compute_dtype": "float16",
+            "linear_backend": "fp16_shadow",
+            "linear_compute_dtype": "float16",
+            "runtime_wrapper": "cuda_graph",
+            **additions,
+            "observed_execution": {
+                "complete": True,
+                "attention_backends": ["mixed_fp16_efficient"],
+                "attention_compute_dtypes": ["float16"],
+                "linear_backends": ["fp16_shadow"],
+                "linear_compute_dtypes": ["float16"],
+                "residual_norm_backends": [additions["residual_norm_backend"]],
+                "runtime_wrappers": ["cuda_graph"],
+            },
+        }
+        candidate = CANDIDATE_SPECS[policy]
+        assert candidate.evidence_matches(path)
+
+        fallback = deepcopy(path)
+        fallback["observed_execution"]["linear_backends"] = ["autocast_fp16"]
+        assert not candidate.evidence_matches(fallback)

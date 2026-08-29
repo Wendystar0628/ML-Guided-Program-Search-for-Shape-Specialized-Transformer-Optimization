@@ -4,28 +4,17 @@ from __future__ import annotations
 
 import pytest
 
+from runner.candidates import CANDIDATE_SPECS
 from runner.contracts import RunVariant
 from runner.hardware_router import analyze_workload, build_routing_plan
 from tests.support.runner_fixtures import official_shape
 
-DEPLOYABLE_CANDIDATES = (
-    "eager-sdpa",
-    "graph",
-    "graph-fused-norm",
-    "mixed-fp16-efficient",
-    "mixed-fp16-cudnn",
-    "mixed-fp16-core-efficient",
-    "mixed-fp16-core-efficient-triton-norm",
-    "mixed-fp16-core-cudnn",
-    "graph-mixed-fp16-efficient",
-    "graph-mixed-fp16-efficient-compiled-norm",
-    "graph-mixed-fp16-core-efficient-compiled-norm",
-    "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
-    "compiled-mixed-fp16-core-efficient",
-    "compiled-shape08-fp16-shadow-weights",
-    "compiled-mixed-fp16-core-shape13-triton-attention",
+DEPLOYABLE_CANDIDATES = tuple(
+    candidate_id
+    for candidate_id, candidate in CANDIDATE_SPECS.items()
+    if candidate.deployable
 )
-ALL_CANDIDATES = ("eager-sdpa", "eager-safe", *DEPLOYABLE_CANDIDATES[1:])
+ALL_CANDIDATES = tuple(CANDIDATE_SPECS)
 
 
 def _ada_profile() -> dict[str, object]:
@@ -119,12 +108,11 @@ def test_operator_bandwidth_converts_copy_payload_when_theoretical_is_unknown() 
     "case_id",
     [
         "official_01",
-        "official_05",
         "official_09",
         "official_10",
     ],
 )
-def test_measured_s128_family_prioritizes_graph_mixed_attention(
+def test_measured_s128_family_prioritizes_graph_shadow_weights(
     case_id: str,
 ) -> None:
     plan = build_routing_plan(
@@ -136,8 +124,24 @@ def test_measured_s128_family_prioritizes_graph_mixed_attention(
     )
 
     assert plan["candidate_order"] == [
+        "graph-fp16-shadow-efficient-compiled-norm",
         "graph-mixed-fp16-core-efficient-compiled-norm",
-        "graph-mixed-fp16-efficient-compiled-norm",
+        "eager-sdpa",
+    ]
+
+
+def test_shape05_prioritizes_shadow_weights_with_input_reuse() -> None:
+    plan = build_routing_plan(
+        official_shape("official_05"),
+        RunVariant(),
+        _ada_profile(),
+        DEPLOYABLE_CANDIDATES,
+        limit=3,
+    )
+
+    assert plan["candidate_order"] == [
+        "graph-fp16-shadow-efficient-triton-mixed-norm-reuse-input",
+        "graph-mixed-fp16-core-efficient-compiled-norm",
         "eager-sdpa",
     ]
 
@@ -162,7 +166,7 @@ def test_shape07_shortlists_compiled_forward_with_compiler_graphs() -> None:
     assert "CUDAGraph Trees" in reasons
 
 
-def test_shape11_prioritizes_fixed_plan_compilation() -> None:
+def test_shape11_prioritizes_the_dh8_triton_specialization() -> None:
     plan = build_routing_plan(
         official_shape("official_11"),
         RunVariant(),
@@ -172,10 +176,15 @@ def test_shape11_prioritizes_fixed_plan_compilation() -> None:
     )
 
     assert plan["candidate_order"] == [
+        "compiled-shape11-dh8-triton-fp16-shadow",
         "compiled-mixed-fp16-core-efficient",
-        "graph-mixed-fp16-core-efficient-compiled-norm",
         "eager-sdpa",
     ]
+    reasons = " ".join(
+        plan["selection_reasons"]["compiled-shape11-dh8-triton-fp16-shadow"]
+    )
+    assert "online-softmax" in reasons
+    assert "weight conversions" in reasons
 
 
 def test_extreme_batch_prioritizes_the_batch_tiled_graph() -> None:
@@ -189,8 +198,8 @@ def test_extreme_batch_prioritizes_the_batch_tiled_graph() -> None:
 
     assert plan["feasibility"]["baseline_executable"] is True
     assert plan["candidate_order"] == [
+        "batch-tiled-shape06-triton-mixed-norm-fp16-shadow",
         "batch-tiled-mixed-fp16-core-efficient-compiled-norm",
-        "mixed-fp16-core-efficient-triton-norm",
         "eager-sdpa",
     ]
     assert "graph" in plan["capability_rejections"]
@@ -222,14 +231,14 @@ def test_shape13_prioritizes_fixed_plan_compilation() -> None:
         limit=3,
     )
 
-    assert plan["candidate_order"][0] == (
-        "compiled-mixed-fp16-core-shape13-triton-attention"
-    )
+    policy = "compiled-shape13-triton-attention-fp16-shadow"
+    assert plan["candidate_order"][0] == policy
     reasons = " ".join(
-        plan["selection_reasons"]["compiled-mixed-fp16-core-shape13-triton-attention"]
+        plan["selection_reasons"][policy]
     )
     assert "whole-stack fusion" in reasons
     assert "online-softmax" in reasons
+    assert "weight conversions" in reasons
 
 
 def test_negative_prior_still_retains_the_current_incumbent() -> None:
