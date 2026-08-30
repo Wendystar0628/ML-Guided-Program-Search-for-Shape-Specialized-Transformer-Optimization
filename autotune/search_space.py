@@ -991,6 +991,18 @@ def _attention_output_bridge_choices(
     return (AttentionOutputBridge.TORCH_BHSD_TO_BSD, *fused)
 
 
+def _search_structure_supported(
+    structure: StructureSpec,
+    context: SearchContext,
+) -> bool:
+    if structure.attention is not AttentionBackend.FP16_CUDNN_SDPA:
+        return True
+    return (
+        context.execution_context.head_dim <= 128
+        and structure.runtime is not RuntimeBackend.COMPILED_FORWARD
+    )
+
+
 def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
     if context.scope != "resident":
         raise ValueError("ProgramSearchSpace supports resident workloads only")
@@ -1153,6 +1165,8 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
                 initial_norm=initial_norm,
                 runtime=runtime,
             )
+            if not _search_structure_supported(structure, context):
+                continue
             if structure.portable:
                 continue
             # Reference streaming is represented once by the portable control.
@@ -1356,6 +1370,8 @@ class ProgramSearchSpace:
                 required.append(portable)
         for config in required_configs:
             structure = StructureSpec.from_config(config)
+            if not _search_structure_supported(structure, context):
+                continue
             branch = BranchSpace(
                 structure=structure,
                 domains=_domains_for_structure(structure, context),

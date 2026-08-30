@@ -29,6 +29,7 @@ from solution.config import ConfigSpec, portable_config, portable_streamed_confi
 from solution.plan import ExecutionContext
 from solution.plan_builder import HardwareCapabilities, PlanBuilder
 
+from .compiler_isolation import isolate_compiler_state
 from .evaluation import (
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
@@ -187,14 +188,15 @@ class BenchmarkEvaluator:
 
     def evaluate(self, config: ConfigSpec, fidelity: Fidelity) -> TrialMeasurement:
         try:
-            result = measure_config(
-                self.shape,
-                config,
-                self.variant,
-                _protocol(self.scope, fidelity, self.shape.case_id),
-                self.device,
-                include_baseline=False,
-            )
+            with isolate_compiler_state(config):
+                result = measure_config(
+                    self.shape,
+                    config,
+                    self.variant,
+                    _protocol(self.scope, fidelity, self.shape.case_id),
+                    self.device,
+                    include_baseline=False,
+                )
         except Exception as exc:
             infeasible = self._known_infeasible(config, fidelity, exc)
             if infeasible is None:
@@ -208,15 +210,16 @@ class BenchmarkEvaluator:
         incumbent: ConfigSpec,
     ) -> PairedMeasurement:
         try:
-            paired = measure_paired_configs(
-                self.shape,
-                challenger,
-                incumbent,
-                self.variant,
-                _protocol(self.scope, Fidelity.FORMAL, self.shape.case_id),
-                self.device,
-                stop_when=promotion_should_stop,
-            )
+            with isolate_compiler_state(challenger, incumbent):
+                paired = measure_paired_configs(
+                    self.shape,
+                    challenger,
+                    incumbent,
+                    self.variant,
+                    _protocol(self.scope, Fidelity.FORMAL, self.shape.case_id),
+                    self.device,
+                    stop_when=promotion_should_stop,
+                )
         except Exception as exc:
             if classify_infeasible_exception(exc) is None:
                 raise

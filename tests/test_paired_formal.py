@@ -291,3 +291,12 @@ def test_only_known_config_domain_exceptions_are_infeasible() -> None:
         )
     assert classify_infeasible_exception(RuntimeError("worker connection lost")) is None
     assert classify_infeasible_exception(ValueError("unexpected Python bug")) is None
+
+
+def test_resource_cause_overrides_generic_compiled_failure_wrapper() -> None:
+    wrapped = RuntimeError("full-stack compiled forward compilation failed")
+    wrapped.__cause__ = RuntimeError(
+        "out of resource: shared memory, Required: 65536, Hardware limit: 49152"
+    )
+
+    assert classify_infeasible_exception(wrapped) == "runtime_resource_exhausted"

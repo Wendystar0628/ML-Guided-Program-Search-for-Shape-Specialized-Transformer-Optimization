@@ -266,6 +266,67 @@ def _official07_context(*, has_valid_token_mask: bool = False) -> ExecutionConte
     )
 
 
+def _cudnn_hardware() -> HardwareCapabilities:
+    return replace(
+        HardwareCapabilities.detect(torch.device("cuda")),
+        compute_capability=(8, 9),
+        cudnn_sdp=True,
+        cudnn_available=True,
+        torch_compile=True,
+    )
+
+
+def _cudnn_config(runtime: RuntimeBackend) -> ConfigSpec:
+    return ConfigSpec(
+        program=_program(
+            PrecisionPlan.FP16_QKV_ATTENTION,
+            attention=AttentionBackend.FP16_CUDNN_SDPA,
+        ),
+        schedule=ScheduleConfig(runtime=runtime),
+    )
+
+
+def test_program_search_space_prunes_compiled_forward_cudnn_sdpa() -> None:
+    config = _cudnn_config(RuntimeBackend.COMPILED_FORWARD)
+    search_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=_official07_context(),
+            scope="resident",
+            hardware=_cudnn_hardware(),
+        ),
+        required_configs=(config,),
+    )
+
+    assert search_space.branch_for(config) is None
+    assert all(
+        branch.structure.attention is not AttentionBackend.FP16_CUDNN_SDPA
+        or branch.structure.runtime is not RuntimeBackend.COMPILED_FORWARD
+        for branch in search_space.branches
+    )
+
+
+def test_program_search_space_prunes_cudnn_sdpa_above_head_dim_128() -> None:
+    search_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=replace(
+                _official07_context(),
+                d_model=1024,
+                num_heads=4,
+                ffn_dim=1024,
+            ),
+            scope="resident",
+            hardware=_cudnn_hardware(),
+        ),
+    )
+
+    assert all(
+        branch.structure.attention is not AttentionBackend.FP16_CUDNN_SDPA
+        for branch in search_space.branches
+    )
+
+
 @pytest.mark.parametrize("precision_plan", tuple(PrecisionPlan))
 def test_precision_plans_bind_exactly_their_projection_roles(
     precision_plan: PrecisionPlan,

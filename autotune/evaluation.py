@@ -148,6 +148,7 @@ def classify_infeasible_exception(exc: Exception) -> str | None:
 
     current: BaseException | None = exc
     seen: set[int] = set()
+    candidate_execution_failed = False
     while current is not None and id(current) not in seen:
         seen.add(id(current))
         if isinstance(current, ConfigRejectedError):
@@ -161,15 +162,6 @@ def classify_infeasible_exception(exc: Exception) -> str | None:
         ):
             return "runtime_resource_exhausted"
         message = str(current).lower()
-        candidate_failure_markers = (
-            "compiled ffn compilation failed",
-            "full-stack compiled forward compilation failed",
-            "compiled residual layernorm is ineligible",
-            "compiled residual layernorm execution failed",
-            "forced fp16 cudnn sdpa is unavailable",
-        )
-        if any(marker in message for marker in candidate_failure_markers):
-            return "candidate_execution_failed"
         if any(
             marker in message
             for marker in (
@@ -194,7 +186,18 @@ def classify_infeasible_exception(exc: Exception) -> str | None:
             )
         ):
             return "runtime_resource_exhausted"
+        candidate_failure_markers = (
+            "compiled ffn compilation failed",
+            "full-stack compiled forward compilation failed",
+            "compiled residual layernorm is ineligible",
+            "compiled residual layernorm execution failed",
+            "forced fp16 cudnn sdpa is unavailable",
+        )
+        if any(marker in message for marker in candidate_failure_markers):
+            candidate_execution_failed = True
         current = current.__cause__ or current.__context__
+    if candidate_execution_failed:
+        return "candidate_execution_failed"
     return None
 
 
