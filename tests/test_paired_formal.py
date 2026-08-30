@@ -2,7 +2,6 @@ import pytest
 import torch
 from torch import nn
 
-import benchmarking.measure as measure_module
 from autotune.evaluation import (
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
@@ -21,6 +20,7 @@ from autotune.promotion import (
     promotion_decision,
     promotion_should_stop,
 )
+from benchmarking import measurement_core
 from benchmarking.measure import measure_paired_configs
 from benchmarking.protocols import MeasurementProtocol, RunVariant, TransformerShape
 from solution.config import portable_config
@@ -49,7 +49,7 @@ def test_formal_rounds_alternate_ab_ba_and_keep_paired_ratios(
     }
     order: list[str] = []
 
-    monkeypatch.setattr(measure_module.official, "warmup_model", lambda *args: None)
+    monkeypatch.setattr(measurement_core.official, "warmup_model", lambda *args: None)
 
     def benchmark_once(
         model: nn.Module,
@@ -62,21 +62,23 @@ def test_formal_rounds_alternate_ab_ba_and_keep_paired_ratios(
         order.append(label)
         return list(next(samples[label]))
 
-    monkeypatch.setattr(measure_module.official, "benchmark_once", benchmark_once)
+    monkeypatch.setattr(measurement_core.official, "benchmark_once", benchmark_once)
     x = torch.zeros(1)
     mask = torch.ones(1, dtype=torch.bool)
-    incumbent_samples, challenger_samples, ratios = measure_module._interleaved_timings(
-        incumbent,
-        (x, mask),
-        challenger,
-        (x, mask),
-        MeasurementProtocol(
-            accuracy_trials=1,
-            warmup=2,
-            repeats=2,
-            rounds=3,
-        ),
-        torch.device("cpu"),
+    incumbent_samples, challenger_samples, ratios = (
+        measurement_core._interleaved_timings(
+            incumbent,
+            (x, mask),
+            challenger,
+            (x, mask),
+            MeasurementProtocol(
+                accuracy_trials=1,
+                warmup=2,
+                repeats=2,
+                rounds=3,
+            ),
+            torch.device("cpu"),
+        )
     )
 
     assert order == ["A", "B", "B", "A", "A", "B"]
@@ -92,7 +94,7 @@ def test_interleaved_timings_stops_after_a_terminal_sequential_decision(
     challenger = nn.Identity()
     calls = 0
 
-    monkeypatch.setattr(measure_module.official, "warmup_model", lambda *args: None)
+    monkeypatch.setattr(measurement_core.official, "warmup_model", lambda *args: None)
 
     def benchmark_once(
         model: nn.Module,
@@ -105,10 +107,10 @@ def test_interleaved_timings_stops_after_a_terminal_sequential_decision(
         calls += 1
         return [11.0] if model is incumbent else [10.0]
 
-    monkeypatch.setattr(measure_module.official, "benchmark_once", benchmark_once)
+    monkeypatch.setattr(measurement_core.official, "benchmark_once", benchmark_once)
     x = torch.zeros(1)
     mask = torch.ones(1, dtype=torch.bool)
-    _, _, ratios = measure_module._interleaved_timings(
+    _, _, ratios = measurement_core._interleaved_timings(
         incumbent,
         (x, mask),
         challenger,

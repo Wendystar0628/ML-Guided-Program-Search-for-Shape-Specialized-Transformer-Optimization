@@ -24,7 +24,8 @@ def _project(root: Path) -> Path:
         "autotune/promotion.py": "# promotion\n",
         "autotune/search_space.py": "# search space\n",
         "autotune/search_sweep.py": "# evaluator bridge\n",
-        "benchmarking/measure.py": "# measurement\n",
+        "benchmarking/measure.py": "# measurement dispatch\n",
+        "benchmarking/measurement_core.py": "# shared measurement\n",
         "benchmarking/resident_measure.py": "# resident measurement\n",
         "benchmarking/shape14_measure.py": "# Shape 14 measurement\n",
     }

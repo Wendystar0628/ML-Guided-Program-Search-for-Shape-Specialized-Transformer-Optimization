@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchmarking import configuration
+from benchmarking import config_resolution
 from benchmarking.protocols import RunVariant, TransformerShape
 from deployment import environment
 from deployment.environment import (
@@ -252,13 +252,17 @@ def test_benchmark_config_detection_uses_the_shape_scope(
         detected.append(scope)
         return _environment(scope=scope)
 
-    monkeypatch.setattr(configuration.EnvironmentFingerprint, "detect", detect)
-    monkeypatch.setattr(configuration, "resolve_deployed_config", lambda **kwargs: None)
+    monkeypatch.setattr(config_resolution.EnvironmentFingerprint, "detect", detect)
+    monkeypatch.setattr(
+        config_resolution,
+        "resolve_deployed_config",
+        lambda **kwargs: None,
+    )
     resident = TransformerShape("official_01", 1, 128, 128, 4, 128, 4, True)
     shape14 = TransformerShape("official_14", 32, 100000, 1024, 16, 1024, 2, True)
 
     for shape in (resident, shape14):
-        configuration.resolve_config(
+        config_resolution.resolve_config(
             None,
             shape,
             RunVariant(),

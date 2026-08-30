@@ -19,7 +19,7 @@
 1. `resident`：测量 Shapes 01–13；
 2. `shape14`：单独测量 Shape 14。
 
-两个任务分别生成 `working/resident/summary.json` 和 `working/shape14/summary.json`，再合并成最终报告。某一组失败不会删除或遮蔽另一组的结果，最终 JSON 和 Markdown 会分别展示 Resident 与 Shape 14 的状态。
+两个任务分别生成 `result/.working/<run-id>/resident/summary.json` 和 `result/.working/<run-id>/shape14/summary.json`，再合并成最终报告。某一组失败不会删除或遮蔽另一组的结果，最终 JSON 和 Markdown 会分别展示 Resident 与 Shape 14 的状态。
 
 每个 Shape 仍使用新的 Python 进程，两个任务与搜索、Profile 和其他 Benchmark 共享同一 GPU 排他锁。默认 `final` 预设对 Shapes 01–05、07–13 保持正式测量强度；Shape 06 使用 1 次正确性、2 次 Warmup、3 轮每轮 5 次正式计时。Shape 14 的 `smoke` 延迟明确标为低成本 Model-compute Estimate；`formal/final` 只运行一次完整逻辑 Batch，并让每个流式 Microbatch 使用不同输入。
 

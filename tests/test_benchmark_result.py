@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 import benchmarking.measure as measure_module
+from benchmarking import measurement_core, resident_measure
 from benchmarking.measure import BenchmarkResult, TimingStats
 from benchmarking.protocols import MeasurementProtocol, RunVariant, TransformerShape
 from solution.config import portable_config
@@ -43,7 +44,7 @@ def test_comparator_rejects_nonzero_error_when_both_tolerances_are_zero() -> Non
     reference = torch.zeros(1)
     candidate = torch.tensor([torch.finfo(torch.float32).eps / 2])
 
-    passed, ratio = measure_module._comparison_metrics(
+    passed, ratio = measurement_core._comparison_metrics(
         reference,
         candidate,
         rtol=0.0,
@@ -55,7 +56,7 @@ def test_comparator_rejects_nonzero_error_when_both_tolerances_are_zero() -> Non
 
 
 def test_comparator_accepts_exact_zero_with_zero_tolerances() -> None:
-    passed, ratio = measure_module._comparison_metrics(
+    passed, ratio = measurement_core._comparison_metrics(
         torch.zeros(2),
         torch.zeros(2),
         rtol=0.0,
@@ -76,22 +77,22 @@ def test_measure_config_interleaves_baseline_and_solution_timings(
     calls: list[tuple[nn.Module, nn.Module]] = []
 
     monkeypatch.setattr(
-        measure_module,
+        resident_measure,
         "_build_models",
         lambda *args, **kwargs: (baseline, solution),
     )
     monkeypatch.setattr(
-        measure_module,
+        resident_measure,
         "_correctness",
         lambda *args, **kwargs: (True, 0.25),
     )
     monkeypatch.setattr(
-        measure_module.official,
+        resident_measure.official,
         "generate_random_case",
         lambda *args, **kwargs: (x, mask),
     )
     monkeypatch.setattr(
-        measure_module,
+        resident_measure,
         "_execution_signatures",
         lambda *args: ({"path": "solution"}, {"path": "solution"}),
     )
@@ -106,10 +107,10 @@ def test_measure_config_interleaves_baseline_and_solution_timings(
         calls.append((incumbent, challenger))
         return [4.0, 6.0], [2.0, 3.0], (2.0,)
 
-    monkeypatch.setattr(measure_module, "_interleaved_timings", interleaved)
-    monkeypatch.setattr(measure_module, "_peak_memory", lambda *args: 0)
+    monkeypatch.setattr(resident_measure, "_interleaved_timings", interleaved)
+    monkeypatch.setattr(resident_measure, "_peak_memory", lambda *args: 0)
     monkeypatch.setattr(
-        measure_module,
+        resident_measure,
         "_timings",
         lambda *args: pytest.fail("standalone timing must not be used"),
     )

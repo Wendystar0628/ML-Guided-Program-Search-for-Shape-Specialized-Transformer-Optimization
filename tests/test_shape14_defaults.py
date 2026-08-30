@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import benchmarking.configuration as configuration
+from benchmarking import config_resolution
 from solution.config import AttentionBackend, RuntimeBackend
-from solution.shape14.defaults import conservative_streamed_config
 from solution.shape14 import triton_streaming_dh64
+from solution.shape14.defaults import conservative_streamed_config
 
 
 def test_conservative_shape14_config_is_stable_and_streamed() -> None:
@@ -25,9 +25,9 @@ def test_conservative_shape14_config_is_stable_and_streamed() -> None:
 
 
 def test_streamed_fallback_prefers_the_conservative_kernel(monkeypatch) -> None:
-    monkeypatch.setattr(configuration.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(config_resolution.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
-        configuration.torch.cuda,
+        config_resolution.torch.cuda,
         "get_device_capability",
         lambda device: (8, 9),
     )
@@ -38,6 +38,6 @@ def test_streamed_fallback_prefers_the_conservative_kernel(monkeypatch) -> None:
     )
 
     assert (
-        configuration._streamed_fallback_config("cuda:0")
+        config_resolution._streamed_fallback_config("cuda:0")
         == conservative_streamed_config()
     )

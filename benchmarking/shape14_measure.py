@@ -18,7 +18,7 @@ from solution.config import (
 )
 from solution.transformer import UserOptimizedTransformer, copy_model_weights
 
-from .measure import (
+from .measurement_core import (
     BenchmarkResult,
     PairedBenchmarkResult,
     TimingStats,

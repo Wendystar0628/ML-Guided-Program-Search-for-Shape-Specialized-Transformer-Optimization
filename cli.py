@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from benchmarking.configuration import resolve_config
-from benchmarking.device_queue import DeviceLease
+from benchmarking.config_resolution import resolve_config
+from benchmarking.device_isolation import DeviceLease
 from benchmarking.measure import profile_config
 from benchmarking.probe import execute_probe
 from benchmarking.protocols import (

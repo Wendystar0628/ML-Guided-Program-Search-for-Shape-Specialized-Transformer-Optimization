@@ -26,6 +26,7 @@ _MEASUREMENT_SOURCE_PATHS = (
     Path("autotune/evaluation.py"),
     Path("autotune/search_sweep.py"),
     Path("benchmarking/measure.py"),
+    Path("benchmarking/measurement_core.py"),
 )
 _SCOPE_MEASUREMENT_SOURCE_PATHS = {
     ImplementationScope.RESIDENT: (Path("benchmarking/resident_measure.py"),),

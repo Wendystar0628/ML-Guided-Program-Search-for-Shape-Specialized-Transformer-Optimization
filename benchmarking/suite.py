@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .configuration import resolve_config
-from .device_queue import IsolatedProcessError, run_in_fresh_process
+from .config_resolution import resolve_config
+from .device_isolation import IsolatedProcessError, run_in_fresh_process
 from .measure import measure_config
 from .protocols import (
     MeasurementProtocol,

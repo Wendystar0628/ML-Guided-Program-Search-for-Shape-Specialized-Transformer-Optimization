@@ -43,6 +43,7 @@ autotune/
   search_space.py           generated structures and parameter domains
   search_engine.py          one-shape staged search
   search_sweep.py           one sweep across a shape group
+  cross_shape_warmstart.py  task-similarity warm starts from prior Shapes
   optimization_loop.py      repeated sweeps and convergence stopping
   run_log.py                compact run timeline and deployment decisions
   evaluation.py             trial and promotion measurements
@@ -50,9 +51,13 @@ autotune/
   study_storage.py          local study identity and SQLite location
 
 benchmarking/
+  config_resolution.py      explicit/deployed configuration selection
+  device_isolation.py       one GPU lease and fresh-process execution
   suite.py                  ordered, fresh-process Shape measurement
-  device_queue.py           one shared lease per CUDA device
-  measure.py                in-process measurement used by each worker
+  measure.py                public resident/Shape-14 measurement dispatcher
+  measurement_core.py       shared result types and measurement primitives
+  resident_measure.py       Shapes 01-13 measurement and profiling
+  shape14_measure.py        streamed Shape-14 measurement
 ```
 
 The main entry point is [`cli.py`](cli.py). GPU commands share one device lease,

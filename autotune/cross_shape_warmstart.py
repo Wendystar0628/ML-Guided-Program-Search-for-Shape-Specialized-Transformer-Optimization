@@ -1,4 +1,4 @@
-"""Task-similarity warm starts for branch-local program search."""
+"""Cross-shape warm starts for branch-local program search."""
 
 from __future__ import annotations
 

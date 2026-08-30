@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import benchmarking.suite as suite_module
-from benchmarking.device_queue import (
+from benchmarking.device_isolation import (
     DeviceLease,
     DeviceLeaseTimeout,
     run_in_fresh_process,
@@ -186,7 +186,7 @@ import sys
 import time
 from pathlib import Path
 
-from benchmarking.device_queue import DeviceLease
+from benchmarking.device_isolation import DeviceLease
 
 lease = DeviceLease(device="cuda:0", root=Path(sys.argv[1]), timeout_seconds=1.0)
 lease.__enter__()

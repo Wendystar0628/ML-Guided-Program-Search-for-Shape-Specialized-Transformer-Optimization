@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 
-from benchmarking.device_queue import run_in_fresh_process
+from benchmarking.device_isolation import run_in_fresh_process
 from benchmarking.measure import BenchmarkResult, measure_config, measure_paired_configs
 from benchmarking.protocols import (
     MeasurementProtocol,
@@ -30,6 +30,12 @@ from solution.plan import ExecutionContext
 from solution.plan_builder import HardwareCapabilities, PlanBuilder
 
 from .compiler_isolation import isolate_compiler_state
+from .cross_shape_warmstart import (
+    WarmStartCandidate,
+    best_screen_candidates,
+    load_study_summaries,
+    select_meta_warm_starts,
+)
 from .evaluation import (
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
@@ -43,12 +49,6 @@ from .evaluation import (
     normalized_accuracy_constraint,
 )
 from .evidence_identity import evidence_identity
-from .meta_warmstart import (
-    WarmStartCandidate,
-    best_screen_candidates,
-    load_study_summaries,
-    select_meta_warm_starts,
-)
 from .promotion import promotion_should_stop
 from .search_engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
 from .study_storage import SearchStorage, scoped_search_root

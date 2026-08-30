@@ -1,4 +1,4 @@
-"""Exclusive GPU scheduling and fresh-process execution helpers."""
+"""Exclusive GPU leasing and fresh-process execution helpers."""
 
 from __future__ import annotations
 
