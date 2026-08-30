@@ -162,7 +162,9 @@ class SearchRunLog:
                 "iteration": iteration.index,
                 "elapsed_seconds": round(now - self._last_iteration, 3),
                 "deployment_updates": iteration.deployment_updates,
-                "shapes_with_search_progress": (iteration.shapes_with_search_progress),
+                "shapes_with_level1_progress": (
+                    iteration.shapes_with_level1_progress
+                ),
                 "no_progress_streak": iteration.no_progress_streak,
             }
         )

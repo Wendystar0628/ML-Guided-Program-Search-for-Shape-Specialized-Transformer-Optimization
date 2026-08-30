@@ -208,12 +208,16 @@ class SearchResult:
         return comparison is not None and comparison.promotes
 
     @property
-    def made_search_progress(self) -> bool:
-        """Whether this run added a new Screen point or Formal decision."""
+    def made_level1_progress(self) -> bool:
+        """Whether this run expanded the target Shape's Screen evidence."""
 
-        return (
-            self.new_level1_trials > 0 or self.formal_challenger_measurement is not None
-        )
+        return self.new_level1_trials > 0
+
+    @property
+    def made_formal_progress(self) -> bool:
+        """Whether this run completed a Formal challenger measurement."""
+
+        return self.formal_challenger_measurement is not None
 
 
 @dataclass(slots=True)
@@ -271,6 +275,26 @@ def _unique_configs(configs: list[ConfigSpec]) -> tuple[ConfigSpec, ...]:
         seen.add(config.config_id)
         values.append(config)
     return tuple(values)
+
+
+def _unseen_branches(
+    plan: SearchPlan,
+    state: _RunState,
+    backend: OptunaBackend,
+) -> tuple[BranchSpace, ...]:
+    """Return branches with at least one terminal configuration still unmeasured."""
+
+    return tuple(
+        branch
+        for branch in plan.search_space.branches
+        if len(
+            backend.terminal_config_ids(
+                state.studies[branch.branch_id],
+                branch,
+            )
+        )
+        < branch.cardinality
+    )
 
 
 def _screening_trial_target(branch: BranchSpace) -> int:
@@ -476,45 +500,53 @@ class SearchEngine:
 
         try:
             self._enqueue_initial_configs(plan, run_state, backend)
+            historical_promotions = self._select_promotions(
+                plan,
+                run_state,
+                backend,
+            )
+            has_historical_promotions = bool(historical_promotions)
+            new_trials_before = run_state.budget.new_level1_trials
+
+            screen_complete = self._screen_structures(
+                plan,
+                run_state,
+                backend,
+                deadline=screen_deadline,
+            )
+            fresh_deadline = (
+                screen_deadline if has_historical_promotions else level1_deadline
+            )
+
+            if (
+                _unseen_branches(plan, run_state, backend)
+                and run_state.budget.new_level1_trials == new_trials_before
+            ):
+                self._force_one_new_level1(
+                    plan,
+                    run_state,
+                    backend,
+                    deadline=fresh_deadline,
+                )
+
+            if time.monotonic() < fresh_deadline:
+                active = self._run_rising_bandit(
+                    plan,
+                    run_state,
+                    backend,
+                    deadline=fresh_deadline,
+                )
+
             ranked_screen = self._ranked_level1(
                 run_state,
                 backend,
                 plan.search_space.branches,
             )
-            # Close already measured challengers before spending another pass
-            # on Screen. This is essential for expensive streamed workloads:
-            # persisted evidence must be able to reach Enhanced, Formal, and
-            # deployment without first launching another multi-hour candidate.
             promoted = self._select_promotions(
                 plan,
                 run_state,
                 backend,
             )
-            screen_complete = False
-            if not promoted:
-                screen_complete = self._screen_structures(
-                    plan,
-                    run_state,
-                    backend,
-                    deadline=screen_deadline,
-                )
-                ranked_screen = self._ranked_level1(
-                    run_state,
-                    backend,
-                    plan.search_space.branches,
-                )
-                if screen_complete:
-                    active = self._run_rising_bandit(
-                        plan,
-                        run_state,
-                        backend,
-                        deadline=level1_deadline,
-                    )
-                promoted = self._select_promotions(
-                    plan,
-                    run_state,
-                    backend,
-                )
             if not ranked_screen:
                 selected_config = None
                 selected_measurement = None
@@ -856,17 +888,7 @@ class SearchEngine:
     ) -> tuple[BranchSpace, ...]:
         """Allocate one TPE pull per active branch, then prune by potential."""
 
-        active = tuple(
-            branch
-            for branch in plan.search_space.branches
-            if len(
-                backend.terminal_config_ids(
-                    state.studies[branch.branch_id],
-                    branch,
-                )
-            )
-            < branch.cardinality
-        )
+        active = _unseen_branches(plan, state, backend)
         # Compatible history can already prove a branch uncompetitive. Costless
         # legacy Trials remain active until one new measured pull supplies cost.
         active = self._prune_rising_branches(
@@ -920,6 +942,43 @@ class SearchEngine:
                 deadline=deadline,
             )
         return active
+
+    def _force_one_new_level1(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        *,
+        deadline: float,
+    ) -> bool:
+        """Measure one least-sampled unseen branch before history-based pruning."""
+
+        if not state.budget.can_start(
+            deadline=deadline,
+            max_trials=plan.request.budget.max_trials,
+        ):
+            return False
+
+        branches = _unseen_branches(plan, state, backend)
+        if not branches:
+            return False
+
+        def terminal_count(branch: BranchSpace) -> int:
+            return len(
+                backend.terminal_config_ids(
+                    state.studies[branch.branch_id],
+                    branch,
+                )
+            )
+
+        branch = min(
+            branches,
+            key=lambda item: (terminal_count(item), item.branch_id),
+        )
+        terminal_before = terminal_count(branch)
+        if not self._ask_and_measure(plan, state, backend, branch):
+            return False
+        return terminal_count(branch) > terminal_before
 
     def _ask_and_measure(
         self,

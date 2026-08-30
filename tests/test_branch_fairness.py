@@ -767,7 +767,7 @@ def test_partial_mandatory_screen_can_reach_formal_and_deployment(
     assert backend.completed_trials(optional_study, optional) == ()
 
 
-def test_persisted_screen_challenger_closes_before_more_screening(
+def test_historical_challenger_cannot_block_one_new_screen_point(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -793,10 +793,150 @@ def test_persisted_screen_challenger_closes_before_more_screening(
 
     result = engine.run(request)
 
+    assert result.new_level1_trials == 1
+    assert result.stop_reason == "completed"
+    assert result.enhanced_measurements
+
+
+def test_exhausted_space_can_close_history_without_new_screen_point(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=(32, 64))
+    request = _request(max_trials=1)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    for index in range(branch.cardinality):
+        config = branch.config_at(index)
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            _measurement(config, float(index + 1)),
+            source="previous_pass",
+        )
+    monkeypatch.setattr(engine, "plan", lambda _: plan)
+
+    result = engine.run(request)
+
+    assert result.level1_space_exhausted
     assert result.new_level1_trials == 0
     assert result.stop_reason == "completed"
-    assert result.locked_challenger == challenger
-    assert result.deployment_approved
+    assert result.enhanced_measurements
+
+
+def test_new_screen_point_can_outrank_historical_candidate(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=(32, 64))
+    historical = branch.config_at(0)
+    new_winner = branch.config_at(1)
+    request = _request(max_trials=1)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    backend.record_completed(
+        study,
+        branch,
+        historical,
+        _measurement(historical, 10.0),
+        source="previous_pass",
+    )
+    monkeypatch.setattr(engine, "plan", lambda _: plan)
+
+    result = engine.run(request)
+
+    assert result.new_level1_trials == 1
+    assert result.best_screen_config_id == new_winner.config_id
+    assert result.locked_challenger == new_winner
+    assert any(
+        measurement.config_id == new_winner.config_id
+        for measurement in result.enhanced_measurements
+    )
+
+
+def test_forced_exploration_precedes_rising_pruning(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exhausted_best = _branch(
+        PrecisionPlan.INPUT_DTYPE,
+        choices=tuple(range(1, 11)),
+    )
+    underexplored_loser = _branch(
+        PrecisionPlan.FP16_QKV_ATTENTION,
+        choices=tuple(range(1, 13)),
+    )
+    request = _request(max_trials=1)
+    plan = _plan(request, (exhausted_best, underexplored_loser))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    studies = {
+        branch.branch_id: backend.create_study(plan.identity_for(branch.branch_id))
+        for branch in plan.search_space.branches
+    }
+    for index in range(exhausted_best.cardinality):
+        config = exhausted_best.config_at(index)
+        backend.record_completed(
+            studies[exhausted_best.branch_id],
+            exhausted_best,
+            config,
+            _measurement(config, 1.0),
+            source="previous_pass",
+        )
+    for index in range(10):
+        config = underexplored_loser.config_at(index)
+        backend.record_completed(
+            studies[underexplored_loser.branch_id],
+            underexplored_loser,
+            config,
+            _measurement(config, 10.0),
+            source="previous_pass",
+        )
+    monkeypatch.setattr(engine, "plan", lambda _: plan)
+    original_prune = engine._prune_rising_branches
+    trials_seen_at_prune: list[int] = []
+
+    def _record_prune(
+        current_plan: SearchPlan,
+        state: _RunState,
+        current_backend: OptunaBackend,
+        active: tuple[BranchSpace, ...],
+        *,
+        deadline: float,
+    ) -> tuple[BranchSpace, ...]:
+        trials_seen_at_prune.append(state.budget.new_level1_trials)
+        return original_prune(
+            current_plan,
+            state,
+            current_backend,
+            active,
+            deadline=deadline,
+        )
+
+    monkeypatch.setattr(engine, "_prune_rising_branches", _record_prune)
+
+    result = engine.run(request)
+
+    assert result.new_level1_trials == 1
+    assert trials_seen_at_prune
+    assert trials_seen_at_prune[0] == 1
 
 
 def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(

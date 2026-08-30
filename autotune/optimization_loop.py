@@ -29,7 +29,7 @@ class OptimizationIteration:
     index: int
     search_result: SearchSweepResult
     deployment_updates: int
-    shapes_with_search_progress: int
+    shapes_with_level1_progress: int
     no_progress_streak: int
 
 
@@ -70,15 +70,15 @@ class OptimizationLoop:
             deployment_updates = sum(
                 item.deployment_updated for item in search_result.shape_results
             )
-            shapes_with_search_progress = sum(
-                item.search_result.made_search_progress
+            shapes_with_level1_progress = sum(
+                item.search_result.made_level1_progress
                 for item in search_result.shape_results
             )
             total_deployment_updates += deployment_updates
 
             if search_result.exit_code == 0:
                 made_progress = bool(
-                    deployment_updates or shapes_with_search_progress
+                    deployment_updates or shapes_with_level1_progress
                 )
                 no_progress_streak = 0 if made_progress else no_progress_streak + 1
 
@@ -86,7 +86,7 @@ class OptimizationLoop:
                 index=iteration_index,
                 search_result=search_result,
                 deployment_updates=deployment_updates,
-                shapes_with_search_progress=shapes_with_search_progress,
+                shapes_with_level1_progress=shapes_with_level1_progress,
                 no_progress_streak=no_progress_streak,
             )
             if observer is not None:

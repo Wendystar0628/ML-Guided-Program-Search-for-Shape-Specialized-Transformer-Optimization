@@ -94,7 +94,7 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
             index=1,
             search_result=sweep,
             deployment_updates=1,
-            shapes_with_search_progress=1,
+            shapes_with_level1_progress=1,
             no_progress_streak=0,
         )
     )

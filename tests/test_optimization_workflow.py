@@ -30,11 +30,11 @@ class _SearchSweep:
                 SimpleNamespace(
                     deployment_updated=updated,
                     search_result=SimpleNamespace(
-                        made_search_progress=made_search_progress,
+                        made_level1_progress=made_level1_progress,
                         level1_space_exhausted=level1_space_exhausted,
                     ),
                 )
-                for updated, made_search_progress, level1_space_exhausted in shapes
+                for updated, made_level1_progress, level1_space_exhausted in shapes
             ),
         )
 
@@ -88,8 +88,35 @@ def test_no_progress_patience_stops_only_after_empty_iterations() -> None:
     assert len(search.requests) == 2
 
 
+def test_failed_historical_formal_does_not_reset_no_progress_patience() -> None:
+    class _HistoricalFormalSweep:
+        def run(self, request: SearchSweepRequest) -> object:
+            return SimpleNamespace(
+                exit_code=0,
+                shape_results=(
+                    SimpleNamespace(
+                        deployment_updated=False,
+                        search_result=SimpleNamespace(
+                            made_formal_progress=True,
+                            made_level1_progress=False,
+                            level1_space_exhausted=False,
+                        ),
+                    ),
+                ),
+            )
+
+    result = OptimizationLoop(_HistoricalFormalSweep()).run(  # type: ignore[arg-type]
+        _request(),
+        OptimizationLoopPolicy(no_progress_patience=1, max_iterations=2),
+    )
+
+    assert result.stop_reason == "no_progress_patience"
+    assert result.iterations_run == 1
+    assert result.no_progress_streak == 1
+
+
 def test_hard_iteration_limit_stops_continuous_deployments() -> None:
-    search = _SearchSweep([(0, ((True, True, False),))] * 3)
+    search = _SearchSweep([(0, ((True, False, False),))] * 3)
 
     result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
@@ -107,7 +134,7 @@ def test_no_new_evidence_stops_an_exhausted_search_immediately() -> None:
         def run(self, request: SearchSweepRequest) -> object:
             result = super().run(request)
             for item in result.shape_results:
-                item.search_result.made_search_progress = False
+                item.search_result.made_level1_progress = False
                 item.search_result.level1_space_exhausted = True
             return result
 
