@@ -122,6 +122,10 @@ run earlier, while an already-started GPU measurement may finish later.
   --preset smoke `
   --device cuda:0
 
+# Generate the final all-Shape competition performance report
+.\.venv\Scripts\python.exe `
+  "docs\04_最终交付物\01_最终性能测试\run_final_performance.py"
+
 # Search one or more official shapes
 .\.venv\Scripts\python.exe cli.py search `
   --case-id official_01 `

@@ -49,6 +49,9 @@ agent_state/
 # Generated measurements, search state, logs, and device leases
 /observations/
 
+# Interrupted staging data for the final performance report
+/docs/04_最终交付物/01_最终性能测试/result/.working/
+
 # Curated Markdown documentation is tracked. Raw meeting captures stay local.
 /docs/*.mkv
 /docs/*.wav
