@@ -190,8 +190,9 @@ class OptunaBackend:
         )
         return study
 
-    @staticmethod
+    @classmethod
     def enqueue(
+        cls,
         study: Study,
         branch: BranchSpace,
         config: ConfigSpec,
@@ -202,6 +203,8 @@ class OptunaBackend:
 
         parameters = branch.parameters_for(config)
         if parameters is None:
+            return False
+        if config.config_id in cls.trial_config_ids(study, branch):
             return False
         study.enqueue_trial(
             parameters,
@@ -268,10 +271,13 @@ class OptunaBackend:
     def fail_infrastructure(
         study: Study,
         trial: Trial,
+        config: ConfigSpec,
         error: BaseException,
     ) -> None:
         """Record an infrastructure failure without teaching TPE a fake score."""
 
+        trial.set_user_attr("config", config.to_dict())
+        trial.set_user_attr("config_id", config.config_id)
         trial.set_user_attr("infrastructure_error", type(error).__name__)
         trial.set_user_attr("infrastructure_message", str(error)[:1000])
         study.tell(trial, state=TrialState.FAIL)
@@ -286,6 +292,84 @@ class OptunaBackend:
 
         trial.set_user_attr("duplicate_config_id", config_id)
         study.tell(trial, state=TrialState.FAIL)
+
+    @staticmethod
+    def _trial_config(
+        frozen: FrozenTrial,
+        branch: BranchSpace,
+    ) -> ConfigSpec | None:
+        for attribute in ("config", "queued_config"):
+            payload = frozen.user_attrs.get(attribute)
+            if payload is None:
+                continue
+            try:
+                config = ConfigSpec.from_dict(payload)
+            except (TypeError, ValueError):
+                continue
+            if branch.parameters_for(config) is not None:
+                return config
+        if not frozen.params:
+            return None
+        try:
+            return branch.build(frozen.params)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def trial_configs(
+        cls,
+        study: Study,
+        branch: BranchSpace,
+        *,
+        states: tuple[TrialState, ...] | None = None,
+    ) -> tuple[ConfigSpec, ...]:
+        """Return unique compatible configurations already present in a Study."""
+
+        values: dict[str, ConfigSpec] = {}
+        for frozen in study.get_trials(deepcopy=False, states=states):
+            config = cls._trial_config(frozen, branch)
+            if config is not None:
+                values.setdefault(config.config_id, config)
+        return tuple(values.values())
+
+    @classmethod
+    def trial_config_ids(
+        cls,
+        study: Study,
+        branch: BranchSpace,
+        *,
+        states: tuple[TrialState, ...] | None = None,
+    ) -> frozenset[str]:
+        """Return compatible configuration identities already in a Study."""
+
+        return frozenset(
+            config.config_id
+            for config in cls.trial_configs(study, branch, states=states)
+        )
+
+    @classmethod
+    def terminal_configs(
+        cls,
+        study: Study,
+        branch: BranchSpace,
+    ) -> tuple[ConfigSpec, ...]:
+        return cls.trial_configs(
+            study,
+            branch,
+            states=(TrialState.COMPLETE, TrialState.FAIL),
+        )
+
+    @classmethod
+    def terminal_config_ids(
+        cls,
+        study: Study,
+        branch: BranchSpace,
+    ) -> frozenset[str]:
+        """Return unique configurations with a COMPLETE or FAIL outcome."""
+
+        return frozenset(
+            config.config_id for config in cls.terminal_configs(study, branch)
+        )
 
     @staticmethod
     def completed_trials(

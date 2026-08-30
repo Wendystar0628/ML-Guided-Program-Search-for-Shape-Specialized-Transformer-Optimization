@@ -240,11 +240,10 @@ class SearchSweepResult:
             for item in self.shape_results
         ):
             return 130
-        return (
-            0
-            if all(item.selected_config is not None for item in self.shape_results)
-            else 1
-        )
+        # Budget-limited screening is a normal, resumable search outcome. Its
+        # observations are persisted and the optimization loop should continue
+        # from them instead of treating a missing Formal selection as failure.
+        return 0
 
 
 ShapeObserver = Callable[[ShapeSearchResult], None]
@@ -427,6 +426,12 @@ class SearchSweep:
                 budget=SearchBudget(
                     max_seconds=request.budget_seconds,
                     max_trials=request.max_trials,
+                    # Shape 14's 100k-token Formal run dominates wall time.
+                    # Close its best Screen challenger instead of replaying the
+                    # resident Top-8 promotion breadth.
+                    enhanced_top_k=(
+                        1 if scope is EvaluationScope.STREAMED else 8
+                    ),
                 ),
                 seed=request.seed,
                 incumbent=incumbent,

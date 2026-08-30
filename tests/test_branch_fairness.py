@@ -687,6 +687,80 @@ def test_time_limited_partial_screen_has_no_winner(
     assert not result.deployment_approved
 
 
+def test_partial_mandatory_screen_can_reach_formal_and_deployment(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mandatory = _branch(PrecisionPlan.INPUT_DTYPE)
+    optional = _branch(PrecisionPlan.FP16_QKV_ATTENTION)
+    request = _request(max_trials=1)
+    search_space = _SearchSpace(
+        branches=(mandatory, optional),
+        mandatory_branch_ids=frozenset({mandatory.branch_id}),
+    )
+    plan = SearchPlan(
+        request=request,
+        search_space=search_space,  # type: ignore[arg-type]
+        identities=tuple(
+            StudyIdentity(
+                case_id=request.case_id,
+                branch_id=branch.branch_id,
+                environment=request.environment,
+            )
+            for branch in search_space.branches
+        ),
+    )
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    monkeypatch.setattr(engine, "plan", lambda _: plan)
+
+    result = engine.run(request)
+
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    optional_study = backend.create_study(plan.identity_for(optional.branch_id))
+    assert result.new_level1_trials == 1
+    assert result.stop_reason == "completed"
+    assert result.enhanced_measurements
+    assert result.formal_challenger_measurement is not None
+    assert result.deployment_approved
+    assert backend.completed_trials(optional_study, optional) == ()
+
+
+def test_persisted_screen_challenger_closes_before_more_screening(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
+    request = _request(max_trials=1)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    challenger = branch.config_at(1)
+    backend.record_completed(
+        study,
+        branch,
+        challenger,
+        _measurement(challenger, 1.0),
+        source="previous_pass",
+    )
+    monkeypatch.setattr(engine, "plan", lambda _: plan)
+
+    result = engine.run(request)
+
+    assert result.new_level1_trials == 0
+    assert result.stop_reason == "completed"
+    assert result.locked_challenger == challenger
+    assert result.deployment_approved
+
+
 def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -735,7 +809,7 @@ def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(
     backend.ask(study, normal)
 
 
-def test_duplicate_fallback_benchmark_error_stops_only_that_branch(
+def test_duplicate_fallback_benchmark_error_propagates(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -765,8 +839,43 @@ def test_duplicate_fallback_benchmark_error_stops_only_that_branch(
         lambda *args: (study.ask(), historical),
     )
 
-    assert not engine._ask_and_measure(plan, state, backend, branch)
+    with pytest.raises(RuntimeError, match="benchmark infrastructure failed"):
+        engine._ask_and_measure(plan, state, backend, branch)
     assert state.budget.new_level1_trials == 1
+
+
+def test_failed_config_is_persisted_and_not_requeued(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
+    request = _request(max_trials=3)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_RaisingEvaluator(),  # type: ignore[arg-type]
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    study = backend.create_study(plan.identity_for(branch.branch_id))
+    failed_config = branch.default_config()
+    state = _RunState(studies={branch.branch_id: study})
+    monkeypatch.setattr(
+        backend,
+        "ask",
+        lambda *args: (study.ask(), failed_config),
+    )
+
+    with pytest.raises(RuntimeError, match="benchmark infrastructure failed"):
+        engine._ask_and_measure(plan, state, backend, branch)
+
+    assert failed_config.config_id in backend.terminal_config_ids(study, branch)
+    assert not backend.enqueue(
+        study,
+        branch,
+        failed_config,
+        source="retry",
+    )
 
 
 def test_unknown_benchmark_errors_propagate_after_screening(tmp_path) -> None:

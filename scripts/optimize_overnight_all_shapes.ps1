@@ -59,7 +59,7 @@ function Invoke-OptimizationPass {
         '--group', $Group,
         '--device', $Device,
         '--budget-seconds', $BudgetSeconds,
-        '--no-deployment-patience', 1,
+        '--no-progress-patience', 1,
         '--max-iterations', 1,
         '--seed', $PassSeed
     )
@@ -120,9 +120,9 @@ while ((Get-Date) -lt $deadline) {
                 -PassIndex $passIndex
             $ranPass = $true
             $residentExhausted = $result.Exhausted
-            if ($result.ExitCode -eq 130) {
-                Write-Status 'Interrupted during resident optimization.'
-                exit 130
+            if ($result.ExitCode -ne 0) {
+                Write-Status "Resident optimization stopped with exit_code=$($result.ExitCode)."
+                exit $result.ExitCode
             }
         }
     }
@@ -142,9 +142,9 @@ while ((Get-Date) -lt $deadline) {
                 -PassIndex $passIndex
             $ranPass = $true
             $shape14Exhausted = $result.Exhausted
-            if ($result.ExitCode -eq 130) {
-                Write-Status 'Interrupted during Shape 14 optimization.'
-                exit 130
+            if ($result.ExitCode -ne 0) {
+                Write-Status "Shape 14 optimization stopped with exit_code=$($result.ExitCode)."
+                exit $result.ExitCode
             }
         }
     }

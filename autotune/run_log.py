@@ -157,7 +157,7 @@ class SearchRunLog:
                 "elapsed_seconds": round(now - self._last_iteration, 3),
                 "deployment_updates": iteration.deployment_updates,
                 "shapes_with_search_progress": (iteration.shapes_with_search_progress),
-                "no_deployment_streak": iteration.no_deployment_streak,
+                "no_progress_streak": iteration.no_progress_streak,
             }
         )
         self._last_iteration = now

@@ -95,7 +95,7 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
             search_result=sweep,
             deployment_updates=1,
             shapes_with_search_progress=1,
-            no_deployment_streak=0,
+            no_progress_streak=0,
         )
     )
     run_log.finish(
@@ -123,6 +123,7 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
     assert shape_event["decision"]["formal"]["promotion_wins"] == 13
     assert len(shape_event["decision"]["formal"]["paired_ratios"]) == 13
     assert len(shape_event["enhanced"]) == 1
+    assert events[2]["no_progress_streak"] == 0
     assert events[-1]["status"] == "finished"
 
     forbidden_keys = {

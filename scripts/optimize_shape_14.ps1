@@ -2,7 +2,7 @@
 param(
     [string]$Device = 'cuda:0',
     [double]$BudgetSeconds = 900.0,
-    [int]$NoDeploymentPatience = 6,
+    [int]$NoProgressPatience = 6,
     [int]$MaxIterations = 20
 )
 
@@ -18,6 +18,6 @@ $cli = Join-Path $projectRoot 'cli.py'
     --group shape14 `
     --device $Device `
     --budget-seconds $BudgetSeconds `
-    --no-deployment-patience $NoDeploymentPatience `
+    --no-progress-patience $NoProgressPatience `
     --max-iterations $MaxIterations
 exit $LASTEXITCODE

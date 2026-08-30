@@ -160,6 +160,13 @@ def classify_infeasible_exception(exc: Exception) -> str | None:
         ):
             return "runtime_resource_exhausted"
         message = str(current).lower()
+        candidate_failure_markers = (
+            "compiled ffn compilation failed",
+            "full-stack compiled forward compilation failed",
+            "compiled residual layernorm execution failed",
+        )
+        if any(marker in message for marker in candidate_failure_markers):
+            return "candidate_execution_failed"
         if any(
             marker in message
             for marker in (

@@ -206,5 +206,14 @@ def test_only_known_config_domain_exceptions_are_infeasible() -> None:
     wrapped = RuntimeError("compiled execution failed")
     wrapped.__cause__ = torch.OutOfMemoryError("CUDA out of memory")
     assert classify_infeasible_exception(wrapped) == "out_of_memory"
+    for message in (
+        "compiled FFN compilation failed",
+        "full-stack compiled forward compilation failed",
+        "compiled residual LayerNorm execution failed",
+    ):
+        assert (
+            classify_infeasible_exception(RuntimeError(message))
+            == "candidate_execution_failed"
+        )
     assert classify_infeasible_exception(RuntimeError("worker connection lost")) is None
     assert classify_infeasible_exception(ValueError("unexpected Python bug")) is None

@@ -335,7 +335,10 @@ def _branch_progress(
             costs.append(float(raw_cost))
 
     pulls = len(unique)
-    unseen = max(0, branch.cardinality - len(seen_indices))
+    unseen = max(
+        0,
+        branch.cardinality - len(backend.terminal_config_ids(study, branch)),
+    )
     mean_cost = None if not costs else sum(costs) / len(costs)
     recent_gain = 0.0
     enough_curve = pulls >= growth_window + 1
@@ -468,29 +471,56 @@ class SearchEngine:
 
         try:
             self._enqueue_initial_configs(plan, run_state, backend)
-            screen_complete = self._screen_structures(
+            ranked_screen = self._ranked_level1(
+                run_state,
+                backend,
+                plan.search_space.branches,
+            )
+            # Close already measured challengers before spending another pass
+            # on Screen. This is essential for expensive streamed workloads:
+            # persisted evidence must be able to reach Enhanced, Formal, and
+            # deployment without first launching another multi-hour candidate.
+            promoted = self._select_promotions(
                 plan,
                 run_state,
                 backend,
-                deadline=screen_deadline,
+                active,
             )
-            if not screen_complete:
-                selected_config = None
-                selected_measurement = None
-                stop_reason = "insufficient_screen_budget"
-            else:
-                active = self._run_rising_bandit(
+            screen_complete = False
+            if not promoted:
+                screen_complete = self._screen_structures(
                     plan,
                     run_state,
                     backend,
-                    deadline=level1_deadline,
+                    deadline=screen_deadline,
                 )
+                ranked_screen = self._ranked_level1(
+                    run_state,
+                    backend,
+                    plan.search_space.branches,
+                )
+                if screen_complete:
+                    active = self._run_rising_bandit(
+                        plan,
+                        run_state,
+                        backend,
+                        deadline=level1_deadline,
+                    )
                 promoted = self._select_promotions(
                     plan,
                     run_state,
                     backend,
                     active,
                 )
+            if not ranked_screen:
+                selected_config = None
+                selected_measurement = None
+                stop_reason = (
+                    "no_feasible_screen"
+                    if screen_complete
+                    else "insufficient_screen_budget"
+                )
+            else:
                 enhanced = self._evaluate_promotions(
                     request,
                     promoted,
@@ -560,8 +590,7 @@ class SearchEngine:
         )
         level1_space_exhausted = all(
             len(
-                _completed_config_ids(
-                    backend,
+                backend.terminal_config_ids(
                     run_state.studies[branch.branch_id],
                     branch,
                 )
@@ -691,12 +720,8 @@ class SearchEngine:
             for branch in plan.search_space.branches
             if branch.branch_id in plan.search_space.mandatory_branch_ids
         ]
-        optional = [
-            branch
-            for branch in plan.search_space.branches
-            if branch.branch_id not in plan.search_space.mandatory_branch_ids
-        ]
-        for branch in (*mandatory, *optional):
+        coverage_complete = True
+        for branch in mandatory:
             study = state.studies[branch.branch_id]
             target = _screening_trial_target(branch)
             completed_ids = _completed_config_ids(backend, study, branch)
@@ -706,10 +731,18 @@ class SearchEngine:
                     max_trials=plan.request.budget.max_trials,
                 ):
                     return False
-                if not self._ask_and_measure(plan, state, backend, branch):
-                    return False
+                terminal_before = backend.terminal_config_ids(study, branch)
+                self._ask_and_measure(plan, state, backend, branch)
                 completed_ids = _completed_config_ids(backend, study, branch)
-        return True
+                terminal_after = backend.terminal_config_ids(study, branch)
+                if terminal_after == terminal_before:
+                    coverage_complete = False
+                    break
+                if len(terminal_after) >= branch.cardinality:
+                    break
+            if len(completed_ids) < target:
+                coverage_complete = False
+        return coverage_complete
 
     @staticmethod
     def _remaining_trials(
@@ -824,8 +857,7 @@ class SearchEngine:
             branch
             for branch in plan.search_space.branches
             if len(
-                _completed_config_ids(
-                    backend,
+                backend.terminal_config_ids(
                     state.studies[branch.branch_id],
                     branch,
                 )
@@ -894,7 +926,7 @@ class SearchEngine:
         branch: BranchSpace,
     ) -> bool:
         study = state.studies[branch.branch_id]
-        seen = _completed_config_ids(backend, study, branch)
+        seen = backend.terminal_config_ids(study, branch)
         if len(seen) >= branch.cardinality:
             return False
 
@@ -919,8 +951,6 @@ class SearchEngine:
                     source="uniform_unseen_fallback",
                 )
                 return True
-            except Exception:  # noqa: BLE001 - stop this branch on benchmark failure
-                return False
             finally:
                 state.budget.new_level1_trials += 1
 
@@ -928,9 +958,9 @@ class SearchEngine:
             measurement = self._measure_screen(plan.request, config)
             backend.tell(study, trial, config, measurement)
             return True
-        except Exception as exc:  # noqa: BLE001 - persist infrastructure Trial failure
-            backend.fail_infrastructure(study, trial, exc)
-            return False
+        except Exception as exc:
+            backend.fail_infrastructure(study, trial, config, exc)
+            raise
         finally:
             state.budget.new_level1_trials += 1
 
@@ -946,8 +976,8 @@ class SearchEngine:
         study = state.studies[branch.branch_id]
         seen_indices = sorted(
             index
-            for completed in backend.completed_trials(study, branch)
-            if (index := branch.index_for(completed.config)) is not None
+            for config in backend.terminal_configs(study, branch)
+            if (index := branch.index_for(config)) is not None
         )
         seen_indices = sorted(set(seen_indices))
         remaining = branch.cardinality - len(seen_indices)
