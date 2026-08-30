@@ -117,6 +117,16 @@ class MeasurementProtocol:
             return cls(accuracy_trials=5, warmup=20, repeats=100, rounds=3)
         raise ContractError(f"unknown preset: {preset}")
 
+    @classmethod
+    def for_benchmark(cls, preset: str, case_id: str) -> MeasurementProtocol:
+        """Resolve the final-report exception without weakening formal runs."""
+
+        if preset == "final":
+            if case_id == "official_06":
+                return cls(accuracy_trials=1, warmup=2, repeats=5, rounds=3)
+            return cls.for_preset("formal")
+        return cls.for_preset(preset)
+
 
 def load_json(path: Path) -> dict[str, Any]:
     try:

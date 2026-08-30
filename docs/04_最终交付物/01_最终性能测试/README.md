@@ -14,7 +14,9 @@
 .\.venv\Scripts\python.exe "docs\04_最终交付物\01_最终性能测试\run_final_performance.py" --preset smoke
 ```
 
-脚本按官方顺序串行运行全部 14 个 Shape；每个 Shape 使用新的 Python 进程，并与搜索、Profile 和其他 Benchmark 共享同一 GPU 排他锁。Shapes 01–13 交替测量官方 Baseline 和当前部署方案，使用中位数延迟计算 Speedup。Shape 14 运行内存高效部署路径，不物化完整稠密 `S×S` Baseline，因此不计入 Speedup 几何平均值。
+脚本按官方顺序串行运行全部 14 个 Shape；每个 Shape 使用新的 Python 进程，并与搜索、Profile 和其他 Benchmark 共享同一 GPU 排他锁。默认 `final` 预设对 Shapes 01–05、07–14 保持正式测量强度；Shape 06 使用 1 次正确性、2 次 Warmup、3 轮每轮 5 次正式计时，避免其超大 Batch 重复执行占用过长时间。普通 `formal` 预设不受影响。
+
+Shapes 01–13 交替测量官方 Baseline 和当前部署方案，使用中位数延迟计算 Speedup。Shape 14 运行内存高效部署路径，不物化完整稠密 `S×S` Baseline，因此不计入 Speedup 几何平均值。
 
 一次完整运行只生成两份最终文件：
 

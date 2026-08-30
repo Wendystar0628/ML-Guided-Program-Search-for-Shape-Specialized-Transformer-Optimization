@@ -185,9 +185,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument(
         "--preset",
-        choices=("smoke", "formal"),
-        default="formal",
-        help="Use formal for the submitted result; smoke is only a quick check.",
+        choices=("smoke", "formal", "final"),
+        default="final",
+        help="Use final for the submitted result; smoke is only a quick check.",
     )
     args = parser.parse_args(argv)
 

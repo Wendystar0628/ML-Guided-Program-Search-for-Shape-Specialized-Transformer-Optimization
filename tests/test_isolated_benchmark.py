@@ -15,7 +15,7 @@ from benchmarking.device_queue import (
     DeviceLeaseTimeout,
     run_in_fresh_process,
 )
-from benchmarking.protocols import RunVariant
+from benchmarking.protocols import MeasurementProtocol, RunVariant
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -78,6 +78,22 @@ def test_suite_runs_each_shape_serially_in_a_fresh_process(
 
 def test_fresh_process_uses_a_different_process() -> None:
     assert run_in_fresh_process(_current_process_id) != os.getpid()
+
+
+def test_final_preset_only_compacts_shape_06() -> None:
+    shape_06 = MeasurementProtocol.for_benchmark("final", "official_06")
+    assert (
+        shape_06.accuracy_trials,
+        shape_06.warmup,
+        shape_06.rounds,
+        shape_06.repeats,
+    ) == (1, 2, 3, 5)
+
+    regular_shape = MeasurementProtocol.for_benchmark("final", "official_05")
+    assert regular_shape == MeasurementProtocol.for_preset("formal")
+    assert MeasurementProtocol.for_benchmark(
+        "smoke", "official_06"
+    ) == MeasurementProtocol.for_preset("smoke")
 
 
 def test_worker_failure_is_recorded_and_does_not_block_the_next_shape(

@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--config", type=Path)
     benchmark.add_argument(
         "--preset",
-        choices=("smoke", "formal"),
+        choices=("smoke", "formal", "final"),
         default="smoke",
     )
     benchmark.add_argument("--device", default="cuda:0")

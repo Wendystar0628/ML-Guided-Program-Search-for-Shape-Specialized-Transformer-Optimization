@@ -49,7 +49,7 @@ def _measure_one_shape(
             project_root=project_root,
         ),
         variant,
-        MeasurementProtocol.for_preset(preset),
+        MeasurementProtocol.for_benchmark(preset, case_id),
         device,
         include_baseline=not shape.streamed,
     )
