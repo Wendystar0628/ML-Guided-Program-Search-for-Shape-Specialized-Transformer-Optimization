@@ -22,7 +22,13 @@ class StudyIdentity:
 
     @property
     def study_name(self) -> str:
-        return f"{_slug(self.case_id)}-{_slug(self.environment)}-{self.branch_id}"
+        return study_name_prefix(self.case_id, self.environment) + self.branch_id
+
+
+def study_name_prefix(case_id: str, environment: str) -> str:
+    """Return the stable prefix shared by one task's branch studies."""
+
+    return f"{_slug(case_id)}-{_slug(environment)}-"
 
 
 class SearchStorage:
@@ -94,4 +100,4 @@ class SearchStorage:
         return connection
 
 
-__all__ = ["SearchStorage", "StudyIdentity"]
+__all__ = ["SearchStorage", "StudyIdentity", "study_name_prefix"]

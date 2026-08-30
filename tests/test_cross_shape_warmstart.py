@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import optuna
+
 from autotune import search_sweep
 from autotune.evaluation import (
     ConstraintVector,
@@ -10,7 +12,13 @@ from autotune.evaluation import (
     PairedMeasurement,
     TrialMeasurement,
 )
+from autotune.meta_warmstart import (
+    WarmStartCandidate,
+    best_screen_candidates,
+    select_meta_warm_starts,
+)
 from autotune.search_engine import SearchResult
+from autotune.study_storage import StudyIdentity
 from benchmarking.protocols import TransformerShape
 from deployment.registry import EnvironmentFingerprint, ShapeFingerprint
 from solution.config import (
@@ -154,6 +162,7 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
     shapes = {
         "first": _shape("first", batch_size=32, heads=4),
         "second": _shape("second", batch_size=64, heads=16),
+        "registry": _shape("registry", batch_size=64, heads=2),
     }
     hardware = _hardware()
     registry_shape = ShapeFingerprint(
@@ -199,6 +208,10 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
         "load_shape",
         lambda project_root, case_id: shapes[case_id],
     )
+    monkeypatch.setattr(
+        search_sweep, "load_shapes", lambda project_root: tuple(shapes.values())
+    )
+    monkeypatch.setattr(search_sweep, "load_study_summaries", lambda storage: ())
     monkeypatch.setattr(search_sweep, "resolve_deployed_config", lambda **kwargs: None)
     monkeypatch.setattr(
         search_sweep,
@@ -222,10 +235,7 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
 
     assert result.exit_code == 0
     assert observed_requests[0].warm_starts == (registry_config,)
-    assert observed_requests[1].warm_starts == (
-        registry_config,
-        winner,
-    )
+    assert observed_requests[1].warm_starts == (registry_config, winner)
     assert observed_requests[0].case_id == "first"
     assert observed_requests[1].case_id == "second"
     assert [item.case_id for item in observed_shapes] == ["first", "second"]
@@ -276,6 +286,10 @@ def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) 
         "load_shape",
         lambda project_root, case_id: shapes[case_id],
     )
+    monkeypatch.setattr(
+        search_sweep, "load_shapes", lambda project_root: tuple(shapes.values())
+    )
+    monkeypatch.setattr(search_sweep, "load_study_summaries", lambda storage: ())
     monkeypatch.setattr(search_sweep, "resolve_deployed_config", lambda **kwargs: None)
     monkeypatch.setattr(search_sweep, "iter_deployed_configs", lambda **kwargs: ())
     monkeypatch.setattr(search_sweep, "SearchStorage", lambda root: object())
@@ -295,51 +309,115 @@ def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) 
     assert observed_cases == ["first"]
 
 
-def test_family_filter_deduplicates_limits_and_requires_plan_compatibility() -> None:
-    target = ShapeFingerprint(
-        batch_size=64,
-        qkv_dim=128,
-        heads=4,
-        seq_len=128,
-        layers=4,
-        causal=True,
-        ffn_dim=128,
-        dtype="float32",
-        padding_ratio=0.0,
-        input_scale=1.0,
-    )
+def test_meta_warm_start_uses_nearest_tasks_and_target_acceptance() -> None:
+    target = _shape("target", batch_size=64, heads=4)
+    nearest = _shape("nearest", batch_size=32, heads=4)
+    second = _shape("second", batch_size=64, heads=2)
+    distant = _shape("distant", batch_size=1, heads=16, seq_len=1024)
     portable = portable_config()
     graph = _graph_config()
     incompatible = ConfigSpec(
         program=portable.program,
         schedule=ScheduleConfig(runtime=RuntimeBackend.COMPILED_FORWARD),
     )
-    other_family = ShapeFingerprint(**{**target.to_dict(), "seq_len": 256, "heads": 2})
-    same_family = ShapeFingerprint(
-        **{**target.to_dict(), "batch_size": 32, "heads": 16}
-    )
 
     class _SearchSpace:
         def accepted(self, config: ConfigSpec) -> bool:
             return config != incompatible
 
-        def branch_for(self, config: ConfigSpec) -> object | None:
-            return object()
-
     candidates = [
-        search_sweep._WarmStartCandidate(same_family, portable, 0, 0),
-        search_sweep._WarmStartCandidate(same_family, portable, 1, 1),
-        search_sweep._WarmStartCandidate(same_family, incompatible, 0, 2),
-        search_sweep._WarmStartCandidate(other_family, graph, 0, 3),
-        search_sweep._WarmStartCandidate(same_family, graph, 0, 4),
+        WarmStartCandidate(nearest, search_sweep.RunVariant(), portable, 0, 0),
+        WarmStartCandidate(nearest, search_sweep.RunVariant(), portable, 1, 1),
+        WarmStartCandidate(nearest, search_sweep.RunVariant(), incompatible, 0, 2),
+        WarmStartCandidate(second, search_sweep.RunVariant(), graph, 0, 3),
+        WarmStartCandidate(distant, search_sweep.RunVariant(), graph, 0, 4),
     ]
 
-    selected = search_sweep._compatible_family_warm_starts(
+    selected = select_meta_warm_starts(
         candidates=candidates,
         target=target,
+        variant=search_sweep.RunVariant(),
+        reference_shapes=(target, nearest, second, distant),
         incumbent=None,
         search_space=_SearchSpace(),
         limit=1,
     )
 
     assert selected == (portable,)
+
+
+def test_meta_warm_start_does_not_cross_scope_or_run_variant() -> None:
+    target = _shape("target", batch_size=64, heads=4)
+    valid_source = _shape("valid", batch_size=32, heads=4)
+    streamed_source = _shape("official_14", batch_size=32, heads=4)
+    variant = search_sweep.RunVariant()
+    graph = _graph_config()
+
+    candidates = (
+        WarmStartCandidate(valid_source, variant, graph, 0, 0),
+        WarmStartCandidate(
+            streamed_source,
+            variant,
+            portable_config(),
+            0,
+            1,
+        ),
+        WarmStartCandidate(
+            valid_source,
+            search_sweep.RunVariant(dtype="float16"),
+            portable_config(),
+            0,
+            2,
+        ),
+    )
+
+    selected = select_meta_warm_starts(
+        candidates=candidates,
+        target=target,
+        variant=variant,
+        reference_shapes=(target, valid_source, streamed_source),
+        incumbent=None,
+        search_space=_AcceptingSearchSpace(),
+    )
+
+    assert selected == (graph,)
+
+
+def test_best_screen_candidate_uses_only_the_exact_environment() -> None:
+    shape = _shape("source", batch_size=64, heads=4)
+    variant = search_sweep.RunVariant()
+    portable = portable_config()
+    graph = _graph_config()
+
+    def summary(environment: str, config: ConfigSpec, latency_ms: float):
+        measurement = _measurement(
+            config,
+            latency_ms,
+            fidelity=Fidelity.SCREEN,
+        )
+        return SimpleNamespace(
+            study_name=StudyIdentity(
+                case_id=shape.case_id,
+                branch_id=f"branch-{config.config_id}",
+                environment=environment,
+            ).study_name,
+            best_trial=optuna.trial.create_trial(
+                value=latency_ms,
+                user_attrs=measurement.to_user_attrs(config),
+            ),
+        )
+
+    selected = best_screen_candidates(
+        (
+            summary("current", portable, 2.0),
+            summary("other", graph, 1.0),
+        ),
+        shape=shape,
+        variant=variant,
+        environment="current",
+        source_order=7,
+    )
+
+    assert len(selected) == 1
+    assert selected[0].config == portable
+    assert selected[0].source_order == 7

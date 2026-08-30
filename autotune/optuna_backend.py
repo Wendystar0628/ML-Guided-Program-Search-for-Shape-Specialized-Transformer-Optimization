@@ -35,7 +35,7 @@ def _constraints_from_trial(trial: FrozenTrial) -> Sequence[float]:
         # A completed trial without the autotuner contract must never be treated
         # as feasible. Infrastructure failures use TrialState.FAIL and do not
         # reach this callback.
-        return (1.0, 1.0, 1.0, 1.0)
+        return (1.0, 1.0, 1.0)
 
 
 def _branch_seed(seed: int, identity: StudyIdentity) -> int:

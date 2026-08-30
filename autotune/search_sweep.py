@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -15,6 +14,7 @@ from benchmarking.protocols import (
     RunVariant,
     TransformerShape,
     load_shape,
+    load_shapes,
 )
 from deployment.registry import (
     EnvironmentFingerprint,
@@ -39,12 +39,15 @@ from .evaluation import (
     execution_signatures_match,
     normalized_accuracy_constraint,
 )
+from .meta_warmstart import (
+    WarmStartCandidate,
+    best_screen_candidates,
+    load_study_summaries,
+    select_meta_warm_starts,
+)
 from .promotion import promotion_should_stop
 from .search_engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
-from .search_space import ProgramSearchSpace
 from .study_storage import SearchStorage
-
-MAX_CROSS_SHAPE_WARM_STARTS = 4
 
 
 def execution_context(
@@ -251,88 +254,6 @@ class SearchSweepResult:
 ShapeObserver = Callable[[ShapeSearchResult], None]
 
 
-@dataclass(frozen=True, slots=True)
-class _WarmStartCandidate:
-    shape: ShapeFingerprint
-    config: ConfigSpec
-    source_priority: int
-    source_order: int
-
-
-def _same_shape_family(
-    left: ShapeFingerprint,
-    right: ShapeFingerprint,
-) -> bool:
-    """Match stable program dimensions while allowing batch/head transfer."""
-
-    return (
-        left.qkv_dim == right.qkv_dim
-        and left.seq_len == right.seq_len
-        and left.layers == right.layers
-        and left.causal == right.causal
-        and left.ffn_dim == right.ffn_dim
-        and left.dtype == right.dtype
-        and left.padding_ratio == right.padding_ratio
-        and left.input_scale == right.input_scale
-    )
-
-
-def _ratio_distance(left: int, right: int) -> float:
-    return abs(math.log2(left / right))
-
-
-def _warm_start_sort_key(
-    candidate: _WarmStartCandidate,
-    target: ShapeFingerprint,
-) -> tuple[bool, float, bool, float, int, int]:
-    source = candidate.shape
-    return (
-        source.batch_size != target.batch_size,
-        _ratio_distance(source.batch_size, target.batch_size),
-        source.heads != target.heads,
-        _ratio_distance(source.heads, target.heads),
-        candidate.source_priority,
-        candidate.source_order,
-    )
-
-
-def _compatible_family_warm_starts(
-    *,
-    candidates: list[_WarmStartCandidate],
-    target: ShapeFingerprint,
-    incumbent: ConfigSpec | None,
-    search_space: ProgramSearchSpace,
-    limit: int = MAX_CROSS_SHAPE_WARM_STARTS,
-) -> tuple[ConfigSpec, ...]:
-    """Select bounded, unique family configs accepted by this exact plan."""
-
-    if limit <= 0:
-        return ()
-    compatible: list[ConfigSpec] = []
-    seen = {incumbent.config_id} if incumbent is not None else set()
-    ordered = sorted(
-        (
-            candidate
-            for candidate in candidates
-            if _same_shape_family(candidate.shape, target)
-        ),
-        key=lambda candidate: _warm_start_sort_key(candidate, target),
-    )
-    for candidate in ordered:
-        config = candidate.config
-        if config.config_id in seen:
-            continue
-        # ``accepted`` invokes PlanBuilder for this exact target context. The
-        # final plan includes accepted warm starts as required branches.
-        if not search_space.accepted(config):
-            continue
-        seen.add(config.config_id)
-        compatible.append(config)
-        if len(compatible) >= limit:
-            break
-    return tuple(compatible)
-
-
 def _transferable_formal_config(result: SearchResult) -> ConfigSpec | None:
     """Share only the formally approved deployment with later shapes."""
 
@@ -373,19 +294,43 @@ class SearchSweep:
             request.storage_root or request.project_root / "search_state"
         )
         plan_builder = PlanBuilder()
+        environment = (
+            f"{hardware_key.identity}-{request.variant.dtype}-"
+            f"padding{request.variant.padding_ratio:g}-"
+            f"scale{request.variant.input_scale:g}"
+        )
+        known_shapes = load_shapes(request.project_root)
+        shape_by_fingerprint = {
+            _shape_key(shape, request.variant): shape for shape in known_shapes
+        }
+        study_summaries = load_study_summaries(storage)
         results: list[ShapeSearchResult] = []
-        warm_start_candidates: list[_WarmStartCandidate] = []
+        warm_start_candidates: list[WarmStartCandidate] = []
         warm_start_order = 0
         for deployed_shape, config in iter_deployed_configs(hardware=hardware_key):
+            source_shape = shape_by_fingerprint.get(deployed_shape)
+            if source_shape is None:
+                continue
             warm_start_candidates.append(
-                _WarmStartCandidate(
-                    shape=deployed_shape,
+                WarmStartCandidate(
+                    shape=source_shape,
+                    variant=request.variant,
                     config=config,
-                    source_priority=2,
+                    evidence_priority=1,
                     source_order=warm_start_order,
                 )
             )
             warm_start_order += 1
+        for source_shape in known_shapes:
+            candidates = best_screen_candidates(
+                study_summaries,
+                shape=source_shape,
+                variant=request.variant,
+                environment=environment,
+                source_order=warm_start_order,
+            )
+            warm_start_candidates.extend(candidates)
+            warm_start_order += len(candidates)
 
         for case_id in request.case_ids:
             shape = load_shape(request.project_root, case_id)
@@ -420,28 +365,24 @@ class SearchSweep:
                 ),
                 hardware=capabilities,
                 scope=scope,
-                environment=(
-                    f"{hardware_key.identity}-{request.variant.dtype}-"
-                    f"padding{request.variant.padding_ratio:g}-"
-                    f"scale{request.variant.input_scale:g}"
-                ),
+                environment=environment,
                 budget=SearchBudget(
                     max_seconds=request.budget_seconds,
                     max_trials=request.max_trials,
                     # Shape 14's 100k-token Formal run dominates wall time.
                     # Close its best Screen challenger instead of replaying the
                     # resident Top-8 promotion breadth.
-                    enhanced_top_k=(
-                        1 if scope is EvaluationScope.STREAMED else 8
-                    ),
+                    enhanced_top_k=(1 if scope is EvaluationScope.STREAMED else 8),
                 ),
                 seed=request.seed,
                 incumbent=incumbent,
             )
             search_plan = engine.plan(search_request)
-            warm_starts = _compatible_family_warm_starts(
+            warm_starts = select_meta_warm_starts(
                 candidates=warm_start_candidates,
-                target=shape_key,
+                target=shape,
+                variant=request.variant,
+                reference_shapes=known_shapes,
                 incumbent=incumbent,
                 search_space=search_plan.search_space,
             )
@@ -467,10 +408,11 @@ class SearchSweep:
             transferable = _transferable_formal_config(search_result)
             if transferable is not None:
                 warm_start_candidates.append(
-                    _WarmStartCandidate(
-                        shape=shape_key,
+                    WarmStartCandidate(
+                        shape=shape,
+                        variant=request.variant,
                         config=transferable,
-                        source_priority=0,
+                        evidence_priority=0,
                         source_order=warm_start_order,
                     )
                 )
@@ -480,7 +422,6 @@ class SearchSweep:
 
 
 __all__ = [
-    "MAX_CROSS_SHAPE_WARM_STARTS",
     "BenchmarkEvaluator",
     "SearchSweep",
     "SearchSweepRequest",

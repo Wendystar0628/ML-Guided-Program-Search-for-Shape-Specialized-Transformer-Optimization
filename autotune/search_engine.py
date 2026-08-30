@@ -350,7 +350,12 @@ def _branch_progress(
         else:
             enough_curve = False
 
-    ready = enough_curve and best_latency is not None and mean_cost is not None
+    ready = (
+        pulls >= startup_trial_count(branch)
+        and enough_curve
+        and best_latency is not None
+        and mean_cost is not None
+    )
     optimistic: float | None = None
     if ready:
         trial_limit = unseen if remaining_trials is None else remaining_trials
@@ -484,7 +489,6 @@ class SearchEngine:
                 plan,
                 run_state,
                 backend,
-                active,
             )
             screen_complete = False
             if not promoted:
@@ -510,7 +514,6 @@ class SearchEngine:
                     plan,
                     run_state,
                     backend,
-                    active,
                 )
             if not ranked_screen:
                 selected_config = None
@@ -1045,7 +1048,6 @@ class SearchEngine:
         plan: SearchPlan,
         state: _RunState,
         backend: OptunaBackend,
-        active: tuple[BranchSpace, ...],
     ) -> tuple[ConfigSpec, ...]:
         ranked = self._ranked_level1(
             state,
@@ -1054,14 +1056,6 @@ class SearchEngine:
         )
         if not ranked:
             return ()
-        budget = plan.request.budget
-        target = max(
-            1,
-            len(active),
-            math.ceil(len(ranked) * budget.promote_fraction),
-        )
-        target = min(target, budget.enhanced_top_k, len(ranked))
-        configs = [completed.config for completed in ranked]
         incumbent_id = (
             None if plan.request.incumbent is None else plan.request.incumbent.config_id
         )
@@ -1070,12 +1064,19 @@ class SearchEngine:
             environment=plan.request.environment,
             incumbent_id=incumbent_id,
         )
-        values = tuple(
+        eligible = tuple(
             config
-            for config in _unique_configs(configs)
+            for config in _unique_configs([completed.config for completed in ranked])
             if config.config_id != incumbent_id and config.config_id not in attempted
-        )[:target]
-        return values
+        )
+        if not eligible:
+            return ()
+        budget = plan.request.budget
+        target = min(
+            max(1, math.ceil(len(eligible) * budget.promote_fraction)),
+            budget.enhanced_top_k,
+        )
+        return eligible[:target]
 
     def _evaluate_promotions(
         self,

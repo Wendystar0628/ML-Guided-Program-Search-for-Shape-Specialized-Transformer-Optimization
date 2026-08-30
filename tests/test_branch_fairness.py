@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, replace
 
 import pytest
-from optuna.trial import TrialState
+from optuna.trial import TrialState, create_trial
 
 import autotune.search_engine as engine_module
 from autotune.evaluation import (
@@ -13,7 +13,11 @@ from autotune.evaluation import (
     Fidelity,
     TrialMeasurement,
 )
-from autotune.optuna_backend import OptunaBackend, startup_trial_count
+from autotune.optuna_backend import (
+    OptunaBackend,
+    _constraints_from_trial,
+    startup_trial_count,
+)
 from autotune.search_engine import (
     SearchBudget,
     SearchEngine,
@@ -329,7 +333,7 @@ def test_exhausted_finite_branch_does_not_ask_or_measure(
     assert not engine._ask_and_measure(plan, state, backend, branch)
     assert state.budget.new_level1_trials == 0
     assert evaluator.calls == []
-    assert engine._select_promotions(plan, state, backend, ()) == (branch.config_at(0),)
+    assert engine._select_promotions(plan, state, backend) == (branch.config_at(0),)
 
 
 def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -> None:
@@ -365,7 +369,7 @@ def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -
         challenger_id=rejected.config_id,
     )
 
-    promoted = engine._select_promotions(plan, state, backend, (branch,))
+    promoted = engine._select_promotions(plan, state, backend)
 
     assert promoted == (next_challenger,)
     assert engine.storage.attempted_challenger_ids(
@@ -449,14 +453,16 @@ def test_branch_progress_reconstructs_best_curve_and_recent_gain(tmp_path) -> No
 
 def test_branch_progress_uses_screen_cost_for_optimistic_bound(tmp_path) -> None:
     branches = (
-        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 13))),
-        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 13))),
+        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 21))),
     )
     backend = OptunaBackend(SearchStorage(tmp_path), seed=9)
     progress_values = []
     for branch, cost in zip(branches, (1.0, 10.0), strict=True):
         study = backend.create_study(StudyIdentity("cost", branch.branch_id, "test"))
-        for index, latency in enumerate((10.0, 9.0, 8.5, 8.0)):
+        for index, latency in enumerate(
+            (10.0, 9.8, 9.6, 9.4, 9.2, 9.0, 8.9, 8.8, 8.7, 8.6)
+        ):
             config = branch.config_at(index)
             measurement = replace(
                 _measurement(config, latency),
@@ -480,9 +486,9 @@ def test_branch_progress_uses_screen_cost_for_optimistic_bound(tmp_path) -> None
 
     cheap, expensive = progress_values
     assert cheap.mean_trial_seconds == 1.0
-    assert cheap.optimistic_latency_ms == pytest.approx(8.0 - 8 * (2.0 / 3.0))
+    assert cheap.optimistic_latency_ms == pytest.approx(8.6 - 10 * 0.1)
     assert expensive.mean_trial_seconds == 10.0
-    assert expensive.optimistic_latency_ms == pytest.approx(6.0)
+    assert expensive.optimistic_latency_ms == pytest.approx(8.6 - 3 * 0.1)
 
 
 def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
@@ -492,9 +498,9 @@ def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
         _branch(PrecisionPlan.FP16_ATTENTION_BRANCH, choices=tuple(range(1, 13))),
     )
     curves = (
-        (1.0, 1.0, 1.0, 1.0),
-        (1.2, 1.2, 1.2, 1.2),
-        (1.4, 1.3, 1.2, 1.1),
+        (1.0,) * 10,
+        (1.2,) * 10,
+        (2.0, 1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1),
     )
     request = _request(max_trials=100)
     plan = _plan(request, branches)
@@ -508,7 +514,7 @@ def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
     for branch, curve in zip(branches, curves, strict=True):
         study = backend.create_study(plan.identity_for(branch.branch_id))
         studies[branch.branch_id] = study
-        for index, latency in enumerate(curve):
+        for index, latency in enumerate(curve[:4]):
             config = branch.config_at(index)
             backend.record_completed(
                 study,
@@ -527,6 +533,32 @@ def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
         state,
         backend,
         branches,
+        deadline=time.monotonic() + 30.0,
+    )
+
+    assert active == branches
+    assert state.rising_eliminated_branches == 0
+
+    for branch, curve in zip(branches, curves, strict=True):
+        study = studies[branch.branch_id]
+        for index, latency in enumerate(curve[4:], start=4):
+            config = branch.config_at(index)
+            backend.record_completed(
+                study,
+                branch,
+                config,
+                replace(
+                    _measurement(config, latency),
+                    metrics={"screen_evaluation_seconds": 1.0},
+                ),
+                source="history",
+            )
+
+    active = engine._prune_rising_branches(
+        plan,
+        state,
+        backend,
+        active,
         deadline=time.monotonic() + 30.0,
     )
 
@@ -579,7 +611,13 @@ def test_historical_screening_first_new_pull_supplies_cost(tmp_path) -> None:
     assert "screen_evaluation_seconds" not in completed[0].measurement.metrics
     assert completed[-1].measurement.metrics["screen_evaluation_seconds"] > 0.0
     assert progress.mean_trial_seconds is not None
-    assert progress.ready_for_elimination
+    assert not progress.ready_for_elimination
+
+
+def test_invalid_constraint_history_uses_three_infeasible_dimensions() -> None:
+    trial = create_trial(value=1.0, user_attrs={"constraints": "invalid"})
+
+    assert _constraints_from_trial(trial) == (1.0, 1.0, 1.0)
 
 
 def test_no_feasible_branch_stops_at_tpe_startup_threshold(tmp_path) -> None:
@@ -621,7 +659,7 @@ def test_no_feasible_branch_stops_at_tpe_startup_threshold(tmp_path) -> None:
     assert active == ()
     assert state.budget.new_level1_trials == 7
     assert len(_completed_config_ids(backend, study, branch)) == 10
-    assert engine._select_promotions(plan, state, backend, active) == ()
+    assert engine._select_promotions(plan, state, backend) == ()
 
 
 def test_plan_keeps_unique_warm_start_branches(
