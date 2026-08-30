@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from deployment.environment import ImplementationScope
 from deployment.registry import (
     EnvironmentFingerprint,
     ShapeFingerprint,
@@ -47,6 +48,11 @@ def resolve_config(
     hardware = EnvironmentFingerprint.detect(
         torch.device(device),
         project_root=project_root,
+        scope=(
+            ImplementationScope.SHAPE14
+            if shape.streamed
+            else ImplementationScope.RESIDENT
+        ),
     )
     deployed = resolve_deployed_config(
         hardware=hardware,

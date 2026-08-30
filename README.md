@@ -66,8 +66,10 @@ Local observations use one layout:
 ```text
 observations/
   benchmarks/<run-id>/summary.json
-  search/search.sqlite3
-  search/logs/<run-id>.jsonl
+  search/resident/search.sqlite3
+  search/resident/logs/<run-id>.jsonl
+  search/shape14/search.sqlite3
+  search/shape14/logs/<run-id>.jsonl
 ```
 
 `summary.json` is updated after every completed Shape and contains the ordered

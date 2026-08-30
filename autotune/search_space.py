@@ -336,19 +336,9 @@ def _batch_tile_choices(batch_size: int) -> tuple[int, ...]:
     )
 
 
-def _microbatch_choices(batch_size: int) -> tuple[int, ...]:
-    return tuple(
-        value
-        for value in (1, 2, 4, 8, 16, 32)
-        if value <= batch_size and batch_size % value == 0
-    )
-
-
 def _attention_defaults(attention: AttentionBackend) -> tuple[int, int, int, int]:
     if attention is AttentionBackend.TRITON_DH8:
         return 32, 32, 4, 2
-    if attention is AttentionBackend.TRITON_STREAMING_DH64:
-        return 32, 64, 4, 2
     return 64, 64, 4, 2
 
 
@@ -403,27 +393,6 @@ def _decode_gemm_tile(value: Scalar) -> tuple[int, int, int]:
         raise ValueError("GEMM tile must use <block_m>x<block_n>x<block_k>")
     block_m, block_n, block_k = value.split("x")
     return int(block_m), int(block_n), int(block_k)
-
-
-def _streaming_attention_tile_choices() -> tuple[str, ...]:
-    """Cover Shape-14 occupancy and key-block reuse without tiny KV blocks."""
-
-    return tuple(
-        f"{block_m}x{block_n}" for block_m in (16, 32, 64) for block_n in (64, 128)
-    )
-
-
-def _context_supports_streaming_dh64(context: SearchContext) -> bool:
-    execution = context.execution_context
-    return bool(
-        context.scope == "streamed"
-        and execution.causal
-        and not execution.has_valid_token_mask
-        and execution.seq_len == 100000
-        and execution.d_model == 1024
-        and execution.num_heads == 16
-        and execution.head_dim == 64
-    )
 
 
 def _context_supports_native_qkv(context: SearchContext) -> bool:
@@ -799,14 +768,9 @@ def _domains_for_structure(
     if structure.attention in {
         AttentionBackend.TRITON_SHAPE13,
         AttentionBackend.TRITON_DH8,
-        AttentionBackend.TRITON_STREAMING_DH64,
     }:
         block_m, block_n, warps, stages = _attention_defaults(structure.attention)
-        tile_choices = (
-            _streaming_attention_tile_choices()
-            if structure.attention is AttentionBackend.TRITON_STREAMING_DH64
-            else _attention_tile_choices(context.execution_context.seq_len)
-        )
+        tile_choices = _attention_tile_choices(context.execution_context.seq_len)
         default_tile = f"{block_m}x{block_n}"
         if default_tile not in tile_choices:
             default_tile = tile_choices[0]
@@ -824,11 +788,7 @@ def _domains_for_structure(
                 ),
                 ParameterDomain(
                     "attention_num_stages",
-                    (
-                        (1, 2, 3)
-                        if structure.attention is AttentionBackend.TRITON_STREAMING_DH64
-                        else (1, 2, 3, 4)
-                    ),
+                    (1, 2, 3, 4),
                     stages,
                 ),
             )
@@ -1006,12 +966,6 @@ def _domains_for_structure(
                 False,
             )
         )
-    if context.scope == "streamed":
-        choices = _microbatch_choices(context.batch_size)
-        if structure.attention is AttentionBackend.TRITON_STREAMING_DH64:
-            choices = tuple(choice for choice in choices if choice in {1, 2, 4})
-        default = 2 if 2 in choices else choices[0]
-        domains.append(ParameterDomain("microbatch_size", choices, default))
     return tuple(domains)
 
 
@@ -1021,7 +975,6 @@ def _attention_output_bridge_choices(
 ) -> tuple[AttentionOutputBridge, ...]:
     if attention in {
         AttentionBackend.TRITON_DH8,
-        AttentionBackend.TRITON_STREAMING_DH64,
     }:
         return (AttentionOutputBridge.ATTENTION_DIRECT_BSD,)
     fused = (
@@ -1039,9 +992,8 @@ def _attention_output_bridge_choices(
 
 
 def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
-    scope = context.scope
-    if scope not in {"resident", "streamed"}:
-        raise ValueError("scope must be resident or streamed")
+    if context.scope != "resident":
+        raise ValueError("ProgramSearchSpace supports resident workloads only")
     portable = StructureSpec(
         attention=AttentionBackend.REFERENCE_STREAMING,
         precision_plan=PrecisionPlan.INPUT_DTYPE,
@@ -1052,15 +1004,9 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         initial_norm=InitialNormBackend.TORCH,
         runtime=RuntimeBackend.EAGER,
     )
-    values = [] if scope == "streamed" else [portable]
-    runtimes = (
-        (RuntimeBackend.STREAMED,)
-        if scope == "streamed"
-        else tuple(
-            runtime
-            for runtime in RuntimeBackend
-            if runtime is not RuntimeBackend.STREAMED
-        )
+    values = [portable]
+    runtimes = tuple(
+        runtime for runtime in RuntimeBackend if runtime is not RuntimeBackend.STREAMED
     )
     execution = context.execution_context
     if execution.has_valid_token_mask or context.batch_size <= 1:
@@ -1069,7 +1015,11 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             for runtime in runtimes
             if runtime is not RuntimeBackend.BATCH_TILED_CUDA_GRAPH
         )
-    attentions = tuple(AttentionBackend)
+    attentions = tuple(
+        attention
+        for attention in AttentionBackend
+        if attention is not AttentionBackend.TRITON_STREAMING_DH64
+    )
     if execution.has_valid_token_mask:
         attentions = tuple(
             value
@@ -1079,12 +1029,6 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
                 AttentionBackend.REFERENCE_STREAMING,
                 AttentionBackend.CAUSAL_SDPA,
             }
-        )
-    if not _context_supports_streaming_dh64(context):
-        attentions = tuple(
-            value
-            for value in attentions
-            if value is not AttentionBackend.TRITON_STREAMING_DH64
         )
     if not (
         execution.batch_size == 64
@@ -1106,18 +1050,6 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         attentions = tuple(
             value for value in attentions if value is not AttentionBackend.TRITON_DH8
         )
-    if scope == "streamed" and _context_supports_streaming_dh64(context):
-        attentions = tuple(
-            value
-            for value in attentions
-            if value
-            in {
-                AttentionBackend.REFERENCE_STREAMING,
-                AttentionBackend.CAUSAL_SDPA,
-                AttentionBackend.TRITON_STREAMING_DH64,
-            }
-        )
-
     qkv_materializations = tuple(QKVMaterialization)
     if not _context_supports_native_qkv(context):
         qkv_materializations = tuple(
@@ -1163,15 +1095,13 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             and residual_norm is ResidualNormBackend.COMPILED
         ):
             continue
-        if attention in {
-            AttentionBackend.TRITON_SHAPE13,
-            AttentionBackend.TRITON_DH8,
-            AttentionBackend.TRITON_STREAMING_DH64,
-        } and "qkv_projection" not in fp16_fields:
-            continue
-        if attention is AttentionBackend.TRITON_STREAMING_DH64 and (
-            runtime is not RuntimeBackend.STREAMED
-            or "attention_output_projection" not in fp16_fields
+        if (
+            attention
+            in {
+                AttentionBackend.TRITON_SHAPE13,
+                AttentionBackend.TRITON_DH8,
+            }
+            and "qkv_projection" not in fp16_fields
         ):
             continue
         if qkv_materialization is QKVMaterialization.TRITON_NATIVE_BHSD and (
@@ -1225,12 +1155,8 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             )
             if structure.portable:
                 continue
-            # For resident execution, reference streaming is a single explicit
-            # control. In streamed execution it remains a valid inner program.
-            if (
-                scope == "resident"
-                and attention is AttentionBackend.REFERENCE_STREAMING
-            ):
+            # Reference streaming is represented once by the portable control.
+            if attention is AttentionBackend.REFERENCE_STREAMING:
                 continue
             values.append(structure)
     return tuple(values)

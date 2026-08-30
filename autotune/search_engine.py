@@ -7,7 +7,7 @@ import random
 import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from optuna.study import Study
 from optuna.trial import TrialState
@@ -32,6 +32,9 @@ from .search_space import (
     SearchContext,
 )
 from .study_storage import SearchStorage, StudyIdentity
+
+if TYPE_CHECKING:
+    from .shape14_search_space import Shape14SearchSpace
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +114,7 @@ class SearchPlan:
     """Static plan-builder-pruned branches and their persistent Study identities."""
 
     request: SearchRequest
-    search_space: ProgramSearchSpace
+    search_space: ProgramSearchSpace | Shape14SearchSpace
     identities: tuple[StudyIdentity, ...]
 
     def identity_for(self, branch_id: str) -> StudyIdentity:
@@ -222,6 +225,7 @@ class SearchResult:
         """Whether this run expanded the target Shape's Screen evidence."""
 
         return self.new_level1_trials > 0
+
 
 @dataclass(slots=True)
 class _BudgetState:
@@ -378,21 +382,27 @@ class SearchEngine:
             scope=request.scope.value,
             hardware=request.hardware,
         )
-        required_configs: tuple[ConfigSpec, ...] = (
-            (portable_streamed_config(microbatch_size=1),)
-            if request.scope is EvaluationScope.STREAMED
-            else ()
-        )
-        if request.incumbent is not None:
-            required_configs += (request.incumbent,)
-        required_configs = _unique_configs([*required_configs, *request.warm_starts])
-        search_space = ProgramSearchSpace(
-            plan_builder=self.plan_builder,
-            context=context,
-            max_branches=request.budget.max_structure_branches,
-            required_configs=required_configs,
-            seed=request.seed,
-        )
+        if request.scope is EvaluationScope.STREAMED:
+            from .shape14_search_space import Shape14SearchSpace
+
+            search_space: ProgramSearchSpace | Shape14SearchSpace = Shape14SearchSpace(
+                plan_builder=self.plan_builder,
+                context=context,
+            )
+        else:
+            required_configs: tuple[ConfigSpec, ...] = ()
+            if request.incumbent is not None:
+                required_configs += (request.incumbent,)
+            required_configs = _unique_configs(
+                [*required_configs, *request.warm_starts]
+            )
+            search_space = ProgramSearchSpace(
+                plan_builder=self.plan_builder,
+                context=context,
+                max_branches=request.budget.max_structure_branches,
+                required_configs=required_configs,
+                seed=request.seed,
+            )
         identities = tuple(
             StudyIdentity(
                 case_id=request.case_id,
@@ -517,10 +527,7 @@ class SearchEngine:
                     and formal_challenger_measurement is not None
                     and not (
                         selected_config == locked_challenger
-                        and (
-                            formal_comparison is None
-                            or formal_comparison.promotes
-                        )
+                        and (formal_comparison is None or formal_comparison.promotes)
                     )
                 ):
                     self.storage.record_challenger_attempt(

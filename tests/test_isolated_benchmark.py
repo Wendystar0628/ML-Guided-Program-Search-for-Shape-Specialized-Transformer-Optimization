@@ -63,9 +63,7 @@ def test_suite_runs_each_shape_serially_in_a_fresh_process(
         output_directory=tmp_path / "run",
     )
 
-    assert calls == [
-        (suite_module._measure_one_shape, case_id) for case_id in case_ids
-    ]
+    assert calls == [(suite_module._measure_one_shape, case_id) for case_id in case_ids]
     assert [item["case_id"] for item in result.summary["shapes"]] == list(case_ids)
     assert result.summary["progress"] == {
         "completed": 3,
@@ -94,6 +92,26 @@ def test_final_preset_only_compacts_shape_06() -> None:
     assert MeasurementProtocol.for_benchmark(
         "smoke", "official_06"
     ) == MeasurementProtocol.for_preset("smoke")
+
+
+def test_shape14_benchmark_protocol_separates_estimate_and_full_batch() -> None:
+    smoke = MeasurementProtocol.for_benchmark("smoke", "official_14")
+    final = MeasurementProtocol.for_benchmark("final", "official_14")
+
+    assert not smoke.full_logical_batch
+    assert (smoke.accuracy_trials, smoke.warmup, smoke.repeats, smoke.rounds) == (
+        1,
+        0,
+        1,
+        1,
+    )
+    assert final.full_logical_batch
+    assert (final.accuracy_trials, final.warmup, final.repeats, final.rounds) == (
+        1,
+        0,
+        1,
+        1,
+    )
 
 
 def test_worker_failure_is_recorded_and_does_not_block_the_next_shape(
@@ -186,10 +204,13 @@ time.sleep(60)
         assert process.stdout is not None
         assert process.stdout.readline().strip() == "locked"
 
-        with pytest.raises(DeviceLeaseTimeout), DeviceLease(
-            device="cuda:0",
-            root=tmp_path,
-            timeout_seconds=0.05,
+        with (
+            pytest.raises(DeviceLeaseTimeout),
+            DeviceLease(
+                device="cuda:0",
+                root=tmp_path,
+                timeout_seconds=0.05,
+            ),
         ):
             pass
 

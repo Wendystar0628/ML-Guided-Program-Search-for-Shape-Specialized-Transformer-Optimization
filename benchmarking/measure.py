@@ -13,7 +13,7 @@ from torch import nn
 
 from benchmarking.protocols import MeasurementProtocol, RunVariant, TransformerShape
 from official import torch_transformer_benchmark as official
-from solution.config import ConfigSpec, RuntimeBackend, ScheduleConfig, portable_config
+from solution.config import ConfigSpec, RuntimeBackend
 from solution.transformer import UserOptimizedTransformer, copy_model_weights
 
 
@@ -41,6 +41,9 @@ class BenchmarkResult:
     expected_execution_signature: dict[str, Any]
     actual_execution_signature: dict[str, Any]
     baseline: TimingStats | None = None
+    estimated_model_flops: int | None = None
+    latency_kind: str | None = None
+    output_digest: str | None = None
 
     @property
     def speedup(self) -> float | None:
@@ -55,7 +58,7 @@ class BenchmarkResult:
     def to_dict(self) -> dict[str, Any]:
         """Return the compact persisted result; configs and traces live elsewhere."""
 
-        return {
+        value = {
             "case_id": self.case_id,
             "config_id": self.config.config_id,
             "passed": self.passed,
@@ -69,6 +72,13 @@ class BenchmarkResult:
             "peak_memory_bytes": self.peak_memory_bytes,
             "execution_matches": self.execution_matches,
         }
+        if self.estimated_model_flops is not None:
+            value["estimated_model_flops"] = self.estimated_model_flops
+        if self.latency_kind is not None:
+            value["latency_kind"] = self.latency_kind
+        if self.output_digest is not None:
+            value["output_digest"] = self.output_digest
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,122 +390,6 @@ def _peak_memory(
     return int(torch.cuda.max_memory_allocated(device))
 
 
-def _inner_streamed_config(config: ConfigSpec) -> ConfigSpec:
-    if config.schedule.runtime is not RuntimeBackend.STREAMED:
-        raise ValueError("Shape 14 requires a streamed ConfigSpec")
-    schedule = config.schedule
-    return ConfigSpec(
-        program=config.program,
-        schedule=ScheduleConfig(
-            runtime=RuntimeBackend.EAGER,
-            attention_launch=schedule.attention_launch,
-            qkv_launch=schedule.qkv_launch,
-            attention_output_projection_launch=(
-                schedule.attention_output_projection_launch
-            ),
-            residual_norm_launch=schedule.residual_norm_launch,
-            initial_norm_launch=schedule.initial_norm_launch,
-            ffn_launch=schedule.ffn_launch,
-            ffn_input_launch=schedule.ffn_input_launch,
-        ),
-    )
-
-
-def _as_outer_streamed_signature(
-    signature: dict[str, Any],
-    config: ConfigSpec,
-) -> dict[str, Any]:
-    value = dict(signature)
-    value["config_id"] = config.config_id
-    value["runtime_backend"] = RuntimeBackend.STREAMED.value
-    return value
-
-
-def _measure_streamed(
-    shape: TransformerShape,
-    config: ConfigSpec,
-    variant: RunVariant,
-    protocol: MeasurementProtocol,
-    device: torch.device,
-) -> BenchmarkResult:
-    microbatch = config.schedule.microbatch_size
-    if microbatch is None or shape.batch_size % microbatch:
-        raise ValueError("streamed microbatch_size must divide the logical batch")
-    inner = _inner_streamed_config(config)
-
-    # Shape 14 cannot materialize the official SxS baseline. The same weights
-    # are compared against the exact reference-order streaming program at B=1.
-    reference_config = portable_config()
-    baseline_weights = official.BaselineTransformer(
-        _official_config(shape, batch_size=1)
-    )
-    reference = UserOptimizedTransformer(_official_config(shape, batch_size=1))
-    candidate_b1 = UserOptimizedTransformer(_official_config(shape, batch_size=1))
-    copy_model_weights(baseline_weights, reference, strict=True)
-    copy_model_weights(baseline_weights, candidate_b1, strict=True)
-    dtype = official.resolve_dtype(variant.dtype)
-    reference = reference.to(device=device, dtype=dtype).eval()
-    candidate_b1 = candidate_b1.to(device=device, dtype=dtype).eval()
-    reference.configure_execution(config=reference_config)
-    candidate_b1.configure_execution(config=inner)
-    model_config_b1 = _official_config(shape, batch_size=1)
-    passed, ratio = _correctness(
-        reference,
-        candidate_b1,
-        model_config_b1,
-        variant,
-        protocol,
-        device,
-    )
-    del baseline_weights, reference, candidate_b1
-
-    _, model = _build_models(
-        shape,
-        variant,
-        device,
-        inner,
-        batch_size=microbatch,
-        include_baseline=False,
-    )
-    x, mask = official.generate_random_case(
-        _official_config(shape, batch_size=microbatch),
-        device,
-        dtype,
-        protocol.seed + 100000,
-        variant.padding_ratio,
-        variant.input_scale,
-    )
-    expected, actual = _execution_signatures(model, x, mask)
-    chunks = shape.batch_size // microbatch
-
-    class LogicalBatch(nn.Module):
-        def forward(
-            self, value: torch.Tensor, valid_mask: torch.Tensor
-        ) -> torch.Tensor:
-            output = value
-            for _ in range(chunks):
-                output = model(value, valid_mask)
-            return output
-
-    if protocol.full_logical_batch:
-        optimized_samples = _timings(LogicalBatch().eval(), x, mask, protocol, device)
-    else:
-        optimized_samples = [
-            sample * chunks for sample in _timings(model, x, mask, protocol, device)
-        ]
-    peak = _peak_memory(model, x, mask, device)
-    return BenchmarkResult(
-        case_id=shape.case_id,
-        config=config,
-        passed=passed,
-        max_tolerance_ratio=ratio,
-        optimized=TimingStats.from_samples(optimized_samples),
-        peak_memory_bytes=peak,
-        expected_execution_signature=_as_outer_streamed_signature(expected, config),
-        actual_execution_signature=_as_outer_streamed_signature(actual, config),
-    )
-
-
 def _measure_paired_resident(
     shape: TransformerShape,
     challenger_config: ConfigSpec,
@@ -585,190 +479,6 @@ def _measure_paired_resident(
     )
 
 
-def _measure_paired_streamed(
-    shape: TransformerShape,
-    challenger_config: ConfigSpec,
-    incumbent_config: ConfigSpec,
-    variant: RunVariant,
-    protocol: MeasurementProtocol,
-    device: torch.device,
-    stop_when: Callable[[tuple[float, ...]], bool] | None,
-) -> PairedBenchmarkResult:
-    configs = (incumbent_config, challenger_config)
-    microbatches = tuple(config.schedule.microbatch_size for config in configs)
-    if any(
-        microbatch is None or shape.batch_size % microbatch
-        for microbatch in microbatches
-    ):
-        raise ValueError("streamed microbatch_size must divide the logical batch")
-    incumbent_microbatch, challenger_microbatch = microbatches
-    assert incumbent_microbatch is not None
-    assert challenger_microbatch is not None
-    incumbent_inner = _inner_streamed_config(incumbent_config)
-    challenger_inner = _inner_streamed_config(challenger_config)
-
-    reference_config = portable_config()
-    model_config_b1 = _official_config(shape, batch_size=1)
-    baseline_weights = official.BaselineTransformer(model_config_b1)
-    reference = UserOptimizedTransformer(model_config_b1)
-    incumbent_b1 = UserOptimizedTransformer(model_config_b1)
-    challenger_b1 = UserOptimizedTransformer(model_config_b1)
-    copy_model_weights(baseline_weights, reference, strict=True)
-    copy_model_weights(baseline_weights, incumbent_b1, strict=True)
-    copy_model_weights(baseline_weights, challenger_b1, strict=True)
-    dtype = official.resolve_dtype(variant.dtype)
-    reference = reference.to(device=device, dtype=dtype).eval()
-    incumbent_b1 = incumbent_b1.to(device=device, dtype=dtype).eval()
-    challenger_b1 = challenger_b1.to(device=device, dtype=dtype).eval()
-    reference.configure_execution(config=reference_config)
-    incumbent_b1.configure_execution(config=incumbent_inner)
-    challenger_b1.configure_execution(config=challenger_inner)
-    incumbent_passed, incumbent_ratio = _correctness(
-        reference,
-        incumbent_b1,
-        model_config_b1,
-        variant,
-        protocol,
-        device,
-    )
-    challenger_passed, challenger_ratio = _correctness(
-        reference,
-        challenger_b1,
-        model_config_b1,
-        variant,
-        protocol,
-        device,
-    )
-    del baseline_weights, reference, incumbent_b1, challenger_b1
-
-    _, incumbent = _build_models(
-        shape,
-        variant,
-        device,
-        incumbent_inner,
-        batch_size=incumbent_microbatch,
-        include_baseline=False,
-    )
-    _, challenger = _build_models(
-        shape,
-        variant,
-        device,
-        challenger_inner,
-        batch_size=challenger_microbatch,
-        include_baseline=False,
-    )
-    incumbent_x, incumbent_mask = official.generate_random_case(
-        _official_config(shape, batch_size=incumbent_microbatch),
-        device,
-        dtype,
-        protocol.seed + 100000,
-        variant.padding_ratio,
-        variant.input_scale,
-    )
-    challenger_x, challenger_mask = official.generate_random_case(
-        _official_config(shape, batch_size=challenger_microbatch),
-        device,
-        dtype,
-        protocol.seed + 100000,
-        variant.padding_ratio,
-        variant.input_scale,
-    )
-    incumbent_expected, incumbent_actual = _execution_signatures(
-        incumbent,
-        incumbent_x,
-        incumbent_mask,
-    )
-    challenger_expected, challenger_actual = _execution_signatures(
-        challenger,
-        challenger_x,
-        challenger_mask,
-    )
-    incumbent_chunks = shape.batch_size // incumbent_microbatch
-    challenger_chunks = shape.batch_size // challenger_microbatch
-
-    class LogicalBatch(nn.Module):
-        def __init__(self, model: nn.Module, chunks: int) -> None:
-            super().__init__()
-            self.model = model
-            self.chunks = chunks
-
-        def forward(
-            self, value: torch.Tensor, valid_mask: torch.Tensor
-        ) -> torch.Tensor:
-            output = value
-            for _ in range(self.chunks):
-                output = self.model(value, valid_mask)
-            return output
-
-    incumbent_timed: nn.Module = incumbent
-    challenger_timed: nn.Module = challenger
-    incumbent_scale = incumbent_chunks
-    challenger_scale = challenger_chunks
-    if protocol.full_logical_batch:
-        incumbent_timed = LogicalBatch(incumbent, incumbent_chunks).eval()
-        challenger_timed = LogicalBatch(challenger, challenger_chunks).eval()
-        incumbent_scale = 1
-        challenger_scale = 1
-    incumbent_samples, challenger_samples, paired_ratios = _interleaved_timings(
-        incumbent_timed,
-        (incumbent_x, incumbent_mask),
-        challenger_timed,
-        (challenger_x, challenger_mask),
-        protocol,
-        device,
-        incumbent_scale=incumbent_scale,
-        challenger_scale=challenger_scale,
-        stop_when=stop_when,
-    )
-    incumbent_peak = _peak_memory(
-        incumbent,
-        incumbent_x,
-        incumbent_mask,
-        device,
-    )
-    challenger_peak = _peak_memory(
-        challenger,
-        challenger_x,
-        challenger_mask,
-        device,
-    )
-    return PairedBenchmarkResult(
-        incumbent=BenchmarkResult(
-            case_id=shape.case_id,
-            config=incumbent_config,
-            passed=incumbent_passed,
-            max_tolerance_ratio=incumbent_ratio,
-            optimized=TimingStats.from_samples(incumbent_samples),
-            peak_memory_bytes=incumbent_peak,
-            expected_execution_signature=_as_outer_streamed_signature(
-                incumbent_expected,
-                incumbent_config,
-            ),
-            actual_execution_signature=_as_outer_streamed_signature(
-                incumbent_actual,
-                incumbent_config,
-            ),
-        ),
-        challenger=BenchmarkResult(
-            case_id=shape.case_id,
-            config=challenger_config,
-            passed=challenger_passed,
-            max_tolerance_ratio=challenger_ratio,
-            optimized=TimingStats.from_samples(challenger_samples),
-            peak_memory_bytes=challenger_peak,
-            expected_execution_signature=_as_outer_streamed_signature(
-                challenger_expected,
-                challenger_config,
-            ),
-            actual_execution_signature=_as_outer_streamed_signature(
-                challenger_actual,
-                challenger_config,
-            ),
-        ),
-        paired_ratios=paired_ratios,
-    )
-
-
 def measure_paired_configs(
     shape: TransformerShape,
     challenger_config: ConfigSpec,
@@ -786,7 +496,9 @@ def measure_paired_configs(
     if resolved_device.type == "cuda":
         torch.cuda.manual_seed_all(protocol.seed)
     if shape.streamed:
-        return _measure_paired_streamed(
+        from .shape14_measure import measure_paired_shape14_configs
+
+        return measure_paired_shape14_configs(
             shape,
             challenger_config,
             incumbent_config,
@@ -827,7 +539,15 @@ def measure_config(
     if resolved_device.type == "cuda":
         torch.cuda.manual_seed_all(protocol.seed)
     if shape.streamed:
-        return _measure_streamed(shape, config, variant, protocol, resolved_device)
+        from .shape14_measure import measure_shape14_config
+
+        return measure_shape14_config(
+            shape,
+            config,
+            variant,
+            protocol,
+            resolved_device,
+        )
     if config.schedule.runtime is RuntimeBackend.STREAMED:
         raise ValueError("streamed runtime is only valid for Shape 14")
 

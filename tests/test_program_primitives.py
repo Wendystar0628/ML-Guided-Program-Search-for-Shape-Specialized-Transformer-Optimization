@@ -52,9 +52,7 @@ _FP16_FIELDS = {
     PrecisionPlan.FP16_ATTENTION_BRANCH: frozenset(
         {"qkv_projection", "attention_output_projection"}
     ),
-    PrecisionPlan.FP16_FFN_INPUT_FP32_GELU: frozenset(
-        {"ffn_input_projection"}
-    ),
+    PrecisionPlan.FP16_FFN_INPUT_FP32_GELU: frozenset({"ffn_input_projection"}),
     PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT: frozenset(
         {
             "qkv_projection",
@@ -439,14 +437,6 @@ def test_generated_schedule_domains_cover_supported_shapes_without_padding_small
     assert space_module._batch_tile_choices(1) == ()
     assert space_module._batch_tile_choices(64) == (1, 2, 4, 8, 16, 32)
     assert space_module._batch_tile_choices(10000)[-1] == 8192
-    assert space_module._streaming_attention_tile_choices() == (
-        "16x64",
-        "16x128",
-        "32x64",
-        "32x128",
-        "64x64",
-        "64x128",
-    )
 
 
 def test_structure_generation_prunes_only_statically_impossible_combinations() -> None:
@@ -481,7 +471,7 @@ def test_structure_generation_prunes_only_statically_impossible_combinations() -
     )
 
 
-def test_streamed_shape14_search_compares_library_and_custom_attention() -> None:
+def test_resident_program_space_rejects_streamed_context() -> None:
     context = SearchContext(
         execution_context=ExecutionContext(
             batch_size=32,
@@ -502,11 +492,8 @@ def test_streamed_shape14_search_compares_library_and_custom_attention() -> None
         scope="streamed",
     )
 
-    attentions = {item.attention for item in space_module._structure_specs(context)}
-
-    assert AttentionBackend.REFERENCE_STREAMING in attentions
-    assert AttentionBackend.CAUSAL_SDPA in attentions
-    assert AttentionBackend.TRITON_STREAMING_DH64 in attentions
+    with pytest.raises(ValueError, match="resident workloads only"):
+        space_module._structure_specs(context)
 
 
 def test_batch_tiled_d32_norm_domain_is_valid_for_the_inner_batch_template() -> None:

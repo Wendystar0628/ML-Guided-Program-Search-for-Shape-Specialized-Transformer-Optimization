@@ -17,7 +17,7 @@ from benchmarking.protocols import (
     load_shape,
     load_shapes,
 )
-from deployment.environment import stable_digest
+from deployment.environment import ImplementationScope, stable_digest
 from deployment.registry import (
     EnvironmentFingerprint,
     ShapeFingerprint,
@@ -50,7 +50,7 @@ from .meta_warmstart import (
 )
 from .promotion import promotion_should_stop
 from .search_engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
-from .study_storage import SearchStorage
+from .study_storage import SearchStorage, scoped_search_root
 
 
 def _measurement_environment_identity(
@@ -232,12 +232,16 @@ class BenchmarkEvaluator:
 class SearchSweepRequest:
     project_root: Path
     case_ids: tuple[str, ...]
+    scope: ImplementationScope = ImplementationScope.RESIDENT
     device: str = "cuda:0"
     storage_root: Path | None = None
     budget_seconds: float = 900.0
     max_trials: int | None = None
     seed: int = 1234
     variant: RunVariant = field(default_factory=RunVariant)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope", ImplementationScope(self.scope))
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +296,12 @@ def _shape_key(shape: TransformerShape, variant: RunVariant) -> ShapeFingerprint
     )
 
 
+def _implementation_scope(shape: TransformerShape) -> ImplementationScope:
+    return (
+        ImplementationScope.SHAPE14 if shape.streamed else ImplementationScope.RESIDENT
+    )
+
+
 class SearchSweep:
     """Run one bounded search pass across an explicit group of shapes."""
 
@@ -324,16 +334,34 @@ class SearchSweep:
         device = torch.device(request.device)
         if device.type != "cuda" or not torch.cuda.is_available():
             raise ValueError("program search requires a CUDA device")
+        requested_shapes = {
+            case_id: load_shape(request.project_root, case_id)
+            for case_id in request.case_ids
+        }
+        mismatched = tuple(
+            case_id
+            for case_id, shape in requested_shapes.items()
+            if _implementation_scope(shape) is not request.scope
+        )
+        if mismatched:
+            joined = ", ".join(mismatched)
+            raise ValueError(
+                f"search scope {request.scope.value!r} does not match: {joined}"
+            )
         hardware_key = EnvironmentFingerprint.detect(
             device,
             project_root=request.project_root,
+            scope=request.scope,
         )
         capabilities = HardwareCapabilities.detect(device)
         storage = SearchStorage(
-            request.storage_root
-            or request.project_root / "observations" / "search"
+            scoped_search_root(
+                request.project_root,
+                request.scope.value,
+                request.storage_root,
+            )
         )
-        evidence = evidence_identity(request.project_root)
+        evidence = evidence_identity(request.project_root, scope=request.scope)
         plan_builder = PlanBuilder()
         environment = _measurement_environment_identity(
             hardware_key,
@@ -345,7 +373,11 @@ class SearchSweep:
                 "evidence": evidence.enhanced,
             }
         )
-        known_shapes = load_shapes(request.project_root)
+        known_shapes = tuple(
+            shape
+            for shape in load_shapes(request.project_root)
+            if _implementation_scope(shape) is request.scope
+        )
         shape_by_fingerprint = {
             _shape_key(shape, request.variant): shape for shape in known_shapes
         }
@@ -380,7 +412,7 @@ class SearchSweep:
             warm_start_order += len(candidates)
 
         for case_id in request.case_ids:
-            shape = load_shape(request.project_root, case_id)
+            shape = requested_shapes[case_id]
             shape_key = _shape_key(shape, request.variant)
             incumbent = resolve_deployed_config(
                 hardware=hardware_key,
@@ -390,7 +422,7 @@ class SearchSweep:
                 incumbent = (
                     portable_streamed_config() if shape.streamed else portable_config()
                 )
-            scope = (
+            evaluation_scope = (
                 EvaluationScope.STREAMED if shape.streamed else EvaluationScope.RESIDENT
             )
             evaluator = BenchmarkEvaluator(
@@ -411,7 +443,7 @@ class SearchSweep:
                     device,
                 ),
                 hardware=capabilities,
-                scope=scope,
+                scope=evaluation_scope,
                 environment=environment,
                 search_identity=evidence.search,
                 enhanced_identity=enhanced_identity,
@@ -422,7 +454,9 @@ class SearchSweep:
                     # Shape 14's 100k-token Formal run dominates wall time.
                     # Close its best Screen challenger instead of replaying the
                     # resident Top-8 promotion breadth.
-                    enhanced_top_k=(1 if scope is EvaluationScope.STREAMED else 8),
+                    enhanced_top_k=(
+                        1 if evaluation_scope is EvaluationScope.STREAMED else 8
+                    ),
                 ),
                 seed=request.seed,
                 incumbent=incumbent,

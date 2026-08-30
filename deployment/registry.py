@@ -14,7 +14,7 @@ from .environment import EnvironmentFingerprint
 DEFAULT_DEPLOYED_CONFIGS_PATH = (
     Path(__file__).resolve().parent / "deployed_configs.json"
 )
-DEPLOYMENT_SCHEMA_VERSION = 2
+DEPLOYMENT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)

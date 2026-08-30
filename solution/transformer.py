@@ -23,16 +23,15 @@ from .config import (
     ResidualNormBackend,
     RuntimeBackend,
     portable_config,
+    portable_streamed_config,
 )
 from .kernels.attention import (
     TRITON_DH8_CAUSAL_ATTENTION_BSD_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BACKEND,
     TRITON_SHAPE13_CAUSAL_ATTENTION_BSD_BACKEND,
-    TRITON_STREAMING_DH64_CAUSAL_ATTENTION_BSD_BACKEND,
     prevalidated_triton_dh8_causal_attention_bsd,
     prevalidated_triton_shape13_causal_attention,
     prevalidated_triton_shape13_causal_attention_bsd,
-    prevalidated_triton_streaming_dh64_causal_attention_bsd,
 )
 from .kernels.ffn import (
     TRITON_EXACT_GELU_BACKEND,
@@ -79,6 +78,17 @@ from .runtimes import (
     CompiledForward,
     CudaGraphReplay,
 )
+
+
+def _is_official_shape14(config: Any, shape: tuple[int, ...]) -> bool:
+    """Identify the one workload whose deployment lifecycle is streamed."""
+
+    return shape == (32, 100000, 1024) and (
+        int(config.num_heads),
+        int(config.num_layers),
+        int(config.ffn_dim),
+        bool(config.causal),
+    ) == (16, 2, 1024, True)
 
 
 @dataclass(slots=True)
@@ -237,12 +247,8 @@ def _infer_precision_plan(
         (False, False, False, False): PrecisionPlan.INPUT_DTYPE,
         (True, False, False, False): PrecisionPlan.FP16_QKV_ATTENTION,
         (True, True, False, False): PrecisionPlan.FP16_ATTENTION_BRANCH,
-        (False, False, True, False): (
-            PrecisionPlan.FP16_FFN_INPUT_FP32_GELU
-        ),
-        (True, True, True, False): (
-            PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT
-        ),
+        (False, False, True, False): (PrecisionPlan.FP16_FFN_INPUT_FP32_GELU),
+        (True, True, True, False): (PrecisionPlan.FP16_ATTENTION_AND_FFN_INPUT),
         (False, False, True, True): PrecisionPlan.FP16_FFN_BRANCH,
         (False, False, False, True): PrecisionPlan.FP16_FFN_OUTPUT,
         (True, True, True, True): PrecisionPlan.FP16_CORE,
@@ -418,6 +424,11 @@ class _SelfAttention(nn.Module):
                 None if plan.qkv_launch is None else plan.qkv_launch.to_dict()
             )
         if plan.attention_backend is AttentionBackend.TRITON_STREAMING_DH64:
+            from .shape14.triton_streaming_dh64 import (
+                TRITON_STREAMING_DH64_CAUSAL_ATTENTION_BSD_BACKEND,
+                prevalidated_triton_streaming_dh64_causal_attention_bsd,
+            )
+
             launch = plan.attention_launch
             if launch is None:
                 raise RuntimeError(
@@ -958,13 +969,20 @@ class UserOptimizedTransformer(nn.Module):
             return
         resolved_config: ConfigSpec | None = None
         if device.type == "cuda":
+            from deployment.environment import ImplementationScope
             from deployment.registry import (
                 EnvironmentFingerprint,
                 ShapeFingerprint,
                 resolve_deployed_config,
             )
 
-            hardware = EnvironmentFingerprint.detect(device)
+            is_shape14 = _is_official_shape14(self.config, shape)
+            scope = (
+                ImplementationScope.SHAPE14
+                if is_shape14
+                else ImplementationScope.RESIDENT
+            )
+            hardware = EnvironmentFingerprint.detect(device, scope=scope)
             deployed_shape = ShapeFingerprint(
                 batch_size=int(shape[0]),
                 qkv_dim=int(self.config.d_model),
@@ -985,7 +1003,11 @@ class UserOptimizedTransformer(nn.Module):
             except FileNotFoundError:
                 resolved_config = None
 
-        selected = resolved_config or portable_config()
+        selected = resolved_config or (
+            portable_streamed_config()
+            if _is_official_shape14(self.config, shape)
+            else portable_config()
+        )
         if selected != self._active_config:
             self._invalidate_runtime_state()
         self._active_config = selected
@@ -1416,26 +1438,16 @@ class UserOptimizedTransformer(nn.Module):
             microbatch_size = plan.microbatch_size
             if microbatch_size is None or microbatch_size <= 0:
                 raise RuntimeError("streamed plan is missing its microbatch size")
-            output: torch.Tensor | None = None
-            for start in range(0, x.shape[0], microbatch_size):
-                end = min(start + microbatch_size, x.shape[0])
-                mask_slice = (
-                    None if valid_token_mask is None else valid_token_mask[start:end]
-                )
-                chunk = self._forward_eager(
-                    x[start:end],
-                    mask_slice,
-                    plan,
-                )
-                if output is None:
-                    output = torch.empty(
-                        (x.shape[0], *chunk.shape[1:]),
-                        dtype=chunk.dtype,
-                        device=chunk.device,
-                    )
-                output[start:end].copy_(chunk)
-            if output is None:
-                raise RuntimeError("streamed execution requires a non-empty batch")
+            from .shape14.executor import execute_streamed
+
+            output = execute_streamed(
+                x,
+                valid_token_mask,
+                microbatch_size=microbatch_size,
+                forward_chunk=(
+                    lambda value, mask: self._forward_eager(value, mask, plan)
+                ),
+            )
             if (
                 self._execution_observation_enabled
                 and self._last_execution_observation is not None

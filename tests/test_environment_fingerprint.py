@@ -7,9 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from benchmarking import configuration
+from benchmarking.protocols import RunVariant, TransformerShape
 from deployment import environment
 from deployment.environment import (
     EnvironmentFingerprint,
+    ImplementationScope,
     official_definitions_digest,
     solution_implementation_digest,
 )
@@ -67,6 +70,12 @@ def _write_digest_fixture(root: Path) -> None:
     (root / "solution" / "kernel.py").write_text(
         "def kernel(): return 1\n", encoding="utf-8"
     )
+    attention = root / "solution" / "kernels" / "attention"
+    attention.mkdir(parents=True)
+    (attention / "triton_dh8.py").write_text("RESIDENT = 1\n", encoding="utf-8")
+    shape14 = root / "solution" / "shape14"
+    shape14.mkdir()
+    (shape14 / "triton_streaming_dh64.py").write_text("SHAPE14 = 1\n", encoding="utf-8")
 
 
 def test_identity_is_stable_and_binds_every_environment_field() -> None:
@@ -93,6 +102,7 @@ def test_identity_is_stable_and_binds_every_environment_field() -> None:
         "cudnn_allow_tf32": True,
         "official_definitions_digest": "official-b",
         "solution_implementation_digest": "solution-b",
+        "scope": ImplementationScope.SHAPE14,
     }.items():
         updated = replace(fingerprint, **{field: changed})
         assert updated.identity != fingerprint.identity
@@ -129,6 +139,52 @@ def test_source_digests_track_only_their_owned_inputs(tmp_path: Path) -> None:
     assert solution_implementation_digest(tmp_path) != solution_before
 
 
+def test_shape14_solution_changes_do_not_invalidate_resident_digest(
+    tmp_path: Path,
+) -> None:
+    _write_digest_fixture(tmp_path)
+    resident_before = solution_implementation_digest(
+        tmp_path,
+        scope=ImplementationScope.RESIDENT,
+    )
+    shape14_before = solution_implementation_digest(
+        tmp_path,
+        scope=ImplementationScope.SHAPE14,
+    )
+
+    shape14_source = tmp_path / "solution" / "shape14" / "triton_streaming_dh64.py"
+    shape14_source.write_text("SHAPE14 = 2\n", encoding="utf-8")
+
+    assert (
+        solution_implementation_digest(
+            tmp_path,
+            scope=ImplementationScope.RESIDENT,
+        )
+        == resident_before
+    )
+    assert (
+        solution_implementation_digest(
+            tmp_path,
+            scope=ImplementationScope.SHAPE14,
+        )
+        != shape14_before
+    )
+
+    resident_source = tmp_path / "solution" / "kernels" / "attention" / "triton_dh8.py"
+    shape14_after = solution_implementation_digest(
+        tmp_path,
+        scope=ImplementationScope.SHAPE14,
+    )
+    resident_source.write_text("RESIDENT = 2\n", encoding="utf-8")
+    assert (
+        solution_implementation_digest(
+            tmp_path,
+            scope=ImplementationScope.SHAPE14,
+        )
+        == shape14_after
+    )
+
+
 def test_detect_collects_complete_runtime_facts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -163,6 +219,7 @@ def test_detect_collects_complete_runtime_facts(
     fingerprint = EnvironmentFingerprint.detect("cuda:0", project_root=tmp_path)
 
     assert fingerprint.to_dict() == {
+        "scope": "resident",
         "device_name": "NVIDIA Test GPU",
         "compute_capability": "8.9",
         "driver_version": "610.88",
@@ -177,6 +234,39 @@ def test_detect_collects_complete_runtime_facts(
         "official_definitions_digest": official_definitions_digest(tmp_path),
         "solution_implementation_digest": solution_implementation_digest(tmp_path),
     }
+
+
+def test_benchmark_config_detection_uses_the_shape_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    detected: list[ImplementationScope] = []
+
+    def detect(
+        device: object,
+        *,
+        project_root: Path,
+        scope: ImplementationScope,
+    ) -> EnvironmentFingerprint:
+        del device, project_root
+        detected.append(scope)
+        return _environment(scope=scope)
+
+    monkeypatch.setattr(configuration.EnvironmentFingerprint, "detect", detect)
+    monkeypatch.setattr(configuration, "resolve_deployed_config", lambda **kwargs: None)
+    resident = TransformerShape("official_01", 1, 128, 128, 4, 128, 4, True)
+    shape14 = TransformerShape("official_14", 32, 100000, 1024, 16, 1024, 2, True)
+
+    for shape in (resident, shape14):
+        configuration.resolve_config(
+            None,
+            shape,
+            RunVariant(),
+            "cuda:0",
+            project_root=tmp_path,
+        )
+
+    assert detected == [ImplementationScope.RESIDENT, ImplementationScope.SHAPE14]
 
 
 def test_process_math_mode_disables_reduced_precision_fp16_reductions(
@@ -195,9 +285,7 @@ def test_process_math_mode_disables_reduced_precision_fp16_reductions(
 
     environment.configure_process_math_mode()
 
-    assert not (
-        fake_torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
-    )
+    assert not (fake_torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction)
 
 
 def test_triton_version_supports_the_windows_distribution(
@@ -249,14 +337,14 @@ def test_registry_exact_matches_full_environment_and_iterates_entries(
     assert iter_deployed_configs(hardware=second, path=path) == ((shape, config),)
 
 
-def test_old_deployment_schema_is_invalidated_on_read_and_publish(
+def test_previous_deployment_schema_is_invalidated_on_read_and_publish(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "deployed.json"
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "bundles": [
                     {
                         "hardware": {

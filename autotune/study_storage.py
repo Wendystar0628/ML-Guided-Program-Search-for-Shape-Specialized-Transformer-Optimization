@@ -7,6 +7,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def scoped_search_root(
+    project_root: Path,
+    scope: str,
+    requested: Path | None = None,
+) -> Path:
+    """Return one storage directory that cannot be shared across scopes."""
+
+    scope_name = str(scope)
+    base = (
+        Path(requested)
+        if requested is not None
+        else Path(project_root) / "observations" / "search"
+    )
+    return base if base.name == scope_name else base / scope_name
+
+
 def _slug(value: str) -> str:
     normalized = "".join(
         character if character.isalnum() else "-" for character in value
@@ -40,10 +56,7 @@ def study_name_prefix(
 ) -> str:
     """Return the stable prefix shared by one task's branch studies."""
 
-    return (
-        f"{_slug(case_id)}-{_slug(environment)}-"
-        f"evidence-{_slug(search_identity)}-"
-    )
+    return f"{_slug(case_id)}-{_slug(environment)}-evidence-{_slug(search_identity)}-"
 
 
 class SearchStorage:
@@ -134,4 +147,9 @@ class SearchStorage:
         return connection
 
 
-__all__ = ["SearchStorage", "StudyIdentity", "study_name_prefix"]
+__all__ = [
+    "SearchStorage",
+    "StudyIdentity",
+    "scoped_search_root",
+    "study_name_prefix",
+]

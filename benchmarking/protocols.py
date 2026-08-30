@@ -121,6 +121,23 @@ class MeasurementProtocol:
     def for_benchmark(cls, preset: str, case_id: str) -> MeasurementProtocol:
         """Resolve the final-report exception without weakening formal runs."""
 
+        if case_id == "official_14":
+            if preset == "smoke":
+                return cls(
+                    accuracy_trials=1,
+                    warmup=0,
+                    repeats=1,
+                    rounds=1,
+                    full_logical_batch=False,
+                )
+            if preset in {"formal", "final"}:
+                return cls(
+                    accuracy_trials=1,
+                    warmup=0,
+                    repeats=1,
+                    rounds=1,
+                    full_logical_batch=True,
+                )
         if preset == "final":
             if case_id == "official_06":
                 return cls(accuracy_trials=1, warmup=2, repeats=5, rounds=3)

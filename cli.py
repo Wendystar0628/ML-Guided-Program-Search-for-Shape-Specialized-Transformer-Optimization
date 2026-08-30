@@ -18,12 +18,11 @@ from benchmarking.protocols import (
     RunVariant,
     load_resident_shapes,
     load_shape,
-    load_shapes,
     load_streamed_shapes,
     write_json,
 )
 from benchmarking.suite import new_run_directory, run_benchmark_suite
-from deployment.environment import configure_process_math_mode
+from deployment.environment import ImplementationScope, configure_process_math_mode
 
 if TYPE_CHECKING:
     from autotune.search_sweep import SearchSweepRequest
@@ -74,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark.add_argument(
         "--group",
-        choices=("resident", "shape14", "all"),
+        choices=("resident", "shape14"),
         default="resident",
     )
     benchmark.add_argument("--case-id", action="append")
@@ -140,7 +139,9 @@ def _print_result(value: dict[str, Any]) -> None:
         print(f"  speedup:          {value['speedup']:.4f}x")
 
 
-def _benchmark_case_ids(project_root: Path, args: argparse.Namespace) -> tuple[str, ...]:
+def _benchmark_case_ids(
+    project_root: Path, args: argparse.Namespace
+) -> tuple[str, ...]:
     if args.case_id:
         return tuple(args.case_id)
     if args.group == "resident":
@@ -148,8 +149,37 @@ def _benchmark_case_ids(project_root: Path, args: argparse.Namespace) -> tuple[s
     elif args.group == "shape14":
         shapes = load_streamed_shapes(project_root)
     else:
-        shapes = load_shapes(project_root)
+        raise ContractError(f"unknown shape group: {args.group}")
     return tuple(shape.case_id for shape in shapes)
+
+
+def _shape_scope(project_root: Path, case_id: str) -> ImplementationScope:
+    shape = load_shape(project_root, case_id)
+    return (
+        ImplementationScope.SHAPE14 if shape.streamed else ImplementationScope.RESIDENT
+    )
+
+
+def _search_scope(
+    project_root: Path,
+    case_ids: tuple[str, ...],
+) -> ImplementationScope:
+    if not case_ids:
+        raise ContractError("search requires at least one shape")
+    scopes = {_shape_scope(project_root, case_id) for case_id in case_ids}
+    if len(scopes) != 1:
+        raise ContractError("one search cannot mix resident shapes with Shape 14")
+    return next(iter(scopes))
+
+
+def _search_storage_root(
+    project_root: Path,
+    scope: ImplementationScope,
+    requested: Path | None,
+) -> Path:
+    from autotune.study_storage import scoped_search_root
+
+    return scoped_search_root(project_root, scope.value, requested)
 
 
 def _benchmark(args: argparse.Namespace, project_root: Path) -> int:
@@ -212,11 +242,15 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
     from autotune.run_log import SearchRunLog
     from autotune.search_sweep import SearchSweep, SearchSweepRequest
 
+    case_ids = tuple(args.case_id)
+    scope = _search_scope(project_root, case_ids)
+    storage_root = _search_storage_root(project_root, scope, args.storage)
     request = SearchSweepRequest(
         project_root=project_root,
-        case_ids=tuple(args.case_id),
+        case_ids=case_ids,
+        scope=scope,
         device=args.device,
-        storage_root=args.storage,
+        storage_root=storage_root,
         budget_seconds=args.budget_seconds,
         max_trials=args.max_trials,
         seed=args.seed,
@@ -228,11 +262,7 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
         else f"{len(request.case_ids)}-shapes"
     )
     run_log = SearchRunLog(
-        root=(
-            request.storage_root
-            or project_root / "observations" / "search"
-        )
-        / "logs",
+        root=storage_root / "logs",
         mode="search",
         target=target,
         request=_run_log_request(request),
@@ -247,11 +277,7 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
         run_log.fail(exc)
         raise
     run_log.finish(
-        status=(
-            "interrupted"
-            if result.exit_code == 130
-            else "finished"
-        ),
+        status=("interrupted" if result.exit_code == 130 else "finished"),
         exit_code=result.exit_code,
     )
     for item in result.shape_results:
@@ -278,12 +304,14 @@ def _run_log_request(
             compute_capability = f"{major}.{minor}"
     except (RuntimeError, ValueError):
         pass
-    storage_root = (
-        request.storage_root
-        or request.project_root / "observations" / "search"
+    storage_root = _search_storage_root(
+        request.project_root,
+        request.scope,
+        request.storage_root,
     )
     value: dict[str, Any] = {
         "case_ids": list(request.case_ids),
+        "scope": request.scope.value,
         "device": request.device,
         "device_name": device_name,
         "compute_capability": compute_capability,
@@ -319,11 +347,14 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
     from autotune.run_log import SearchRunLog
     from autotune.search_sweep import SearchSweep, SearchSweepRequest
 
+    scope = ImplementationScope(args.group)
+    storage_root = _search_storage_root(project_root, scope, args.storage)
     request = SearchSweepRequest(
         project_root=project_root,
         case_ids=_optimization_case_ids(project_root, args.group),
+        scope=scope,
         device=args.device,
-        storage_root=args.storage,
+        storage_root=storage_root,
         budget_seconds=args.budget_seconds,
         max_trials=args.max_trials,
         seed=args.seed,
@@ -337,11 +368,7 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         }
     )
     run_log = SearchRunLog(
-        root=(
-            request.storage_root
-            or project_root / "observations" / "search"
-        )
-        / "logs",
+        root=storage_root / "logs",
         mode="optimize",
         target=args.group,
         request=log_request,
@@ -356,14 +383,14 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
             print(f"    selected: {None if selected is None else selected.config_id}")
             print(f"    deployment updated: {item.deployment_updated}")
         print(f"  deployments: {iteration.deployment_updates}")
-        print(f"  shapes with new Level-1 evidence: {iteration.shapes_with_level1_progress}")
+        print(
+            f"  shapes with new Level-1 evidence: {iteration.shapes_with_level1_progress}"
+        )
         print(f"  no-progress streak: {iteration.no_progress_streak}")
         run_log.record_iteration(iteration)
 
     try:
-        result = OptimizationLoop(
-            SearchSweep(observer=run_log.record_shape)
-        ).run(
+        result = OptimizationLoop(SearchSweep(observer=run_log.record_shape)).run(
             request,
             OptimizationLoopPolicy(
                 no_progress_patience=args.no_progress_patience,
@@ -378,11 +405,7 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         run_log.fail(exc)
         raise
     run_log.finish(
-        status=(
-            "interrupted"
-            if result.exit_code == 130
-            else "finished"
-        ),
+        status=("interrupted" if result.exit_code == 130 else "finished"),
         stop_reason=result.stop_reason,
         exit_code=result.exit_code,
         iterations=result.iterations_run,

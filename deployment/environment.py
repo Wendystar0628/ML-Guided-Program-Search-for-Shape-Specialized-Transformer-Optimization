@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import subprocess
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,13 @@ _OFFICIAL_DEFINITION_PATHS = (
     Path("official/test_shapes.json"),
     Path("official/torch_transformer_benchmark.py"),
 )
+
+
+class ImplementationScope(StrEnum):
+    """Independent resident and Shape-14 implementation lifecycles."""
+
+    RESIDENT = "resident"
+    SHAPE14 = "shape14"
 
 
 def _stable_json(value: object) -> bytes:
@@ -54,15 +62,32 @@ def official_definitions_digest(project_root: Path = PROJECT_ROOT) -> str:
     return _files_digest(Path(project_root), _OFFICIAL_DEFINITION_PATHS)
 
 
-def solution_implementation_digest(project_root: Path = PROJECT_ROOT) -> str:
-    """Digest implementation sources that can change generated GPU code."""
+def _solution_source_scope(relative_path: Path) -> ImplementationScope | None:
+    if relative_path.is_relative_to(Path("solution/shape14")):
+        return ImplementationScope.SHAPE14
+    if relative_path.is_relative_to(Path("solution/kernels")) or (
+        relative_path.is_relative_to(Path("solution/runtimes"))
+    ):
+        return ImplementationScope.RESIDENT
+    return None
+
+
+def solution_implementation_digest(
+    project_root: Path = PROJECT_ROOT,
+    *,
+    scope: ImplementationScope = ImplementationScope.RESIDENT,
+) -> str:
+    """Digest shared sources plus only the requested scope's implementation."""
 
     root = Path(project_root)
     solution_root = root / "solution"
+    normalized_scope = ImplementationScope(scope)
     relative_paths = tuple(
         path.relative_to(root)
         for path in solution_root.rglob("*")
-        if path.is_file() and path.suffix.lower() == ".py"
+        if path.is_file()
+        and path.suffix.lower() == ".py"
+        and _solution_source_scope(path.relative_to(root)) in {None, normalized_scope}
     )
     if not relative_paths:
         raise FileNotFoundError(
@@ -139,6 +164,7 @@ class EnvironmentFingerprint:
     cudnn_allow_tf32: bool | None
     official_definitions_digest: str
     solution_implementation_digest: str
+    scope: ImplementationScope = ImplementationScope.RESIDENT
 
     @classmethod
     def detect(
@@ -146,6 +172,7 @@ class EnvironmentFingerprint:
         device: str | torch.device,
         *,
         project_root: Path = PROJECT_ROOT,
+        scope: ImplementationScope = ImplementationScope.RESIDENT,
     ) -> EnvironmentFingerprint:
         resolved = torch.device(device)
         if resolved.type != "cuda" or not torch.cuda.is_available():
@@ -159,6 +186,7 @@ class EnvironmentFingerprint:
         if not cuda_runtime:
             raise RuntimeError("CUDA runtime version is unavailable from PyTorch")
         cudnn = torch.backends.cudnn.version()
+        normalized_scope = ImplementationScope(scope)
         return cls(
             device_name=torch.cuda.get_device_name(index),
             compute_capability=f"{major}.{minor}",
@@ -174,7 +202,11 @@ class EnvironmentFingerprint:
             ),
             cudnn_allow_tf32=getattr(torch.backends.cudnn, "allow_tf32", None),
             official_definitions_digest=official_definitions_digest(project_root),
-            solution_implementation_digest=solution_implementation_digest(project_root),
+            solution_implementation_digest=solution_implementation_digest(
+                project_root,
+                scope=normalized_scope,
+            ),
+            scope=normalized_scope,
         )
 
     @classmethod
@@ -225,10 +257,12 @@ class EnvironmentFingerprint:
                 value["solution_implementation_digest"],
                 "solution_implementation_digest",
             ),
+            scope=ImplementationScope(_required_string(value["scope"], "scope")),
         )
 
     def to_dict(self) -> dict[str, str | bool | None]:
         return {
+            "scope": self.scope.value,
             "device_name": self.device_name,
             "compute_capability": self.compute_capability,
             "driver_version": self.driver_version,
@@ -264,6 +298,7 @@ class EnvironmentFingerprint:
 
 __all__ = [
     "EnvironmentFingerprint",
+    "ImplementationScope",
     "configure_process_math_mode",
     "installed_triton_version",
     "official_definitions_digest",

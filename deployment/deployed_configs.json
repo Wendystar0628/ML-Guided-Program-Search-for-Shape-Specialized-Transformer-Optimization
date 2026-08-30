@@ -1,8 +1,9 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "bundles": [
     {
       "hardware": {
+        "scope": "resident",
         "device_name": "NVIDIA GeForce RTX 4080",
         "compute_capability": "8.9",
         "driver_version": "610.88",
@@ -15,7 +16,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "58448a1b7d3793fad61b915b402eb457fb5ea3a076410440130cb909cbb81043"
+        "solution_implementation_digest": "16897aa4bcf48c5cc1e7e0ffb570e3cc90940188638080dd8adf93f215cdc1bf"
       },
       "entries": [
         {

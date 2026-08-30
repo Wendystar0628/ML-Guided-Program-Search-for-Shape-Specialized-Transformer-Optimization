@@ -84,7 +84,7 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
             "case_ids": ["official_01"],
             "device": "cuda:0",
             "seed": 1234,
-            "study_database": "observations/search/search.sqlite3",
+            "study_database": "observations/search/resident/search.sqlite3",
         },
     )
 

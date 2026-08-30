@@ -138,9 +138,7 @@ def test_only_completed_formal_selection_is_deployable() -> None:
         selected_measurement=_measurement(config, 1.0),
         branch_count=1,
         completed_level1=1,
-        enhanced_measurements=(
-            _measurement(config, 1.0, fidelity=Fidelity.ENHANCED),
-        ),
+        enhanced_measurements=(_measurement(config, 1.0, fidelity=Fidelity.ENHANCED),),
         locked_challenger=config,
         formal_challenger_measurement=_measurement(config, 1.0),
         formal_comparison=None,
@@ -216,7 +214,7 @@ def test_checked_in_deployments_use_complete_shape_keys() -> None:
     path = Path(__file__).resolve().parents[1] / "deployment" / "deployed_configs.json"
     document = json.loads(path.read_text(encoding="utf-8"))
 
-    assert document["schema_version"] == 2
+    assert document["schema_version"] == 3
 
     for bundle in document["bundles"]:
         for entry in bundle["entries"]:
