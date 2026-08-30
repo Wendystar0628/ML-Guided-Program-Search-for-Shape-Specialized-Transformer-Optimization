@@ -15,6 +15,12 @@ import torch
 from solution.config import ConfigSpec
 from solution.plan_builder import ConfigRejectedError
 
+from .promotion import (
+    PROMOTION_BASE_RATIO,
+    PromotionDecision,
+    promotion_decision,
+)
+
 
 class Fidelity(StrEnum):
     """Ordered evaluation stages; only SCREEN observations train TPE."""
@@ -65,11 +71,6 @@ STREAMED_PROTOCOLS: Mapping[Fidelity, FidelityProtocol] = {
     Fidelity.ENHANCED: FidelityProtocol(2, 2, 5, 2, full_logical_batch=False),
     Fidelity.FORMAL: FidelityProtocol(1, 2, 1, 13, full_logical_batch=True),
 }
-
-
-PROMOTION_BLOCK_COUNT = 13
-PROMOTION_BLOCK_WIN_RATIO = 1.01
-PROMOTION_REQUIRED_WINS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,12 +317,10 @@ class PairedMeasurement:
         if self.incumbent.scope is not self.challenger.scope:
             raise ValueError("paired measurements must use the same scope")
         ratios = tuple(float(value) for value in self.paired_ratios)
-        if ratios and len(ratios) != PROMOTION_BLOCK_COUNT:
-            raise ValueError(
-                f"paired_ratios must contain {PROMOTION_BLOCK_COUNT} blocks or be empty"
-            )
         if any(not math.isfinite(value) or value <= 0.0 for value in ratios):
             raise ValueError("paired_ratios must be finite and positive")
+        if ratios and promotion_decision(ratios) is PromotionDecision.CONTINUE:
+            raise ValueError("paired_ratios must contain a terminal sequential result")
         object.__setattr__(self, "paired_ratios", ratios)
 
     @property
@@ -334,9 +333,17 @@ class PairedMeasurement:
 
     @property
     def promotion_wins(self) -> int:
-        """Count blocks where the challenger is at least one percent faster."""
+        """Count blocks where the challenger reaches the two-percent target."""
 
-        return sum(ratio >= PROMOTION_BLOCK_WIN_RATIO for ratio in self.paired_ratios)
+        return sum(ratio >= PROMOTION_BASE_RATIO for ratio in self.paired_ratios)
+
+    @property
+    def decision(self) -> PromotionDecision:
+        """Return the terminal sequential decision, or reject missing evidence."""
+
+        if not self.paired_ratios:
+            return PromotionDecision.REJECT
+        return promotion_decision(self.paired_ratios)
 
     @property
     def promotes(self) -> bool:
@@ -345,8 +352,7 @@ class PairedMeasurement:
         return (
             self.incumbent.feasible
             and self.challenger.feasible
-            and len(self.paired_ratios) == PROMOTION_BLOCK_COUNT
-            and self.promotion_wins >= PROMOTION_REQUIRED_WINS
+            and self.decision is PromotionDecision.PROMOTE
         )
 
 
@@ -367,9 +373,6 @@ class Evaluator(Protocol):
 
 
 __all__ = [
-    "PROMOTION_BLOCK_COUNT",
-    "PROMOTION_BLOCK_WIN_RATIO",
-    "PROMOTION_REQUIRED_WINS",
     "RESIDENT_PROTOCOLS",
     "STREAMED_PROTOCOLS",
     "ConstraintVector",

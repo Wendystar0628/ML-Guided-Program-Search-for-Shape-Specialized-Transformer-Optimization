@@ -4,9 +4,6 @@ from torch import nn
 
 import benchmarking.measure as measure_module
 from autotune.evaluation import (
-    PROMOTION_BLOCK_COUNT,
-    PROMOTION_BLOCK_WIN_RATIO,
-    PROMOTION_REQUIRED_WINS,
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
     ConstraintVector,
@@ -15,6 +12,14 @@ from autotune.evaluation import (
     PairedMeasurement,
     TrialMeasurement,
     classify_infeasible_exception,
+)
+from autotune.promotion import (
+    PROMOTION_BASE_RATIO,
+    PROMOTION_BASE_WINS,
+    PROMOTION_MAX_BLOCKS,
+    PromotionDecision,
+    promotion_decision,
+    promotion_should_stop,
 )
 from benchmarking.measure import measure_paired_configs
 from benchmarking.protocols import MeasurementProtocol, RunVariant, TransformerShape
@@ -80,6 +85,49 @@ def test_formal_rounds_alternate_ab_ba_and_keep_paired_ratios(
     assert ratios == pytest.approx((2.5, 2.0, 1.0))
 
 
+def test_interleaved_timings_stops_after_a_terminal_sequential_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incumbent = nn.Identity()
+    challenger = nn.Identity()
+    calls = 0
+
+    monkeypatch.setattr(measure_module.official, "warmup_model", lambda *args: None)
+
+    def benchmark_once(
+        model: nn.Module,
+        _x: torch.Tensor,
+        _mask: torch.Tensor,
+        _iterations: int,
+        _device: torch.device,
+    ) -> list[float]:
+        nonlocal calls
+        calls += 1
+        return [11.0] if model is incumbent else [10.0]
+
+    monkeypatch.setattr(measure_module.official, "benchmark_once", benchmark_once)
+    x = torch.zeros(1)
+    mask = torch.ones(1, dtype=torch.bool)
+    _, _, ratios = measure_module._interleaved_timings(
+        incumbent,
+        (x, mask),
+        challenger,
+        (x, mask),
+        MeasurementProtocol(
+            accuracy_trials=1,
+            warmup=0,
+            repeats=1,
+            rounds=PROMOTION_MAX_BLOCKS,
+        ),
+        torch.device("cpu"),
+        stop_when=promotion_should_stop,
+    )
+
+    assert len(ratios) == 6
+    assert calls == 12
+    assert promotion_decision(ratios) is PromotionDecision.PROMOTE
+
+
 def test_public_paired_measurement_returns_one_ratio_per_round() -> None:
     result = measure_paired_configs(
         TransformerShape(
@@ -136,26 +184,50 @@ def test_promotion_speedup_is_the_median_of_paired_ratios() -> None:
     assert not comparison.promotes
 
 
-def test_promotion_requires_ten_of_thirteen_one_percent_block_wins() -> None:
+def test_sequential_promotion_uses_stronger_evidence_at_earlier_looks() -> None:
     incumbent = _formal_measurement("incumbent", 20.0)
     challenger = _formal_measurement("challenger", 10.0)
-    nine_wins = PairedMeasurement(
+    strong = PairedMeasurement(
         incumbent=incumbent,
         challenger=challenger,
-        paired_ratios=(PROMOTION_BLOCK_WIN_RATIO,) * 9 + (1.0,) * 4,
+        paired_ratios=(1.10,) * 6,
     )
-    ten_wins = PairedMeasurement(
+    medium = PairedMeasurement(
         incumbent=incumbent,
         challenger=challenger,
-        paired_ratios=(PROMOTION_BLOCK_WIN_RATIO,) * 10 + (1.0,) * 3,
+        paired_ratios=(1.05,) * 8 + (1.03,),
+    )
+    close = PairedMeasurement(
+        incumbent=incumbent,
+        challenger=challenger,
+        paired_ratios=(PROMOTION_BASE_RATIO,) * 11 + (1.0,) * 2,
+    )
+    insufficient = PairedMeasurement(
+        incumbent=incumbent,
+        challenger=challenger,
+        paired_ratios=(PROMOTION_BASE_RATIO,) * 10 + (1.0,) * 3,
     )
 
-    assert PROMOTION_BLOCK_COUNT == 13
-    assert PROMOTION_REQUIRED_WINS == 10
-    assert nine_wins.promotion_wins == 9
-    assert not nine_wins.promotes
-    assert ten_wins.promotion_wins == 10
-    assert ten_wins.promotes
+    assert PROMOTION_MAX_BLOCKS == 13
+    assert PROMOTION_BASE_WINS == 11
+    assert strong.promotes
+    assert medium.promotes
+    assert close.promotes
+    assert not insufficient.promotes
+
+
+def test_sequential_rule_rejects_when_final_target_is_unreachable() -> None:
+    ratios = (1.0, 1.01, 1.019)
+
+    assert promotion_decision(ratios) is PromotionDecision.REJECT
+
+
+def test_sequential_false_promotion_bound_is_below_five_percent() -> None:
+    strong_look = 1 / 64
+    medium_look = 10 / 512
+    final_look = 92 / 8192
+
+    assert strong_look + medium_look + final_look < 0.05
 
 
 def test_incomplete_paired_measurement_cannot_promote() -> None:
@@ -169,11 +241,11 @@ def test_incomplete_paired_measurement_cannot_promote() -> None:
     assert comparison.promotion_wins == 0
     assert not comparison.promotes
 
-    with pytest.raises(ValueError, match="13 blocks"):
+    with pytest.raises(ValueError, match="terminal sequential result"):
         PairedMeasurement(
             incumbent=_formal_measurement("incumbent", 20.0),
             challenger=_formal_measurement("challenger", 10.0),
-            paired_ratios=(1.01,) * 12,
+            paired_ratios=(1.03,) * 5,
         )
 
 

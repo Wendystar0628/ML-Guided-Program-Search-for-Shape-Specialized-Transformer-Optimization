@@ -39,6 +39,7 @@ from .evaluation import (
     execution_signatures_match,
     normalized_accuracy_constraint,
 )
+from .promotion import promotion_should_stop
 from .search_engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
 from .search_space import ProgramSearchSpace
 from .study_storage import SearchStorage
@@ -185,6 +186,7 @@ class BenchmarkEvaluator:
                 self.variant,
                 _protocol(self.scope, Fidelity.FORMAL),
                 self.device,
+                stop_when=promotion_should_stop,
             )
         except Exception as exc:
             if classify_infeasible_exception(exc) is None:

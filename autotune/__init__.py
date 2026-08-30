@@ -1,9 +1,6 @@
 """Generated Transformer-program search with constraint-aware Optuna TPE."""
 
 from .evaluation import (
-    PROMOTION_BLOCK_COUNT,
-    PROMOTION_BLOCK_WIN_RATIO,
-    PROMOTION_REQUIRED_WINS,
     RESIDENT_PROTOCOLS,
     STREAMED_PROTOCOLS,
     ConstraintVector,
@@ -21,6 +18,14 @@ from .optimization_loop import (
     OptimizationResult,
 )
 from .optuna_backend import CompletedTrial, OptunaBackend
+from .promotion import (
+    PROMOTION_BASE_RATIO,
+    PROMOTION_BASE_WINS,
+    PROMOTION_MAX_BLOCKS,
+    PROMOTION_STAGES,
+    PromotionDecision,
+    promotion_decision,
+)
 from .search_engine import (
     SearchBudget,
     SearchEngine,
@@ -38,9 +43,10 @@ from .search_space import (
 from .study_storage import SearchStorage, StudyIdentity
 
 __all__ = [
-    "PROMOTION_BLOCK_COUNT",
-    "PROMOTION_BLOCK_WIN_RATIO",
-    "PROMOTION_REQUIRED_WINS",
+    "PROMOTION_BASE_RATIO",
+    "PROMOTION_BASE_WINS",
+    "PROMOTION_MAX_BLOCKS",
+    "PROMOTION_STAGES",
     "RESIDENT_PROTOCOLS",
     "STREAMED_PROTOCOLS",
     "BranchSpace",
@@ -58,6 +64,7 @@ __all__ = [
     "PairedMeasurement",
     "ParameterDomain",
     "ProgramSearchSpace",
+    "PromotionDecision",
     "SearchBudget",
     "SearchContext",
     "SearchEngine",
@@ -68,4 +75,5 @@ __all__ = [
     "StructureSpec",
     "StudyIdentity",
     "TrialMeasurement",
+    "promotion_decision",
 ]

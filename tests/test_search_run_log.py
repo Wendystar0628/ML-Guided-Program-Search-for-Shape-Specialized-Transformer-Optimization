@@ -121,6 +121,8 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
     )
     assert shape_event["decision"]["deployment_updated"] is True
     assert shape_event["decision"]["formal"]["promotion_wins"] == 13
+    assert shape_event["decision"]["formal"]["rounds_used"] == 13
+    assert shape_event["decision"]["formal"]["promotion_decision"] == "promote"
     assert len(shape_event["decision"]["formal"]["paired_ratios"]) == 13
     assert len(shape_event["enhanced"]) == 1
     assert events[2]["no_progress_streak"] == 0

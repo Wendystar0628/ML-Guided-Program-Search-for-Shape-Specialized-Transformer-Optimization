@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from autotune.evaluation import (
-    PROMOTION_BLOCK_WIN_RATIO,
     ConstraintVector,
     EvaluationScope,
     Fidelity,
@@ -75,7 +74,7 @@ def _measurement(
     )
 
 
-def test_deployment_uses_the_single_paired_block_rule() -> None:
+def test_deployment_uses_the_sequential_paired_rule() -> None:
     incumbent = portable_config()
     challenger = _graph_config()
     incumbent_measurement = _measurement(incumbent, 101.0)
@@ -83,7 +82,7 @@ def test_deployment_uses_the_single_paired_block_rule() -> None:
     comparison = PairedMeasurement(
         incumbent=incumbent_measurement,
         challenger=challenger_measurement,
-        paired_ratios=(PROMOTION_BLOCK_WIN_RATIO,) * 10 + (1.0,) * 3,
+        paired_ratios=(1.02,) * 11 + (1.0,) * 2,
     )
     result = SearchResult(
         incumbent_config=incumbent,

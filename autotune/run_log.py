@@ -101,8 +101,14 @@ class SearchRunLog:
                 "paired_ratios": (
                     [] if comparison is None else list(comparison.paired_ratios)
                 ),
+                "rounds_used": (
+                    None if comparison is None else len(comparison.paired_ratios)
+                ),
                 "promotion_wins": (
                     None if comparison is None else comparison.promotion_wins
+                ),
+                "promotion_decision": (
+                    None if comparison is None else comparison.decision.value
                 ),
                 "promotes": result.deployment_approved,
             }

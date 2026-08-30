@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -280,6 +281,7 @@ def _interleaved_timings(
     *,
     incumbent_scale: int = 1,
     challenger_scale: int = 1,
+    stop_when: Callable[[tuple[float, ...]], bool] | None = None,
 ) -> tuple[list[float], list[float], tuple[float, ...]]:
     """Measure AB/BA rounds and retain one latency ratio per paired round."""
 
@@ -357,6 +359,8 @@ def _interleaved_timings(
         incumbent_samples.extend(incumbent_round)
         challenger_samples.extend(challenger_round)
         paired_ratios.append(incumbent_median / challenger_median)
+        if stop_when is not None and stop_when(tuple(paired_ratios)):
+            break
     return incumbent_samples, challenger_samples, tuple(paired_ratios)
 
 
@@ -499,6 +503,7 @@ def _measure_paired_resident(
     variant: RunVariant,
     protocol: MeasurementProtocol,
     device: torch.device,
+    stop_when: Callable[[tuple[float, ...]], bool] | None,
 ) -> PairedBenchmarkResult:
     model_config = _official_config(shape)
     dtype = official.resolve_dtype(variant.dtype)
@@ -551,6 +556,7 @@ def _measure_paired_resident(
         (x, mask),
         protocol,
         device,
+        stop_when=stop_when,
     )
     incumbent_peak = _peak_memory(incumbent, x, mask, device)
     challenger_peak = _peak_memory(challenger, x, mask, device)
@@ -586,6 +592,7 @@ def _measure_paired_streamed(
     variant: RunVariant,
     protocol: MeasurementProtocol,
     device: torch.device,
+    stop_when: Callable[[tuple[float, ...]], bool] | None,
 ) -> PairedBenchmarkResult:
     configs = (incumbent_config, challenger_config)
     microbatches = tuple(config.schedule.microbatch_size for config in configs)
@@ -711,6 +718,7 @@ def _measure_paired_streamed(
         device,
         incumbent_scale=incumbent_scale,
         challenger_scale=challenger_scale,
+        stop_when=stop_when,
     )
     incumbent_peak = _peak_memory(
         incumbent,
@@ -768,6 +776,8 @@ def measure_paired_configs(
     variant: RunVariant,
     protocol: MeasurementProtocol,
     device: str | torch.device,
+    *,
+    stop_when: Callable[[tuple[float, ...]], bool] | None = None,
 ) -> PairedBenchmarkResult:
     """Measure challenger and incumbent in alternating AB/BA rounds."""
 
@@ -783,6 +793,7 @@ def measure_paired_configs(
             variant,
             protocol,
             resolved_device,
+            stop_when,
         )
     if any(
         config.schedule.runtime is RuntimeBackend.STREAMED
@@ -796,6 +807,7 @@ def measure_paired_configs(
         variant,
         protocol,
         resolved_device,
+        stop_when,
     )
 
 

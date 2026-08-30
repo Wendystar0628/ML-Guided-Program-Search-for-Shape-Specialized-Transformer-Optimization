@@ -76,7 +76,7 @@ def _completed_result(
         else PairedMeasurement(
             incumbent=_measurement(incumbent, latency_ms * 1.01),
             challenger=measurement,
-            paired_ratios=(1.01,) * 10 + (1.0,) * 3,
+            paired_ratios=(1.02,) * 11 + (1.0,) * 2,
         )
     )
     return SearchResult(
@@ -147,7 +147,7 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
         formal_comparison=PairedMeasurement(
             incumbent=_measurement(incumbent, 1.01),
             challenger=winner_measurement,
-            paired_ratios=(1.01,) * 10 + (1.0,) * 3,
+            paired_ratios=(1.02,) * 11 + (1.0,) * 2,
         ),
         stop_reason="completed",
     )
