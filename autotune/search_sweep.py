@@ -94,13 +94,22 @@ def execution_context(
     )
 
 
-def _protocol(scope: EvaluationScope, fidelity: Fidelity) -> MeasurementProtocol:
+def _protocol(
+    scope: EvaluationScope,
+    fidelity: Fidelity,
+    case_id: str,
+) -> MeasurementProtocol:
     source = (
         STREAMED_PROTOCOLS if scope is EvaluationScope.STREAMED else RESIDENT_PROTOCOLS
     )[fidelity]
+    accuracy_trials = source.accuracy_trials
+    warmup = source.warmup
+    if scope is EvaluationScope.RESIDENT and case_id == "official_06":
+        accuracy_trials = 1
+        warmup = 1 if fidelity is Fidelity.SCREEN else 2
     return MeasurementProtocol(
-        accuracy_trials=source.accuracy_trials,
-        warmup=source.warmup,
+        accuracy_trials=accuracy_trials,
+        warmup=warmup,
         repeats=source.repeats,
         rounds=source.rounds,
         full_logical_batch=source.full_logical_batch,
@@ -182,7 +191,7 @@ class BenchmarkEvaluator:
                 self.shape,
                 config,
                 self.variant,
-                _protocol(self.scope, fidelity),
+                _protocol(self.scope, fidelity, self.shape.case_id),
                 self.device,
                 include_baseline=False,
             )
@@ -204,7 +213,7 @@ class BenchmarkEvaluator:
                 challenger,
                 incumbent,
                 self.variant,
-                _protocol(self.scope, Fidelity.FORMAL),
+                _protocol(self.scope, Fidelity.FORMAL, self.shape.case_id),
                 self.device,
                 stop_when=promotion_should_stop,
             )

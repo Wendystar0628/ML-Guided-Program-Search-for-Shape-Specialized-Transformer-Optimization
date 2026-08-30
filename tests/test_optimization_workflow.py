@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from autotune.optimization_loop import OptimizationLoop, OptimizationLoopPolicy
 from autotune.search_sweep import SearchSweepRequest, SearchSweepResult
 from benchmarking.protocols import (
@@ -10,7 +12,7 @@ from benchmarking.protocols import (
     load_shapes,
     load_streamed_shapes,
 )
-from cli import _optimization_case_ids
+from cli import _optimization_case_ids, build_parser
 
 
 class _SearchSweep:
@@ -48,7 +50,32 @@ def _request() -> SearchSweepRequest:
     )
 
 
-def test_partial_search_progress_continues_to_a_later_deployment() -> None:
+def test_cli_exposes_only_deployment_patience() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "optimize",
+            "--group",
+            "resident",
+            "--no-deployment-patience",
+            "3",
+        ]
+    )
+
+    assert args.no_deployment_patience == 3
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "optimize",
+                "--group",
+                "resident",
+                "--no-progress-patience",
+                "3",
+            ]
+        )
+
+
+def test_deployment_patience_allows_a_later_deployment() -> None:
     search = _SearchSweep(
         [
             (0, ((False, True, False),)),
@@ -58,37 +85,37 @@ def test_partial_search_progress_continues_to_a_later_deployment() -> None:
 
     result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
-        OptimizationLoopPolicy(no_progress_patience=1, max_iterations=2),
+        OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=2),
     )
 
     assert result.stop_reason == "max_iterations"
     assert result.iterations_run == 2
     assert result.total_deployment_updates == 1
-    assert result.no_progress_streak == 0
+    assert result.no_deployment_streak == 0
     assert [request.seed for request in search.requests] == [100, 101]
 
 
-def test_no_progress_patience_stops_only_after_empty_iterations() -> None:
+def test_no_deployment_patience_ignores_new_screen_evidence() -> None:
     search = _SearchSweep(
         [
-            (0, ((False, False, False),)),
-            (0, ((False, False, False),)),
+            (0, ((False, True, False),)),
+            (0, ((False, True, False),)),
             (0, ((True, True, False),)),
         ]
     )
 
     result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
-        OptimizationLoopPolicy(no_progress_patience=2, max_iterations=4),
+        OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=4),
     )
 
-    assert result.stop_reason == "no_progress_patience"
+    assert result.stop_reason == "no_deployment_patience"
     assert result.iterations_run == 2
-    assert result.no_progress_streak == 2
+    assert result.no_deployment_streak == 2
     assert len(search.requests) == 2
 
 
-def test_failed_historical_formal_does_not_reset_no_progress_patience() -> None:
+def test_failed_historical_formal_does_not_reset_deployment_patience() -> None:
     class _HistoricalFormalSweep:
         def run(self, request: SearchSweepRequest) -> object:
             return SimpleNamespace(
@@ -106,12 +133,12 @@ def test_failed_historical_formal_does_not_reset_no_progress_patience() -> None:
 
     result = OptimizationLoop(_HistoricalFormalSweep()).run(  # type: ignore[arg-type]
         _request(),
-        OptimizationLoopPolicy(no_progress_patience=1, max_iterations=2),
+        OptimizationLoopPolicy(no_deployment_patience=1, max_iterations=2),
     )
 
-    assert result.stop_reason == "no_progress_patience"
+    assert result.stop_reason == "no_deployment_patience"
     assert result.iterations_run == 1
-    assert result.no_progress_streak == 1
+    assert result.no_deployment_streak == 1
 
 
 def test_hard_iteration_limit_stops_continuous_deployments() -> None:
@@ -119,16 +146,16 @@ def test_hard_iteration_limit_stops_continuous_deployments() -> None:
 
     result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
-        OptimizationLoopPolicy(no_progress_patience=2, max_iterations=3),
+        OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=3),
     )
 
     assert result.stop_reason == "max_iterations"
     assert result.iterations_run == 3
     assert result.total_deployment_updates == 3
-    assert result.no_progress_streak == 0
+    assert result.no_deployment_streak == 0
 
 
-def test_no_new_evidence_stops_an_exhausted_search_immediately() -> None:
+def test_exhausted_screen_does_not_block_a_historical_deployment() -> None:
     class _ExhaustedSweep(_SearchSweep):
         def run(self, request: SearchSweepRequest) -> object:
             result = super().run(request)
@@ -138,14 +165,21 @@ def test_no_new_evidence_stops_an_exhausted_search_immediately() -> None:
             return result
 
     result = OptimizationLoop(
-        _ExhaustedSweep([(0, ((False, False, True),))])
+        _ExhaustedSweep(
+            [
+                (0, ((False, False, True),)),
+                (0, ((True, False, True),)),
+            ]
+        )
     ).run(
         _request(),
-        OptimizationLoopPolicy(no_progress_patience=5, max_iterations=10),
+        OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=2),
     )
 
-    assert result.stop_reason == "search_space_exhausted"
-    assert result.iterations_run == 1
+    assert result.stop_reason == "max_iterations"
+    assert result.iterations_run == 2
+    assert result.total_deployment_updates == 1
+    assert result.no_deployment_streak == 0
 
 
 def test_failure_and_interrupt_stop_immediately_without_advancing_patience() -> None:
@@ -159,13 +193,13 @@ def test_failure_and_interrupt_stop_immediately_without_advancing_patience() -> 
 
         result = OptimizationLoop(search).run(  # type: ignore[arg-type]
             _request(),
-            OptimizationLoopPolicy(no_progress_patience=2, max_iterations=4),
+            OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=4),
         )
 
         assert result.stop_reason == expected_reason
         assert result.exit_code == exit_code
         assert result.iterations_run == 1
-        assert result.no_progress_streak == 0
+        assert result.no_deployment_streak == 0
         assert len(search.requests) == 1
 
 

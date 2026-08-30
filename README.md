@@ -22,8 +22,8 @@ batch cannot reside in GPU memory at once.
 - `deployment/`: measured per-device winners consumed by `solution/`.
 - `official/`: upstream benchmark semantics and the 14 workload definitions.
 - `tests/`: control-plane and GPU-path tests.
-- `scripts/`: six end-to-end optimization entry points by workload group and
-  search depth.
+- `scripts/`: two end-to-end optimization entry points, one for resident Shapes
+  01-13 and one for streamed Shape 14.
 - `environments/`: machine-specific dependencies and environment activation.
 - `docs/`: competition rules, engineering notes, and deliverables.
 
@@ -94,21 +94,38 @@ force one cross-platform GPU runtime combination.
 
 ## Commands
 
-The `quick`, `standard`, and `deep` tiers target roughly 10 minutes, no more
-than 30 minutes, and about two hours on the reference machine. These are soft
-runtime classes: persisted search state and convergence stopping may finish a
-run earlier, while an already-started GPU measurement may finish later.
+The two optimization scripts run the complete search-to-deployment flow in the
+foreground. GPU measurements are serial: Shapes do not compete for the device.
+For Shapes 01-13, the time and trial limits apply to each Shape in each sweep;
+for Shape 14, they apply to its single streamed search in each iteration. Time
+limits are soft because an already-started measurement is allowed to finish.
+
+The search uses persistent branch-local TPE to choose new programs, Successive
+Halving to allocate more Level-1 budget to promising branches, and
+deployment-based early stopping when several complete iterations produce no new
+winner. Shape 14 additionally searches its finite program space in bounded
+batches. Re-running a script resumes the studies in
+`observations/search/resident/` or `observations/search/shape14/`; it does not
+start the search from zero.
+
+The resident defaults are 180 seconds and at most 96 new trials per Shape per
+sweep, with at most four sweeps. Shape 14 defaults to 1200 seconds and at most
+12 new trials per iteration, also with at most four iterations. Both stop after
+three consecutive complete iterations without a deployment update. These are
+search scheduling limits rather than wall-clock guarantees: deployment
+convergence may stop a run earlier, while an already-started measurement may
+finish after its soft time budget.
 
 ```powershell
 # Run the complete resident optimization flow
-.\scripts\optimize_shapes_01_13_quick.ps1
-.\scripts\optimize_shapes_01_13_standard.ps1
-.\scripts\optimize_shapes_01_13_deep.ps1
+.\scripts\optimize_shapes_01_13.ps1
 
 # Run the complete Shape-14 optimization flow
-.\scripts\optimize_shape_14_quick.ps1
-.\scripts\optimize_shape_14_standard.ps1
-.\scripts\optimize_shape_14_deep.ps1
+.\scripts\optimize_shape_14.ps1
+
+# Override a budget when needed (all other parameters keep their defaults)
+.\scripts\optimize_shapes_01_13.ps1 -BudgetSecondsPerShape 240 -MaxIterations 6
+.\scripts\optimize_shape_14.ps1 -BudgetSecondsPerIteration 1800 -MaxIterations 6
 
 # Inspect the GPU environment
 .\.venv\Scripts\python.exe cli.py probe --device cuda:0

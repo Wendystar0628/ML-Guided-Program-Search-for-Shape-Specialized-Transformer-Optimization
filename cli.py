@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     optimize.add_argument("--group", choices=("resident", "shape14"), required=True)
     optimize.add_argument(
-        "--no-progress-patience",
+        "--no-deployment-patience",
         type=_positive_int,
         default=8,
     )
@@ -364,7 +364,7 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
     log_request.update(
         {
             "max_iterations": args.max_iterations,
-            "no_progress_patience": args.no_progress_patience,
+            "no_deployment_patience": args.no_deployment_patience,
         }
     )
     run_log = SearchRunLog(
@@ -386,14 +386,14 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         print(
             f"  shapes with new Level-1 evidence: {iteration.shapes_with_level1_progress}"
         )
-        print(f"  no-progress streak: {iteration.no_progress_streak}")
+        print(f"  no-deployment streak: {iteration.no_deployment_streak}")
         run_log.record_iteration(iteration)
 
     try:
         result = OptimizationLoop(SearchSweep(observer=run_log.record_shape)).run(
             request,
             OptimizationLoopPolicy(
-                no_progress_patience=args.no_progress_patience,
+                no_deployment_patience=args.no_deployment_patience,
                 max_iterations=args.max_iterations,
             ),
             observer=print_iteration,
