@@ -27,26 +27,6 @@ _SHAPE14_WARPS = (4, 8)
 _SHAPE14_MICROBATCHES = (1, 2)
 
 
-def _portable_branch() -> BranchSpace:
-    return BranchSpace(
-        structure=StructureSpec(
-            attention=AttentionBackend.REFERENCE_STREAMING,
-            precision_plan=PrecisionPlan.INPUT_DTYPE,
-            qkv_materialization=QKVMaterialization.VIEW,
-            attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
-            ffn=FFNBackend.TORCH,
-            residual_norm=ResidualNormBackend.TORCH,
-            initial_norm=InitialNormBackend.TORCH,
-            runtime=RuntimeBackend.STREAMED,
-        ),
-        domains=(
-            ParameterDomain("projection_pattern", ("all_input",), "all_input"),
-            ParameterDomain("microbatch_size", _SHAPE14_MICROBATCHES, 1),
-        ),
-        scope="streamed",
-    )
-
-
 def _native_sdpa_branch() -> BranchSpace:
     return BranchSpace(
         structure=StructureSpec(
@@ -92,15 +72,18 @@ def _triton_dh64_branch(*, stages: int) -> BranchSpace:
 
 def _shape14_branches() -> tuple[BranchSpace, ...]:
     return (
-        _portable_branch(),
-        _native_sdpa_branch(),
         _triton_dh64_branch(stages=2),
         _triton_dh64_branch(stages=3),
+        _native_sdpa_branch(),
     )
 
 
 class Shape14SearchSpace:
-    """Four fixed Shape 14 branches with a deliberately narrow launch domain."""
+    """Finite high-value Shape 14 candidate space.
+
+    The reference-streaming implementation remains the portable incumbent and
+    correctness fallback, but is intentionally not benchmarked as a challenger.
+    """
 
     def __init__(
         self,
@@ -116,11 +99,8 @@ class Shape14SearchSpace:
             for branch in _shape14_branches()
             if self.accepted(branch.default_config())
         )
-        if not branches or not any(
-            branch.structure.attention is AttentionBackend.REFERENCE_STREAMING
-            for branch in branches
-        ):
-            raise ValueError("plan builder rejected the Shape 14 portable control")
+        if not branches:
+            raise ValueError("plan builder rejected every Shape 14 candidate")
         self.branches = branches
         self.mandatory_branch_ids = frozenset(branch.branch_id for branch in branches)
         self._by_id = {branch.branch_id: branch for branch in branches}

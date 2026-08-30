@@ -79,7 +79,7 @@ class OptimizationLoop:
             if search_result.exit_code == 0:
                 no_deployment_streak = (
                     0
-                    if deployment_updates
+                    if deployment_updates or shapes_with_level1_progress
                     else no_deployment_streak + 1
                 )
 

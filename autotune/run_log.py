@@ -194,10 +194,10 @@ class SearchRunLog:
                         result.mandatory_coverage_complete
                     ),
                     "scheduler": {
-                        "algorithm": "cost_aware_successive_halving",
-                        "completed_rungs": result.halving_rungs,
-                        "pruned_branches": result.halving_pruned_branches,
-                        "active_branches": result.halving_active_branches,
+                        "algorithm": result.scheduler_algorithm,
+                        "selection_rounds": result.selection_rounds,
+                        "pruned_branches": result.pruned_branches,
+                        "active_branches": result.active_branches,
                         "space_exhausted": result.level1_space_exhausted,
                     },
                 },

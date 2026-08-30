@@ -33,6 +33,10 @@ from .kernels.attention import (
     prevalidated_triton_shape13_causal_attention,
     prevalidated_triton_shape13_causal_attention_bsd,
 )
+from .kernels.boundary import (
+    TRITON_LINEAR_RESIDUAL_NORM_BACKEND,
+    triton_linear_residual_norm,
+)
 from .kernels.ffn import (
     TRITON_EXACT_GELU_BACKEND,
     TRITON_LINEAR_EXACT_GELU_BACKEND,
@@ -230,6 +234,13 @@ class _ExecutionObservation:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _FusedBoundaryResult:
+    residual: torch.Tensor
+    normalized: torch.Tensor
+    backend: str
+
+
 def _infer_precision_plan(
     qkv: str | None,
     attention_output: str | None,
@@ -359,7 +370,11 @@ class _SelfAttention(nn.Module):
         causal: bool,
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
-    ) -> torch.Tensor:
+        *,
+        boundary_residual: torch.Tensor | None = None,
+        boundary_norm: nn.LayerNorm | None = None,
+        final_boundary: bool = False,
+    ) -> torch.Tensor | _FusedBoundaryResult:
         batch_size, sequence_length, _ = value.shape
         if plan.qkv_materialization is QKVMaterialization.TRITON_NATIVE_BHSD:
             launch = plan.qkv_launch
@@ -577,7 +592,14 @@ class _SelfAttention(nn.Module):
         )
         if actual_layout is not plan.attention_output_layout:
             raise RuntimeError("attention output layout does not match the plan")
+        fused_boundary: _FusedBoundaryResult | None = None
+        if plan.use_linear_boundary_fusion and (
+            boundary_residual is None or boundary_norm is None
+        ):
+            raise RuntimeError("fused attention boundary requires residual and norm")
         if plan.attention_output_bridge is AttentionOutputBridge.TORCH_BHSD_TO_BSD:
+            if plan.use_linear_boundary_fusion:
+                raise RuntimeError("fused attention boundary cannot use the Torch bridge")
             if actual_layout is not AttentionOutputLayout.BHSD:
                 raise RuntimeError("Torch bridge requires BHSD attention output")
             context = (
@@ -597,36 +619,91 @@ class _SelfAttention(nn.Module):
                 raise RuntimeError(
                     "Triton output projection requires BHSD attention output"
                 )
-            launch = plan.attention_output_projection_launch
-            if launch is None:
-                raise RuntimeError(
-                    "Triton attention-output projection is missing launch parameters"
-                )
             weight, bias = self.out_proj.fp16_shadow_parameters()
-            output, actual_marker = prevalidated_triton_attention_output_projection(
-                context,
-                weight,
-                bias,
-                block_m=launch.block_m,
-                block_n=launch.block_n,
-                block_k=launch.block_k,
-                num_warps=launch.num_warps,
-                num_stages=launch.num_stages,
-            )
-            _strict_backend_marker(
-                actual_marker,
-                expected_marker=TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
-                planned_backend=plan.attention_output_bridge.value,
-            )
+            if bias is None:
+                raise RuntimeError("attention output projection requires a bias")
+            if plan.use_linear_boundary_fusion:
+                launch = plan.residual_norm_launch
+                if launch is None:
+                    raise RuntimeError("fused attention boundary is missing launch parameters")
+                assert boundary_residual is not None and boundary_norm is not None
+                residual, normalized, actual_marker = triton_linear_residual_norm(
+                    context,
+                    weight,
+                    bias,
+                    boundary_residual,
+                    boundary_norm,
+                    final_boundary=final_boundary,
+                    block_rows=launch.block_rows,
+                    num_warps=launch.num_warps,
+                )
+                fused_boundary = _FusedBoundaryResult(
+                    residual,
+                    normalized,
+                    _strict_backend_marker(
+                        actual_marker,
+                        expected_marker=TRITON_LINEAR_RESIDUAL_NORM_BACKEND,
+                        planned_backend=plan.residual_norm_backend.value,
+                    ),
+                )
+            else:
+                launch = plan.attention_output_projection_launch
+                if launch is None:
+                    raise RuntimeError(
+                        "Triton attention-output projection is missing launch parameters"
+                    )
+                output, actual_marker = prevalidated_triton_attention_output_projection(
+                    context,
+                    weight,
+                    bias,
+                    block_m=launch.block_m,
+                    block_n=launch.block_n,
+                    block_k=launch.block_k,
+                    num_warps=launch.num_warps,
+                    num_stages=launch.num_stages,
+                )
+                _strict_backend_marker(
+                    actual_marker,
+                    expected_marker=TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
+                    planned_backend=plan.attention_output_bridge.value,
+                )
             actual_bridge = AttentionOutputBridge.TRITON_BHSD_PROJECTION
         else:
             if actual_layout is not AttentionOutputLayout.BSD:
                 raise RuntimeError("direct bridge requires BSD attention output")
             actual_bridge = AttentionOutputBridge.ATTENTION_DIRECT_BSD
-            output = self.out_proj.forward_backend(
-                context,
-                plan.attention_output_projection_backend,
-            )
+            if plan.use_linear_boundary_fusion:
+                launch = plan.residual_norm_launch
+                if launch is None:
+                    raise RuntimeError("fused attention boundary is missing launch parameters")
+                weight, bias = self.out_proj.fp16_shadow_parameters()
+                if bias is None:
+                    raise RuntimeError("attention output projection requires a bias")
+                assert boundary_residual is not None and boundary_norm is not None
+                residual, normalized, actual_marker = triton_linear_residual_norm(
+                    context,
+                    weight,
+                    bias,
+                    boundary_residual,
+                    boundary_norm,
+                    final_boundary=final_boundary,
+                    block_rows=launch.block_rows,
+                    num_warps=launch.num_warps,
+                )
+                fused_boundary = _FusedBoundaryResult(
+                    residual,
+                    normalized,
+                    _strict_backend_marker(
+                        actual_marker,
+                        expected_marker=TRITON_LINEAR_RESIDUAL_NORM_BACKEND,
+                        planned_backend=plan.residual_norm_backend.value,
+                    ),
+                )
+            else:
+                output = self.out_proj.forward_backend(
+                    context,
+                    plan.attention_output_projection_backend,
+                )
         if observation is not None:
             observation.attention_backends.append(actual_attention_backend)
             observation.attention_compute_dtypes.append(
@@ -651,7 +728,9 @@ class _SelfAttention(nn.Module):
                 plan.attention_output_projection_backend.value
             )
             observation.attention_output_projection_compute_dtypes.append(
-                str(output.dtype).removeprefix("torch.")
+                "float16"
+                if fused_boundary is not None
+                else str(output.dtype).removeprefix("torch.")
             )
             observation.attention_output_projection_launches.append(
                 None
@@ -663,6 +742,8 @@ class _SelfAttention(nn.Module):
                 if plan.attention_launch is None
                 else plan.attention_launch.to_dict()
             )
+        if fused_boundary is not None:
+            return fused_boundary
         mixed_residual_stream = (
             plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
         )
@@ -690,7 +771,10 @@ class _TransformerBlock(nn.Module):
         causal: bool,
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
-    ) -> torch.Tensor:
+        *,
+        boundary_residual: torch.Tensor | None = None,
+        boundary_norm: nn.LayerNorm | None = None,
+    ) -> torch.Tensor | _FusedBoundaryResult:
         """Compute the attention branch from an already normalized value."""
 
         return self.attention(
@@ -699,6 +783,8 @@ class _TransformerBlock(nn.Module):
             causal,
             plan,
             observation,
+            boundary_residual=boundary_residual,
+            boundary_norm=boundary_norm,
         )
 
     def ffn_update(
@@ -706,7 +792,11 @@ class _TransformerBlock(nn.Module):
         normalized: torch.Tensor,
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
-    ) -> torch.Tensor:
+        *,
+        boundary_residual: torch.Tensor | None = None,
+        boundary_norm: nn.LayerNorm | None = None,
+        final_boundary: bool = False,
+    ) -> torch.Tensor | _FusedBoundaryResult:
         """Compute the FFN branch from an already normalized value."""
 
         def exact_gelu(projected_value: torch.Tensor) -> torch.Tensor:
@@ -765,12 +855,15 @@ class _TransformerBlock(nn.Module):
                 planned_backend=plan.ffn_backend.value,
             )
             projected = hidden
-            observed_update = self.ffn_out.forward_backend(
-                hidden,
-                plan.ffn_output_projection_backend,
-            )
+            if not plan.use_linear_boundary_fusion:
+                observed_update = self.ffn_out.forward_backend(
+                    hidden,
+                    plan.ffn_output_projection_backend,
+                )
         elif (
-            observation is not None or plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU
+            observation is not None
+            or plan.ffn_backend is FFNBackend.TRITON_EXACT_GELU
+            or plan.use_linear_boundary_fusion
         ):
             projected = self.ffn_in.forward_backend(
                 normalized,
@@ -796,13 +889,13 @@ class _TransformerBlock(nn.Module):
                 )
             else:
                 hidden = exact_gelu(projected)
-            observed_update = self.ffn_out.forward_backend(
-                hidden,
-                plan.ffn_output_projection_backend,
-            )
+            if not plan.use_linear_boundary_fusion:
+                observed_update = self.ffn_out.forward_backend(
+                    hidden,
+                    plan.ffn_output_projection_backend,
+                )
         if observation is not None:
             assert projected is not None and hidden is not None
-            assert observed_update is not None
             assert ffn_input_compute_dtype is not None
             observation.ffn_input_projection_backends.append(
                 plan.ffn_input_projection_backend.value
@@ -817,7 +910,9 @@ class _TransformerBlock(nn.Module):
                 plan.ffn_output_projection_backend.value
             )
             observation.ffn_output_projection_compute_dtypes.append(
-                str(observed_update.dtype).removeprefix("torch.")
+                "float16"
+                if plan.use_linear_boundary_fusion
+                else str(observed_update.dtype).removeprefix("torch.")
             )
             observation.ffn_launches.append(
                 None if plan.ffn_launch is None else plan.ffn_launch.to_dict()
@@ -826,6 +921,40 @@ class _TransformerBlock(nn.Module):
                 None
                 if plan.ffn_input_launch is None
                 else plan.ffn_input_launch.to_dict()
+            )
+        if plan.use_linear_boundary_fusion:
+            if boundary_residual is None or boundary_norm is None:
+                raise RuntimeError("fused FFN boundary requires residual and norm")
+            if plan.ffn_backend is FFNBackend.COMPILED:
+                raise RuntimeError("compiled FFN cannot use fused boundary output")
+            assert hidden is not None
+            launch = plan.residual_norm_launch
+            if launch is None:
+                raise RuntimeError("fused FFN boundary is missing launch parameters")
+            weight, bias = self.ffn_out.fp16_shadow_parameters()
+            if bias is None:
+                raise RuntimeError("FFN output projection requires a bias")
+            residual, normalized_output, actual_marker = triton_linear_residual_norm(
+                hidden,
+                weight,
+                bias,
+                boundary_residual,
+                boundary_norm,
+                final_boundary=final_boundary,
+                block_rows=launch.block_rows,
+                num_warps=launch.num_warps,
+            )
+            actual_ffn_backend = plan.ffn_backend
+            if observation is not None:
+                observation.ffn_backends.append(actual_ffn_backend.value)
+            return _FusedBoundaryResult(
+                residual,
+                normalized_output,
+                _strict_backend_marker(
+                    actual_marker,
+                    expected_marker=TRITON_LINEAR_RESIDUAL_NORM_BACKEND,
+                    planned_backend=plan.residual_norm_backend.value,
+                ),
             )
         if plan.ffn_backend is FFNBackend.COMPILED:
             ffn_update = self.compiled_ffn.run(
@@ -1190,7 +1319,11 @@ class UserOptimizedTransformer(nn.Module):
                     )
                     observation.initial_norm_launches.append(None)
             if (
-                plan.residual_norm_backend is ResidualNormBackend.TRITON_MIXED
+                plan.residual_norm_backend
+                in {
+                    ResidualNormBackend.TRITON_MIXED,
+                    ResidualNormBackend.TRITON_LINEAR_MIXED,
+                }
                 and not plan.use_triton_initial_fp16_norm
             ):
                 normalized = normalized.to(torch.float16)
@@ -1205,31 +1338,72 @@ class UserOptimizedTransformer(nn.Module):
                     bool(self.config.causal),
                     plan,
                     observation,
+                    boundary_residual=value if plan.use_linear_boundary_fusion else None,
+                    boundary_norm=layer.norm2 if plan.use_linear_boundary_fusion else None,
                 )
-                value, normalized = self._apply_residual_norm(
-                    value,
-                    attention_update,
-                    layer.norm2,
-                    valid_token_mask,
-                    plan,
-                    observation,
-                    final_boundary=False,
-                )
-                ffn_update = layer.ffn_update(normalized, plan, observation)
+                if plan.use_linear_boundary_fusion:
+                    if not isinstance(attention_update, _FusedBoundaryResult):
+                        raise RuntimeError("attention boundary did not execute its fused plan")
+                    value, normalized = (
+                        attention_update.residual,
+                        attention_update.normalized,
+                    )
+                    if observation is not None:
+                        observation.residual_norm_backends.append(
+                            attention_update.backend
+                        )
+                        observation.residual_norm_launches.append(
+                            plan.residual_norm_launch.to_dict()
+                            if plan.residual_norm_launch is not None
+                            else None
+                        )
+                else:
+                    assert isinstance(attention_update, torch.Tensor)
+                    value, normalized = self._apply_residual_norm(
+                        value,
+                        attention_update,
+                        layer.norm2,
+                        valid_token_mask,
+                        plan,
+                        observation,
+                        final_boundary=False,
+                    )
                 next_norm = (
                     self.layers[layer_index + 1].norm1
                     if layer_index + 1 < len(self.layers)
                     else self.final_norm
                 )
-                value, normalized = self._apply_residual_norm(
-                    value,
-                    ffn_update,
-                    next_norm,
-                    valid_token_mask,
+                final_boundary = layer_index + 1 == len(self.layers)
+                ffn_update = layer.ffn_update(
+                    normalized,
                     plan,
                     observation,
-                    final_boundary=layer_index + 1 == len(self.layers),
+                    boundary_residual=value if plan.use_linear_boundary_fusion else None,
+                    boundary_norm=next_norm if plan.use_linear_boundary_fusion else None,
+                    final_boundary=final_boundary,
                 )
+                if plan.use_linear_boundary_fusion:
+                    if not isinstance(ffn_update, _FusedBoundaryResult):
+                        raise RuntimeError("FFN boundary did not execute its fused plan")
+                    value, normalized = ffn_update.residual, ffn_update.normalized
+                    if observation is not None:
+                        observation.residual_norm_backends.append(ffn_update.backend)
+                        observation.residual_norm_launches.append(
+                            plan.residual_norm_launch.to_dict()
+                            if plan.residual_norm_launch is not None
+                            else None
+                        )
+                else:
+                    assert isinstance(ffn_update, torch.Tensor)
+                    value, normalized = self._apply_residual_norm(
+                        value,
+                        ffn_update,
+                        next_norm,
+                        valid_token_mask,
+                        plan,
+                        observation,
+                        final_boundary=final_boundary,
+                    )
                 if observation is not None:
                     observation.layer_output_dtypes.append(
                         str(normalized.dtype).removeprefix("torch.")

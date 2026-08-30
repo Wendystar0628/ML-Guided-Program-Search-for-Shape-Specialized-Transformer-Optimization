@@ -1,0 +1,36 @@
+{
+  "run_id": "20260831_shape03_repro_a",
+  "status": "completed",
+  "preset": "final",
+  "device": "cuda:0",
+  "variant": {
+    "dtype": "float32",
+    "padding_ratio": 0.0,
+    "input_scale": 1.0
+  },
+  "started_at": "2026-08-30T20:23:58+00:00",
+  "finished_at": "2026-08-30T20:24:03+00:00",
+  "elapsed_seconds": 5.094,
+  "progress": {
+    "completed": 1,
+    "total": 1,
+    "passed": 1
+  },
+  "current_case_id": null,
+  "resident_geomean_speedup": null,
+  "shapes": [
+    {
+      "case_id": "official_03",
+      "config_id": "cfg-509d621949ae561d414c0bfae7b5a6dacc6071d1d117cf6f779cd13d21435e90",
+      "passed": true,
+      "max_tolerance_ratio": 0.5710105895996094,
+      "median_ms": 0.08499199897050858,
+      "p90_ms": 0.0870399996638298,
+      "baseline_median_ms": 1.8800640106201172,
+      "speedup": 22.12048232060622,
+      "peak_memory_bytes": 22074880,
+      "execution_matches": true,
+      "status": "passed"
+    }
+  ]
+}

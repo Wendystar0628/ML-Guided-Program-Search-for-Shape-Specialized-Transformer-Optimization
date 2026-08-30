@@ -16,7 +16,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "16897aa4bcf48c5cc1e7e0ffb570e3cc90940188638080dd8adf93f215cdc1bf"
+        "solution_implementation_digest": "95307cca0c284578f2da2164ea84966d569fd5c946d1332f9c555f9cc4acfb06"
       },
       "entries": [
         {
@@ -193,17 +193,17 @@
           "config": {
             "schema_version": 4,
             "program": {
-              "attention": "causal_sdpa",
+              "attention": "fp16_efficient_sdpa",
               "qkv_projection": "fp16_shadow",
-              "attention_output_projection": "autocast_fp16",
+              "attention_output_projection": "fp16_shadow",
               "ffn_input_projection": "fp16_shadow",
               "ffn_output_projection": "fp16_shadow",
               "precision_plan": "fp16_core",
               "qkv_materialization": "triton_native_bhsd",
-              "attention_output_bridge": "torch_bhsd_to_bsd",
+              "attention_output_bridge": "triton_bhsd_projection",
               "ffn": "triton_linear_exact_gelu",
               "residual_norm": "triton_mixed",
-              "initial_norm": "torch"
+              "initial_norm": "triton_fp16"
             },
             "schedule": {
               "runtime": "cuda_graph",
@@ -214,12 +214,21 @@
                 "block_k": 32,
                 "num_warps": 4
               },
-              "attention_output_projection_launch": null,
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 32,
+                "num_warps": 4,
+                "num_stages": 2
+              },
               "residual_norm_launch": {
                 "block_rows": 2,
                 "num_warps": 2
               },
-              "initial_norm_launch": null,
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
               "ffn_launch": null,
               "ffn_input_launch": {
                 "block_m": 64,
@@ -304,22 +313,16 @@
               "qkv_materialization": "view",
               "attention_output_bridge": "triton_bhsd_projection",
               "ffn": "torch",
-              "residual_norm": "triton_mixed",
+              "residual_norm": "triton_linear_mixed",
               "initial_norm": "triton_fp16"
             },
             "schedule": {
               "runtime": "cuda_graph",
               "attention_launch": null,
               "qkv_launch": null,
-              "attention_output_projection_launch": {
-                "block_m": 16,
-                "block_n": 32,
-                "block_k": 32,
-                "num_warps": 8,
-                "num_stages": 4
-              },
+              "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 8,
+                "block_rows": 16,
                 "num_warps": 4
               },
               "initial_norm_launch": {
@@ -352,10 +355,10 @@
             "schema_version": 4,
             "program": {
               "attention": "causal_sdpa",
-              "qkv_projection": "autocast_fp16",
-              "attention_output_projection": "autocast_fp16",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
               "ffn_input_projection": "autocast_fp16",
-              "ffn_output_projection": "autocast_fp16",
+              "ffn_output_projection": "fp16_shadow",
               "precision_plan": "fp16_core",
               "qkv_materialization": "view",
               "attention_output_bridge": "torch_bhsd_to_bsd",
@@ -439,17 +442,17 @@
           "config": {
             "schema_version": 4,
             "program": {
-              "attention": "causal_sdpa",
+              "attention": "fp16_efficient_sdpa",
               "qkv_projection": "fp16_shadow",
-              "attention_output_projection": "autocast_fp16",
+              "attention_output_projection": "fp16_shadow",
               "ffn_input_projection": "fp16_shadow",
               "ffn_output_projection": "fp16_shadow",
               "precision_plan": "fp16_core",
               "qkv_materialization": "triton_native_bhsd",
-              "attention_output_bridge": "torch_bhsd_to_bsd",
+              "attention_output_bridge": "triton_bhsd_projection",
               "ffn": "triton_linear_exact_gelu",
               "residual_norm": "triton_mixed",
-              "initial_norm": "torch"
+              "initial_norm": "triton_fp16"
             },
             "schedule": {
               "runtime": "cuda_graph",
@@ -460,12 +463,21 @@
                 "block_k": 32,
                 "num_warps": 4
               },
-              "attention_output_projection_launch": null,
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 32,
+                "num_warps": 4,
+                "num_stages": 2
+              },
               "residual_norm_launch": {
                 "block_rows": 2,
                 "num_warps": 2
               },
-              "initial_norm_launch": null,
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
               "ffn_launch": null,
               "ffn_input_launch": {
                 "block_m": 64,
@@ -499,7 +511,7 @@
             "program": {
               "attention": "triton_dh8",
               "qkv_projection": "fp16_shadow",
-              "attention_output_projection": "autocast_fp16",
+              "attention_output_projection": "fp16_shadow",
               "ffn_input_projection": "autocast_fp16",
               "ffn_output_projection": "autocast_fp16",
               "precision_plan": "fp16_core",
@@ -512,32 +524,32 @@
             "schedule": {
               "runtime": "cuda_graph",
               "attention_launch": {
-                "block_m": 32,
-                "block_n": 32,
+                "block_m": 128,
+                "block_n": 64,
                 "num_warps": 4,
-                "num_stages": 2
+                "num_stages": 1
               },
               "qkv_launch": {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 32,
-                "num_warps": 4
+                "block_m": 128,
+                "block_n": 128,
+                "block_k": 16,
+                "num_warps": 8
               },
               "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 2,
-                "num_warps": 2
+                "block_rows": 8,
+                "num_warps": 4
               },
               "initial_norm_launch": {
-                "block_rows": 2,
-                "num_warps": 2
+                "block_rows": 8,
+                "num_warps": 1
               },
               "ffn_launch": null,
               "ffn_input_launch": null,
               "compile_mode": null,
               "batch_tile_size": null,
               "microbatch_size": null,
-              "reuse_unchanged_input": false
+              "reuse_unchanged_input": true
             }
           }
         },
@@ -557,37 +569,40 @@
           "config": {
             "schema_version": 4,
             "program": {
-              "attention": "causal_sdpa",
+              "attention": "fp16_efficient_sdpa",
               "qkv_projection": "fp16_shadow",
               "attention_output_projection": "fp16_shadow",
               "ffn_input_projection": "fp16_shadow",
               "ffn_output_projection": "fp16_shadow",
               "precision_plan": "fp16_core",
               "qkv_materialization": "triton_native_bhsd",
-              "attention_output_bridge": "torch_bhsd_to_bsd",
+              "attention_output_bridge": "triton_bhsd_projection",
               "ffn": "triton_linear_exact_gelu",
-              "residual_norm": "triton_mixed",
-              "initial_norm": "torch"
+              "residual_norm": "triton_linear_mixed",
+              "initial_norm": "triton_fp16"
             },
             "schedule": {
               "runtime": "cuda_graph",
               "attention_launch": null,
               "qkv_launch": {
-                "block_m": 32,
-                "block_n": 16,
+                "block_m": 64,
+                "block_n": 64,
                 "block_k": 32,
                 "num_warps": 4
               },
               "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 4,
+                "block_rows": 16,
+                "num_warps": 4
+              },
+              "initial_norm_launch": {
+                "block_rows": 2,
                 "num_warps": 2
               },
-              "initial_norm_launch": null,
               "ffn_launch": null,
               "ffn_input_launch": {
                 "block_m": 64,
-                "block_n": 32,
+                "block_n": 64,
                 "block_k": 32,
                 "num_warps": 4,
                 "num_stages": 2

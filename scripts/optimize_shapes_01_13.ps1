@@ -2,6 +2,7 @@
 param(
     [string]$Device = 'cuda:0',
     [int]$Seed = 1234,
+    [int]$StructureSeed = 1234,
     [double]$BudgetSecondsPerShape = 180,
     [int]$MaxNewTrialsPerShape = 96,
     [int]$MaxIterations = 4,
@@ -16,10 +17,15 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $cli = Join-Path $projectRoot 'cli.py'
+$effectiveStructureSeed = if ($PSBoundParameters.ContainsKey('StructureSeed')) {
+    $StructureSeed
+} else {
+    $Seed
+}
 
-# One foreground, serial optimization run for Shapes 01-13. The 96-Trial cap is
-# above the initial structure-coverage requirement and leaves room for eta=2
-# racing plus branch-local TPE. Wall time remains the primary budget.
+# One foreground, serial optimization run for Shapes 01-13. Each generated
+# structure gets one witness; most remaining Trials activate branch-local TPE,
+# while a small exploration floor revisits least-sampled alternatives.
 & $python $cli optimize `
     --group resident `
     --device $Device `
@@ -28,6 +34,7 @@ $cli = Join-Path $projectRoot 'cli.py'
     --max-iterations $MaxIterations `
     --no-deployment-patience $NoDeploymentPatience `
     --seed $Seed `
+    --structure-seed $effectiveStructureSeed `
     --dtype float32 `
     --padding-ratio 0 `
     --input-scale 1

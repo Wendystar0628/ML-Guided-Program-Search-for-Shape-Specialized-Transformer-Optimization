@@ -250,10 +250,15 @@ class SearchSweepRequest:
     budget_seconds: float = 900.0
     max_trials: int | None = None
     seed: int = 1234
+    structure_seed: int | None = None
     variant: RunVariant = field(default_factory=RunVariant)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scope", ImplementationScope(self.scope))
+        structure_seed = self.seed if self.structure_seed is None else self.structure_seed
+        if isinstance(structure_seed, bool) or not isinstance(structure_seed, int):
+            raise TypeError("structure_seed must be an integer")
+        object.__setattr__(self, "structure_seed", structure_seed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +476,7 @@ class SearchSweep:
                     ),
                 ),
                 seed=request.seed,
+                structure_seed=request.structure_seed,
                 incumbent=incumbent,
             )
             search_plan = engine.plan(search_request)

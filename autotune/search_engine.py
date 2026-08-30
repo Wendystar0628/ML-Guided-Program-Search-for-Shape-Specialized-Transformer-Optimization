@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from optuna.study import Study
 from optuna.trial import TrialState
 
-from solution.config import ConfigSpec, portable_streamed_config
+from solution.config import ConfigSpec
 
 from .evaluation import (
     ConstraintVector,
@@ -83,6 +83,7 @@ class SearchRequest:
     promotion_identity: str
     budget: SearchBudget
     seed: int = 1234
+    structure_seed: int | None = None
     incumbent: ConfigSpec | None = None
     warm_starts: tuple[ConfigSpec, ...] = ()
 
@@ -101,6 +102,10 @@ class SearchRequest:
             raise TypeError("budget must be SearchBudget")
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise TypeError("seed must be an integer")
+        structure_seed = self.seed if self.structure_seed is None else self.structure_seed
+        if isinstance(structure_seed, bool) or not isinstance(structure_seed, int):
+            raise TypeError("structure_seed must be an integer")
+        object.__setattr__(self, "structure_seed", structure_seed)
         if self.incumbent is not None and not isinstance(self.incumbent, ConfigSpec):
             raise TypeError("incumbent must be ConfigSpec or None")
         starts = tuple(self.warm_starts)
@@ -167,13 +172,14 @@ class SearchResult:
     best_screen_median_ms: float | None = None
     screen_failure_counts: tuple[tuple[str, int], ...] = ()
     level1_space_exhausted: bool = False
-    halving_rungs: int = 0
-    halving_pruned_branches: int = 0
-    halving_active_branches: int = 0
+    selection_rounds: int = 0
+    pruned_branches: int = 0
+    active_branches: int = 0
     stage_timings: SearchStageTimings = field(default_factory=SearchStageTimings)
     budget_seconds: float = 0.0
     covered_branches: int = 0
     mandatory_coverage_complete: bool = False
+    scheduler_algorithm: str = "fixed_budget_survivor_tpe"
 
     def __post_init__(self) -> None:
         formal = self.formal_challenger_measurement
@@ -202,9 +208,9 @@ class SearchResult:
         if self.new_level1_trials < 0:
             raise ValueError("new_level1_trials must not be negative")
         for name in (
-            "halving_rungs",
-            "halving_pruned_branches",
-            "halving_active_branches",
+            "selection_rounds",
+            "pruned_branches",
+            "active_branches",
             "covered_branches",
         ):
             value = getattr(self, name)
@@ -224,6 +230,8 @@ class SearchResult:
         object.__setattr__(self, "budget_seconds", float(self.budget_seconds))
         if not isinstance(self.mandatory_coverage_complete, bool):
             raise TypeError("mandatory_coverage_complete must be a boolean")
+        if not self.scheduler_algorithm:
+            raise ValueError("scheduler_algorithm must not be empty")
         if not 0 <= self.feasible_level1 <= self.completed_level1:
             raise ValueError("feasible_level1 must be within completed_level1")
         if self.best_screen_median_ms is not None and (
@@ -288,11 +296,10 @@ class _BudgetState:
 class _RunState:
     studies: dict[str, Study]
     budget: _BudgetState = field(default_factory=_BudgetState)
-    halving_rungs: int = 0
-    halving_pruned_branches: int = 0
+    selection_rounds: int = 0
+    pruned_branches: int = 0
 
 
-_HALVING_ETA = 2
 _SCREEN_EVALUATION_SECONDS = "screen_evaluation_seconds"
 
 
@@ -307,30 +314,6 @@ def _unique_configs(configs: list[ConfigSpec]) -> tuple[ConfigSpec, ...]:
     return tuple(values)
 
 
-def _unseen_branches(
-    plan: SearchPlan,
-    state: _RunState,
-    backend: OptunaBackend,
-) -> tuple[BranchSpace, ...]:
-    """Return branches with at least one terminal configuration still unmeasured."""
-
-    return tuple(
-        branch
-        for branch in plan.search_space.branches
-        if len(
-            backend.terminal_config_ids(
-                state.studies[branch.branch_id],
-                branch,
-            )
-        )
-        < branch.cardinality
-    )
-
-
-def _screening_trial_target(branch: BranchSpace) -> int:
-    return min(3, branch.cardinality)
-
-
 def _completed_config_ids(
     backend: OptunaBackend,
     study: Study,
@@ -340,27 +323,6 @@ def _completed_config_ids(
         completed.config.config_id
         for completed in backend.completed_trials(study, branch)
     }
-
-
-def _branch_screen_seconds(
-    backend: OptunaBackend,
-    study: Study,
-    branch: BranchSpace,
-) -> float:
-    """Return persisted wall time for compatible Screen observations."""
-
-    total = 0.0
-    for completed in backend.completed_trials(study, branch):
-        measurement = completed.measurement
-        raw_cost = measurement.metrics.get(_SCREEN_EVALUATION_SECONDS)
-        if (
-            not isinstance(raw_cost, bool)
-            and isinstance(raw_cost, (int, float))
-            and math.isfinite(float(raw_cost))
-            and float(raw_cost) > 0.0
-        ):
-            total += float(raw_cost)
-    return total
 
 
 def _branch_rank(
@@ -381,6 +343,67 @@ def _branch_rank(
     # best observed median preserves TPE's objective without inventing a future
     # improvement curve from sparse branch history.
     return (0, min(latencies), branch.branch_id)
+
+
+def _survivor_capacity(
+    ranked: tuple[BranchSpace, ...],
+    completed_counts: dict[str, int],
+    remaining_trials: int,
+) -> int:
+    """Return the largest ranked prefix that can reach one guided TPE ask."""
+
+    if remaining_trials < 0:
+        raise ValueError("remaining_trials must be non-negative")
+    spent = 0
+    survivors = 0
+    for branch in ranked:
+        target = min(branch.cardinality, startup_trial_count(branch) + 1)
+        spent += max(0, target - completed_counts.get(branch.branch_id, 0))
+        if spent > remaining_trials:
+            break
+        survivors += 1
+    return survivors
+
+
+def _survivor_allocation(
+    ranked: tuple[BranchSpace, ...],
+    completed_counts: dict[str, int],
+    remaining_trials: int,
+) -> tuple[int, int]:
+    """Split a fixed budget between guided survivors and branch exploration."""
+
+    if remaining_trials <= 0 or not ranked:
+        return 0, 0
+    full_capacity = _survivor_capacity(
+        ranked,
+        completed_counts,
+        remaining_trials,
+    )
+    raw_exploration = max(1, remaining_trials // 10)
+    best = (0, 0)
+    survivor_cost = 0
+    for count, branch in enumerate(ranked, start=1):
+        target = min(branch.cardinality, startup_trial_count(branch) + 1)
+        survivor_cost += max(
+            0,
+            target - completed_counts.get(branch.branch_id, 0),
+        )
+        explorable = sum(
+            completed_counts.get(item.branch_id, 0) < item.cardinality
+            for item in ranked[count:]
+        )
+        exploration = min(raw_exploration, explorable)
+        if survivor_cost + exploration <= remaining_trials:
+            best = (count, exploration)
+    if best[0] > 0:
+        return best
+    if full_capacity > 0:
+        return full_capacity, 0
+    explorable = sum(
+        completed_counts.get(branch.branch_id, 0) < branch.cardinality
+        for branch in ranked
+    )
+    return 0, min(remaining_trials, explorable)
 
 
 def _screen_failure_kind(measurement: TrialMeasurement) -> str:
@@ -443,7 +466,7 @@ class SearchEngine:
                 context=context,
                 max_branches=request.budget.max_structure_branches,
                 required_configs=required_configs,
-                seed=request.seed,
+                seed=request.structure_seed,
             )
         identities = tuple(
             StudyIdentity(
@@ -481,7 +504,6 @@ class SearchEngine:
             planning_seconds = time.perf_counter() - planning_started
         start = time.monotonic()
         budget = request.budget
-        screen_deadline = start + float(budget.max_seconds) * 0.20
         level1_deadline = start + float(budget.max_seconds) * 0.65
         enhanced_deadline = start + float(budget.max_seconds) * 0.82
         final_deadline = start + float(budget.max_seconds)
@@ -500,42 +522,27 @@ class SearchEngine:
             screen_started = time.perf_counter()
             try:
                 self._enqueue_initial_configs(plan, run_state, backend)
-                historical_promotions = self._select_promotions(
-                    plan,
-                    run_state,
-                    backend,
-                )
-                has_historical_promotions = bool(historical_promotions)
-                new_trials_before = run_state.budget.new_level1_trials
-
                 screen_complete = self._screen_structures(
                     plan,
                     run_state,
                     backend,
-                    deadline=screen_deadline,
+                    deadline=level1_deadline,
                 )
-                fresh_deadline = (
-                    screen_deadline if has_historical_promotions else level1_deadline
-                )
-
-                if (
-                    _unseen_branches(plan, run_state, backend)
-                    and run_state.budget.new_level1_trials == new_trials_before
-                ):
-                    self._force_one_new_level1(
-                        plan,
-                        run_state,
-                        backend,
-                        deadline=fresh_deadline,
-                    )
-
-                if time.monotonic() < fresh_deadline:
-                    active = self._run_successive_halving(
-                        plan,
-                        run_state,
-                        backend,
-                        deadline=fresh_deadline,
-                    )
+                if screen_complete and time.monotonic() < level1_deadline:
+                    if request.scope is EvaluationScope.STREAMED:
+                        active = self._run_streamed_enumeration(
+                            plan,
+                            run_state,
+                            backend,
+                            deadline=level1_deadline,
+                        )
+                    else:
+                        active = self._run_survivor_tpe(
+                            plan,
+                            run_state,
+                            backend,
+                            deadline=level1_deadline,
+                        )
 
                 ranked_screen = self._ranked_level1(
                     run_state,
@@ -549,14 +556,14 @@ class SearchEngine:
                 )
             finally:
                 screen_seconds = time.perf_counter() - screen_started
-            if not ranked_screen:
+            if not screen_complete:
                 selected_config = None
                 selected_measurement = None
-                stop_reason = (
-                    "no_feasible_screen"
-                    if screen_complete
-                    else "insufficient_screen_budget"
-                )
+                stop_reason = "insufficient_screen_budget"
+            elif not ranked_screen:
+                selected_config = None
+                selected_measurement = None
+                stop_reason = "no_feasible_screen"
             else:
                 enhanced_started = time.perf_counter()
                 try:
@@ -683,9 +690,9 @@ class SearchEngine:
             best_screen_median_ms=best_screen_median_ms,
             screen_failure_counts=screen_failure_counts,
             level1_space_exhausted=level1_space_exhausted,
-            halving_rungs=run_state.halving_rungs,
-            halving_pruned_branches=run_state.halving_pruned_branches,
-            halving_active_branches=len(active),
+            selection_rounds=run_state.selection_rounds,
+            pruned_branches=run_state.pruned_branches,
+            active_branches=len(active),
             stage_timings=SearchStageTimings(
                 planning=planning_seconds,
                 screen=screen_seconds,
@@ -696,6 +703,11 @@ class SearchEngine:
             budget_seconds=budget.max_seconds,
             covered_branches=covered_branches,
             mandatory_coverage_complete=screen_complete,
+            scheduler_algorithm=(
+                "streamed_no_replacement"
+                if request.scope is EvaluationScope.STREAMED
+                else "fixed_budget_survivor_tpe"
+            ),
         )
 
     @staticmethod
@@ -758,11 +770,11 @@ class SearchEngine:
         backend: OptunaBackend,
     ) -> None:
         request = plan.request
-        seeds: list[tuple[str, ConfigSpec]] = []
         if request.scope is EvaluationScope.STREAMED:
-            seeds.append(
-                ("portable_streamed", portable_streamed_config(microbatch_size=1))
-            )
+            # Shape 14 uses an explicit persistent no-replacement sequence.
+            # Pending Optuna queues would obscure which finite point is next.
+            return
+        seeds: list[tuple[str, ConfigSpec]] = []
         if request.incumbent is not None:
             seeds.append(("incumbent", request.incumbent))
         seeds.extend(("warm_start", config) for config in request.warm_starts)
@@ -787,15 +799,19 @@ class SearchEngine:
         *,
         deadline: float,
     ) -> bool:
-        mandatory = [
-            branch
-            for branch in plan.search_space.branches
-            if branch.branch_id in plan.search_space.mandatory_branch_ids
-        ]
+        branches = (
+            tuple(
+                branch
+                for branch in plan.search_space.branches
+                if branch.branch_id in plan.search_space.mandatory_branch_ids
+            )
+            if plan.request.scope is EvaluationScope.STREAMED
+            else plan.search_space.branches
+        )
         coverage_complete = True
-        for branch in mandatory:
+        for branch in branches:
             study = state.studies[branch.branch_id]
-            target = _screening_trial_target(branch)
+            target = 1
             completed_ids = _completed_config_ids(backend, study, branch)
             while len(completed_ids) < target:
                 if not state.budget.can_start(
@@ -804,7 +820,16 @@ class SearchEngine:
                 ):
                     return False
                 terminal_before = backend.terminal_config_ids(study, branch)
-                self._ask_and_measure(plan, state, backend, branch)
+                if plan.request.scope is EvaluationScope.STREAMED:
+                    self._record_streamed_unseen(
+                        plan,
+                        state,
+                        backend,
+                        branch,
+                        prefer_default=True,
+                    )
+                else:
+                    self._ask_and_measure(plan, state, backend, branch)
                 completed_ids = _completed_config_ids(backend, study, branch)
                 terminal_after = backend.terminal_config_ids(study, branch)
                 if terminal_after == terminal_before:
@@ -816,7 +841,7 @@ class SearchEngine:
                 coverage_complete = False
         return coverage_complete
 
-    def _run_successive_halving(
+    def _run_survivor_tpe(
         self,
         plan: SearchPlan,
         state: _RunState,
@@ -824,101 +849,156 @@ class SearchEngine:
         *,
         deadline: float,
     ) -> tuple[BranchSpace, ...]:
-        """Race branches in wall-time rungs and keep the fastest half."""
+        """Concentrate a fixed Trial budget until branch-local TPE is active."""
 
-        active = _unseen_branches(plan, state, backend)
-        if not active:
-            return ()
-
-        budget = plan.request.budget
-        remaining_seconds = max(0.0, deadline - time.monotonic())
-        planned_sizes: list[int] = []
-        size = len(active)
-        while True:
-            planned_sizes.append(size)
-            if size == 1:
-                break
-            size = math.ceil(size / _HALVING_ETA)
-        cost_units = sum(
-            rung_size * (_HALVING_ETA**rung)
-            for rung, rung_size in enumerate(planned_sizes)
-        )
-        base_quota_seconds = remaining_seconds / max(1, cost_units)
-
-        for rung, _ in enumerate(planned_sizes):
-            if not active or not state.budget.can_start(
-                deadline=deadline,
-                max_trials=budget.max_trials,
-            ):
-                break
-            quota_seconds = base_quota_seconds * (_HALVING_ETA**rung)
-            ordered = list(active)
-            random.Random(
-                f"{plan.request.seed}:{plan.request.case_id}:halving:{rung}"
-            ).shuffle(ordered)
-            progressed = False
-            complete_rung = True
-            stalled: set[str] = set()
-            for branch in ordered:
-                study = state.studies[branch.branch_id]
-                spent_seconds = 0.0
-                while spent_seconds < quota_seconds:
-                    if not state.budget.can_start(
-                        deadline=deadline,
-                        max_trials=budget.max_trials,
-                    ):
-                        complete_rung = False
-                        break
-                    cost_before = _branch_screen_seconds(backend, study, branch)
-                    started = time.monotonic()
-                    if not self._ask_and_measure(plan, state, backend, branch):
-                        stalled.add(branch.branch_id)
-                        break
-                    progressed = True
-                    cost_after = _branch_screen_seconds(backend, study, branch)
-                    measured_cost = cost_after - cost_before
-                    if measured_cost <= 0.0:
-                        measured_cost = max(time.monotonic() - started, 1e-9)
-                    spent_seconds += measured_cost
-                if not complete_rung:
-                    break
-            if stalled:
-                active = tuple(
-                    branch for branch in active if branch.branch_id not in stalled
-                )
-            if not progressed:
-                break
-            if not complete_rung:
-                # Partial rungs produce useful Trials but never eliminate a
-                # branch on unequal allocation. A later invocation starts a new
-                # race from all branches that still contain unseen configs.
-                break
-
-            state.halving_rungs += 1
-            ranked = sorted(
-                active,
+        ranked = tuple(
+            sorted(
+                plan.search_space.branches,
                 key=lambda branch: _branch_rank(
                     backend,
                     state.studies[branch.branch_id],
                     branch,
                 ),
             )
-            survivor_count = max(1, math.ceil(len(ranked) / _HALVING_ETA))
-            survivor_ids = {branch.branch_id for branch in ranked[:survivor_count]}
-            state.halving_pruned_branches += sum(
-                branch.branch_id not in survivor_ids
-                and len(
-                    backend.terminal_config_ids(
-                        state.studies[branch.branch_id],
-                        branch,
-                    )
+        )
+        if not ranked:
+            return ()
+        budget = plan.request.budget
+        counts = {
+            branch.branch_id: len(
+                _completed_config_ids(
+                    backend,
+                    state.studies[branch.branch_id],
+                    branch,
                 )
-                < branch.cardinality
-                for branch in ranked
             )
-            active = tuple(
+            for branch in ranked
+        }
+        exploration_trials = 0
+        if budget.max_trials is None:
+            survivor_count = len(ranked)
+        else:
+            remaining = max(0, budget.max_trials - state.budget.new_level1_trials)
+            survivor_count, exploration_trials = _survivor_allocation(
+                ranked,
+                counts,
+                remaining,
+            )
+        survivors = ranked[:survivor_count]
+        state.selection_rounds += 1
+        state.pruned_branches += len(ranked) - len(survivors)
+
+        def completed_count(branch: BranchSpace) -> int:
+            return len(
+                _completed_config_ids(
+                    backend,
+                    state.studies[branch.branch_id],
+                    branch,
+                )
+            )
+
+        def can_start() -> bool:
+            return state.budget.can_start(
+                deadline=deadline,
+                max_trials=budget.max_trials,
+            )
+
+        # First complete the startup set and one genuinely TPE-guided ask for
+        # every survivor.  The exploration reserve can never steal this budget.
+        while can_start():
+            pending = [
                 branch
-                for branch in ranked[:survivor_count]
+                for branch in survivors
+                if completed_count(branch)
+                < min(branch.cardinality, startup_trial_count(branch) + 1)
+            ]
+            if not pending:
+                break
+            progressed = False
+            for branch in pending:
+                if not can_start():
+                    break
+                progressed = self._ask_and_measure(
+                    plan,
+                    state,
+                    backend,
+                    branch,
+                ) or progressed
+            if not progressed:
+                break
+
+        # Preserve a small exploration floor so a noisy first witness cannot
+        # starve every non-survivor.  Each selected branch receives one point.
+        non_survivors = ranked[survivor_count:]
+        rank_index = {branch.branch_id: index for index, branch in enumerate(ranked)}
+        for _ in range(exploration_trials):
+            if not can_start():
+                break
+            eligible = [
+                branch
+                for branch in non_survivors
+                if completed_count(branch) < branch.cardinality
+            ]
+            if not eligible:
+                break
+            branch = min(
+                eligible,
+                key=lambda item: (
+                    completed_count(item),
+                    rank_index[item.branch_id],
+                ),
+            )
+            if not self._ask_and_measure(plan, state, backend, branch):
+                break
+
+        # Spend any budget left after the guaranteed exploitation/exploration
+        # split round-robin across the survivor set.
+        while can_start():
+            progressed = False
+            for branch in survivors:
+                if not can_start():
+                    break
+                progressed = self._ask_and_measure(
+                    plan,
+                    state,
+                    backend,
+                    branch,
+                ) or progressed
+            if not progressed:
+                break
+        return tuple(
+            branch
+            for branch in survivors
+            if len(backend.terminal_config_ids(state.studies[branch.branch_id], branch))
+            < branch.cardinality
+        )
+
+    def _run_streamed_enumeration(
+        self,
+        plan: SearchPlan,
+        state: _RunState,
+        backend: OptunaBackend,
+        *,
+        deadline: float,
+    ) -> tuple[BranchSpace, ...]:
+        """Enumerate the finite Shape 14 space without replacement."""
+
+        budget = plan.request.budget
+        candidates = tuple(
+            branch
+            for branch in plan.search_space.branches
+            if branch.branch_id in plan.search_space.mandatory_branch_ids
+        )
+        if not candidates:
+            return ()
+        state.selection_rounds += 1
+        while state.budget.can_start(
+            deadline=deadline,
+            max_trials=budget.max_trials,
+        ):
+            remaining = [
+                branch
+                for branch in candidates
                 if len(
                     backend.terminal_config_ids(
                         state.studies[branch.branch_id],
@@ -926,45 +1006,90 @@ class SearchEngine:
                     )
                 )
                 < branch.cardinality
+            ]
+            if not remaining:
+                break
+            branch = min(
+                remaining,
+                key=lambda item: (
+                    len(
+                        backend.terminal_config_ids(
+                            state.studies[item.branch_id],
+                            item,
+                        )
+                    ),
+                    candidates.index(item),
+                ),
             )
-        return active
+            if not self._record_streamed_unseen(
+                plan,
+                state,
+                backend,
+                branch,
+            ):
+                break
+        return tuple(
+            branch
+            for branch in candidates
+            if len(backend.terminal_config_ids(state.studies[branch.branch_id], branch))
+            < branch.cardinality
+        )
 
-    def _force_one_new_level1(
+    def _record_streamed_unseen(
         self,
         plan: SearchPlan,
         state: _RunState,
         backend: OptunaBackend,
+        branch: BranchSpace,
         *,
-        deadline: float,
+        prefer_default: bool = False,
     ) -> bool:
-        """Measure one least-sampled unseen branch before history-based pruning."""
+        """Measure one deterministic point and persist retryable failures."""
 
-        if not state.budget.can_start(
-            deadline=deadline,
-            max_trials=plan.request.budget.max_trials,
-        ):
+        study = state.studies[branch.branch_id]
+        seen = backend.terminal_config_ids(study, branch)
+        if len(seen) >= branch.cardinality:
             return False
-
-        branches = _unseen_branches(plan, state, backend)
-        if not branches:
-            return False
-
-        def terminal_count(branch: BranchSpace) -> int:
-            return len(
-                backend.terminal_config_ids(
-                    state.studies[branch.branch_id],
-                    branch,
-                )
-            )
-
-        branch = min(
-            branches,
-            key=lambda item: (terminal_count(item), item.branch_id),
+        candidates = list(range(branch.cardinality))
+        random.Random(
+            f"{plan.request.structure_seed}:{branch.branch_id}:streamed"
+        ).shuffle(candidates)
+        if prefer_default:
+            default_index = branch.index_for(branch.default_config())
+            if default_index is not None:
+                candidates.remove(default_index)
+                candidates.insert(0, default_index)
+        config = next(
+            (
+                branch.config_at(index)
+                for index in candidates
+                if branch.config_at(index).config_id not in seen
+            ),
+            None,
         )
-        terminal_before = terminal_count(branch)
-        if not self._ask_and_measure(plan, state, backend, branch):
+        if config is None:
             return False
-        return terminal_count(branch) > terminal_before
+        try:
+            measurement = self._measure_screen(plan.request, config)
+            backend.record_completed(
+                study,
+                branch,
+                config,
+                measurement,
+                source="streamed_no_replacement",
+            )
+            return True
+        except Exception as exc:
+            backend.record_generated_infrastructure_failure(
+                study,
+                branch,
+                config,
+                exc,
+                source="streamed_no_replacement",
+            )
+            raise
+        finally:
+            state.budget.new_level1_trials += 1
 
     def _ask_and_measure(
         self,

@@ -564,6 +564,8 @@ class BranchSpace:
         if (
             self.structure.attention_output_bridge
             is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+            and self.structure.residual_norm
+            is not ResidualNormBackend.TRITON_LINEAR_MIXED
         ):
             block_m, block_n, block_k = _decode_gemm_tile(
                 parameters["attention_output_gemm_tile"]
@@ -580,6 +582,7 @@ class BranchSpace:
         if self.structure.residual_norm in {
             ResidualNormBackend.TRITON,
             ResidualNormBackend.TRITON_MIXED,
+            ResidualNormBackend.TRITON_LINEAR_MIXED,
         }:
             residual_launch = TritonNormParams(
                 block_rows=int(parameters["residual_block_rows"]),
@@ -749,6 +752,8 @@ def _domains_for_structure(
         require_attention_output_shadow=(
             structure.attention_output_bridge
             is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+            or structure.residual_norm
+            is ResidualNormBackend.TRITON_LINEAR_MIXED
         ),
         require_ffn_input_shadow=(
             structure.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU
@@ -756,6 +761,8 @@ def _domains_for_structure(
         ),
         require_ffn_output_shadow=(
             structure.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU
+            or structure.residual_norm
+            is ResidualNormBackend.TRITON_LINEAR_MIXED
         ),
     )
     domains: list[ParameterDomain] = [
@@ -813,6 +820,8 @@ def _domains_for_structure(
     if (
         structure.attention_output_bridge
         is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+        and structure.residual_norm
+        is not ResidualNormBackend.TRITON_LINEAR_MIXED
     ):
         tile_choices = _gemm_tile_choices(
             output_width=model_width,
@@ -874,13 +883,22 @@ def _domains_for_structure(
     if structure.residual_norm in {
         ResidualNormBackend.TRITON,
         ResidualNormBackend.TRITON_MIXED,
+        ResidualNormBackend.TRITON_LINEAR_MIXED,
     }:
+        if structure.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED:
+            norm_rows = (16, 32, 64) if model_width == 32 else (16, 32)
+            norm_warps = (2, 4) if model_width == 32 else (4, 8)
         domains.extend(
             (
                 ParameterDomain(
                     "residual_block_rows",
                     norm_rows,
                     (
+                        32
+                        if structure.residual_norm
+                        is ResidualNormBackend.TRITON_LINEAR_MIXED
+                        and model_width == 32
+                        else
                         4
                         if model_width == 32 and 16 in norm_rows
                         else 2
@@ -891,7 +909,13 @@ def _domains_for_structure(
                 ParameterDomain(
                     "residual_num_warps",
                     norm_warps,
-                    4 if model_width in {32, 1024} else 2,
+                    (
+                        4
+                        if structure.residual_norm
+                        is ResidualNormBackend.TRITON_LINEAR_MIXED
+                        or model_width in {32, 1024}
+                        else 2
+                    ),
                 ),
             )
         )
@@ -995,6 +1019,17 @@ def _search_structure_supported(
     structure: StructureSpec,
     context: SearchContext,
 ) -> bool:
+    if structure.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED:
+        execution = context.execution_context
+        return bool(
+            not execution.has_valid_token_mask
+            and execution.d_model in {32, 128}
+            and execution.ffn_dim == execution.d_model
+            and structure.precision_plan is PrecisionPlan.FP16_CORE
+            and structure.ffn is not FFNBackend.COMPILED
+            and structure.runtime is not RuntimeBackend.COMPILED_FORWARD
+            and getattr(context.hardware, "triton_linear_residual_norm", False)
+        )
     if structure.attention is not AttentionBackend.FP16_CUDNN_SDPA:
         return True
     return (
@@ -1126,9 +1161,22 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             and precision_plan is not PrecisionPlan.FP16_CORE
         ):
             continue
+        if residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED and (
+            precision_plan is not PrecisionPlan.FP16_CORE
+            or ffn is FFNBackend.COMPILED
+            or runtime is RuntimeBackend.COMPILED_FORWARD
+            or execution.has_valid_token_mask
+            or execution.d_model not in {32, 128}
+            or execution.ffn_dim != execution.d_model
+        ):
+            continue
         if initial_norm is InitialNormBackend.TRITON_FP16 and (
             precision_plan is not PrecisionPlan.FP16_CORE
-            or residual_norm is not ResidualNormBackend.TRITON_MIXED
+            or residual_norm
+            not in {
+                ResidualNormBackend.TRITON_MIXED,
+                ResidualNormBackend.TRITON_LINEAR_MIXED,
+            }
         ):
             continue
         if ffn is FFNBackend.COMPILED and runtime is RuntimeBackend.COMPILED_FORWARD:
@@ -1147,6 +1195,18 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             attention,
             context,
         ):
+            if residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED:
+                direct_output = attention in {
+                    AttentionBackend.TRITON_SHAPE13,
+                    AttentionBackend.TRITON_DH8,
+                }
+                required_bridge = (
+                    AttentionOutputBridge.ATTENTION_DIRECT_BSD
+                    if direct_output
+                    else AttentionOutputBridge.TRITON_BHSD_PROJECTION
+                )
+                if attention_output_bridge is not required_bridge:
+                    continue
             if (
                 attention_output_bridge is AttentionOutputBridge.TRITON_BHSD_PROJECTION
                 and (

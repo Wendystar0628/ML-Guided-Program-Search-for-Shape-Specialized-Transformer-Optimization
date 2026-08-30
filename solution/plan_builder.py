@@ -23,6 +23,7 @@ from .kernels.attention import (
     triton_dh8_causal_attention_available,
     triton_shape13_causal_attention_available,
 )
+from .kernels.boundary import triton_linear_residual_norm_available
 from .kernels.ffn import (
     triton_exact_gelu_available,
     triton_linear_exact_gelu_available,
@@ -140,6 +141,7 @@ class HardwareCapabilities:
     triton_linear_exact_gelu: bool = False
     triton_d32_residual_norm: bool = False
     triton_masked_norm: bool = False
+    triton_linear_residual_norm: bool = False
 
     @classmethod
     def detect(cls, device: torch.device) -> HardwareCapabilities:
@@ -187,6 +189,7 @@ class HardwareCapabilities:
             triton_linear_exact_gelu=triton_linear_exact_gelu_available(),
             triton_d32_residual_norm=(triton_d32_residual_layer_norm_available()),
             triton_masked_norm=triton_masked_layer_norm_available(),
+            triton_linear_residual_norm=(triton_linear_residual_norm_available()),
         )
 
 
@@ -655,6 +658,15 @@ class PlanBuilder:
                 "program.attention_output_bridge",
                 "selected attention produces BSD directly",
             )
+        if (
+            config.program.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED
+            and bridge is AttentionOutputBridge.TORCH_BHSD_TO_BSD
+        ):
+            reject(
+                "backend_incompatible",
+                "program.attention_output_bridge",
+                "fused Linear boundary requires a zero-copy Triton or direct BSD bridge",
+            )
         if bridge is not AttentionOutputBridge.TRITON_BHSD_PROJECTION:
             return
         if (
@@ -666,6 +678,26 @@ class PlanBuilder:
                 "program.attention_output_projection",
                 "Triton BHSD projection requires FP16 shadow weights",
             )
+        if config.program.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED:
+            if not hardware.triton_linear_residual_norm:
+                reject(
+                    "backend_unavailable",
+                    "program.attention_output_bridge",
+                    "Triton fused Linear residual-norm boundary is unavailable",
+                )
+            if context.d_model not in {32, 128}:
+                reject(
+                    "unsupported_shape",
+                    "program.attention_output_bridge",
+                    "fused Linear boundary supports D32 and D128",
+                )
+            if context.device.type != "cuda" or not context.inference:
+                reject(
+                    "requires_cuda_inference",
+                    "program.attention_output_bridge",
+                    "fused Linear boundary requires CUDA inference",
+                )
+            return
         if not hardware.triton_attention_output_projection:
             reject(
                 "backend_unavailable",
@@ -866,6 +898,67 @@ class PlanBuilder:
                     "compiled residual norm cannot be nested in compiled forward",
                 )
             return
+        if backend is ResidualNormBackend.TRITON_LINEAR_MIXED:
+            assert launch is not None
+            allowed_rows = {16, 32, 64} if context.d_model == 32 else {16, 32}
+            allowed_warps = {2, 4} if context.d_model == 32 else {4, 8}
+            if (
+                launch.block_rows not in allowed_rows
+                or launch.num_warps not in allowed_warps
+            ):
+                reject(
+                    "unsupported_launch_value",
+                    "schedule.residual_norm_launch",
+                    "fused Linear boundary launch is outside its D32/128 domain",
+                )
+            if not hardware.triton_linear_residual_norm:
+                reject(
+                    "backend_unavailable",
+                    "program.residual_norm",
+                    "Triton fused Linear residual-norm boundary is unavailable",
+                )
+            if context.has_valid_token_mask:
+                reject(
+                    "mask_not_supported",
+                    "program.residual_norm",
+                    "fused Linear boundary supports only all-valid inputs",
+                )
+            if context.d_model not in {32, 128} or context.ffn_dim != context.d_model:
+                reject(
+                    "unsupported_shape",
+                    "program.residual_norm",
+                    "fused Linear boundary requires D=FFN in {32,128}",
+                )
+            if config.program.precision_plan is not PrecisionPlan.FP16_CORE:
+                reject(
+                    "precision_incompatible",
+                    "program.precision_plan",
+                    "fused Linear boundary requires the full FP16 core plan",
+                )
+            if (
+                config.program.attention_output_projection
+                is not ProjectionBackend.FP16_SHADOW
+                or config.program.ffn_output_projection
+                is not ProjectionBackend.FP16_SHADOW
+            ):
+                reject(
+                    "backend_incompatible",
+                    "program.attention_output_projection",
+                    "fused Linear boundaries require FP16 shadow output weights",
+                )
+            if config.program.ffn is FFNBackend.COMPILED:
+                reject(
+                    "backend_incompatible",
+                    "program.ffn",
+                    "compiled FFN cannot expose its hidden tensor to boundary fusion",
+                )
+            if config.schedule.runtime is RuntimeBackend.COMPILED_FORWARD:
+                reject(
+                    "runtime_incompatible",
+                    "schedule.runtime",
+                    "fused Linear boundaries are not nested in compiled forward",
+                )
+            return
         exact_d32 = (
             not context.has_valid_token_mask
             and context.batch_size == 64
@@ -1003,7 +1096,10 @@ class PlanBuilder:
                 "program.precision_plan",
                 "Triton initial norm requires the full FP16 core plan",
             )
-        if config.program.residual_norm is not ResidualNormBackend.TRITON_MIXED:
+        if config.program.residual_norm not in {
+            ResidualNormBackend.TRITON_MIXED,
+            ResidualNormBackend.TRITON_LINEAR_MIXED,
+        }:
             reject(
                 "residual_norm_incompatible",
                 "program.residual_norm",

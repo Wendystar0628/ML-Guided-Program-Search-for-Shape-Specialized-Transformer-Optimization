@@ -76,6 +76,7 @@ class ResidualNormBackend(StrEnum):
     COMPILED = "compiled"
     TRITON = "triton"
     TRITON_MIXED = "triton_mixed"
+    TRITON_LINEAR_MIXED = "triton_linear_mixed"
 
 
 class InitialNormBackend(StrEnum):
@@ -703,6 +704,8 @@ class ConfigSpec:
         fused_output_projection = (
             self.program.attention_output_bridge
             is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+            and self.program.residual_norm
+            is not ResidualNormBackend.TRITON_LINEAR_MIXED
         )
         if fused_output_projection != (
             self.schedule.attention_output_projection_launch is not None
@@ -714,6 +717,7 @@ class ConfigSpec:
         triton_residual = self.program.residual_norm in {
             ResidualNormBackend.TRITON,
             ResidualNormBackend.TRITON_MIXED,
+            ResidualNormBackend.TRITON_LINEAR_MIXED,
         }
         if triton_residual != (self.schedule.residual_norm_launch is not None):
             raise ValueError(

@@ -47,6 +47,7 @@ def _request() -> SearchSweepRequest:
         case_ids=("official_01",),
         budget_seconds=1.0,
         seed=100,
+        structure_seed=777,
     )
 
 
@@ -63,6 +64,19 @@ def test_cli_exposes_only_deployment_patience() -> None:
     )
 
     assert args.no_deployment_patience == 3
+    seeded = parser.parse_args(
+        [
+            "optimize",
+            "--group",
+            "resident",
+            "--seed",
+            "100",
+            "--structure-seed",
+            "777",
+        ]
+    )
+    assert seeded.seed == 100
+    assert seeded.structure_seed == 777
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
@@ -93,9 +107,10 @@ def test_deployment_patience_allows_a_later_deployment() -> None:
     assert result.total_deployment_updates == 1
     assert result.no_deployment_streak == 0
     assert [request.seed for request in search.requests] == [100, 101]
+    assert [request.structure_seed for request in search.requests] == [777, 777]
 
 
-def test_no_deployment_patience_ignores_new_screen_evidence() -> None:
+def test_new_screen_evidence_resets_deployment_patience() -> None:
     search = _SearchSweep(
         [
             (0, ((False, True, False),)),
@@ -106,13 +121,14 @@ def test_no_deployment_patience_ignores_new_screen_evidence() -> None:
 
     result = OptimizationLoop(search).run(  # type: ignore[arg-type]
         _request(),
-        OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=4),
+        OptimizationLoopPolicy(no_deployment_patience=2, max_iterations=3),
     )
 
-    assert result.stop_reason == "no_deployment_patience"
-    assert result.iterations_run == 2
-    assert result.no_deployment_streak == 2
-    assert len(search.requests) == 2
+    assert result.stop_reason == "max_iterations"
+    assert result.iterations_run == 3
+    assert result.total_deployment_updates == 1
+    assert result.no_deployment_streak == 0
+    assert len(search.requests) == 3
 
 
 def test_failed_historical_formal_does_not_reset_deployment_patience() -> None:

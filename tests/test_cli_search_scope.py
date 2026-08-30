@@ -50,6 +50,7 @@ def test_default_search_database_is_partitioned_by_scope(
     logged = _run_log_request(request)
 
     assert logged["scope"] == scope.value
+    assert logged["structure_seed"] == request.structure_seed
     assert logged["study_database"] == str(expected_root / "search.sqlite3")
 
 

@@ -327,6 +327,80 @@ def test_program_search_space_prunes_cudnn_sdpa_above_head_dim_128() -> None:
     )
 
 
+@pytest.mark.parametrize("width", (32, 128))
+def test_linear_boundary_fusion_is_a_strict_searchable_structure(width: int) -> None:
+    context = replace(
+        _official07_context(),
+        d_model=width,
+        num_heads=4,
+        ffn_dim=width,
+    )
+    hardware = replace(
+        _cudnn_hardware(),
+        triton_linear_residual_norm=True,
+    )
+    program = ProgramConfig(
+        attention=AttentionBackend.CAUSAL_SDPA,
+        qkv_projection=ProjectionBackend.FP16_SHADOW,
+        attention_output_projection=ProjectionBackend.FP16_SHADOW,
+        ffn_input_projection=ProjectionBackend.FP16_SHADOW,
+        ffn_output_projection=ProjectionBackend.FP16_SHADOW,
+        precision_plan=PrecisionPlan.FP16_CORE,
+        qkv_materialization=QKVMaterialization.CONTIGUOUS,
+        attention_output_bridge=AttentionOutputBridge.TRITON_BHSD_PROJECTION,
+        ffn=FFNBackend.TORCH,
+        residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
+        initial_norm=InitialNormBackend.TORCH,
+    )
+    config = ConfigSpec(
+        program=program,
+        schedule=ScheduleConfig(
+            runtime=RuntimeBackend.EAGER,
+            residual_norm_launch=TritonNormParams(
+                block_rows=32 if width == 32 else 16,
+                num_warps=4,
+            ),
+        ),
+    )
+
+    plan = PlanBuilder().build(config, context, hardware)
+    assert plan.use_linear_boundary_fusion
+    assert plan.attention_output_projection_launch is None
+
+    invalid = ConfigSpec(
+        program=replace(
+            program,
+            attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+        ),
+        schedule=config.schedule,
+    )
+    rejection = PlanBuilder().evaluate(invalid, context, hardware)
+    assert not rejection.accepted
+    assert any(
+        violation.field == "program.attention_output_bridge"
+        and violation.code == "backend_incompatible"
+        for violation in rejection.violations
+    )
+
+    search_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=context,
+            scope="resident",
+            hardware=hardware,
+        ),
+        required_configs=(config,),
+    )
+    branch = search_space.branch_for(config)
+    assert branch is not None
+    assert branch.structure.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED
+    assert set(branch.parameter_names) >= {
+        "residual_block_rows",
+        "residual_num_warps",
+    }
+    assert "attention_output_gemm_tile" not in branch.parameter_names
+
+
 @pytest.mark.parametrize("precision_plan", tuple(PrecisionPlan))
 def test_precision_plans_bind_exactly_their_projection_roles(
     precision_plan: PrecisionPlan,
@@ -761,6 +835,66 @@ def test_fp16_core_projection_plan_has_a_real_cuda_execution_signature() -> None
     assert actual["attention_output_projection_compute_dtype"] == "float16"
     assert actual["ffn_input_projection_compute_dtype"] == "float16"
     assert actual["ffn_output_projection_compute_dtype"] == "float16"
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_linear_boundary_fusion_executes_both_transformer_boundaries() -> None:
+    model_config = TransformerConfig(
+        batch_size=2,
+        seq_len=17,
+        d_model=32,
+        num_heads=4,
+        ffn_dim=32,
+        num_layers=2,
+        causal=True,
+    )
+    reference = UserOptimizedTransformer(model_config).eval().cuda()
+    candidate = UserOptimizedTransformer(model_config).eval().cuda()
+    candidate.load_state_dict(reference.state_dict())
+    reference.configure_execution(
+        config=ConfigSpec(
+            program=_program(PrecisionPlan.INPUT_DTYPE),
+            schedule=ScheduleConfig(runtime=RuntimeBackend.EAGER),
+        )
+    )
+    fused_program = ProgramConfig(
+        attention=AttentionBackend.CAUSAL_SDPA,
+        qkv_projection=ProjectionBackend.FP16_SHADOW,
+        attention_output_projection=ProjectionBackend.FP16_SHADOW,
+        ffn_input_projection=ProjectionBackend.FP16_SHADOW,
+        ffn_output_projection=ProjectionBackend.FP16_SHADOW,
+        precision_plan=PrecisionPlan.FP16_CORE,
+        qkv_materialization=QKVMaterialization.CONTIGUOUS,
+        attention_output_bridge=AttentionOutputBridge.TRITON_BHSD_PROJECTION,
+        ffn=FFNBackend.TORCH,
+        residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
+        initial_norm=InitialNormBackend.TORCH,
+    )
+    candidate.configure_execution(
+        config=ConfigSpec(
+            program=fused_program,
+            schedule=ScheduleConfig(
+                runtime=RuntimeBackend.EAGER,
+                residual_norm_launch=TritonNormParams(16, 2),
+            ),
+        )
+    )
+    candidate.set_execution_observation(True)
+    value = torch.randn(2, 17, 32, device="cuda")
+    all_valid = torch.ones(2, 17, dtype=torch.bool, device="cuda")
+
+    with torch.inference_mode():
+        expected = reference(value, all_valid)
+        actual = candidate(value, all_valid)
+
+    accuracy = compare_outputs(expected, actual, rtol=0.02, atol=0.002)
+    description = candidate.describe_execution_path()
+    observed = description["observed_execution_signature"]
+    assert accuracy.passed
+    assert observed == description["expected_execution_signature"]
+    assert observed["residual_norm_backend"] == "triton_linear_mixed"
+    assert observed["residual_norm_calls"] == 4
 
 
 @pytest.mark.gpu

@@ -107,6 +107,30 @@ def test_infrastructure_failure_quarantines_only_on_the_third_attempt(
         ) is (attempt < 3)
 
 
+def test_generated_infrastructure_failure_uses_the_same_retry_limit(
+    tmp_path,
+) -> None:
+    backend, study, branch = _study(tmp_path)
+    config = branch.default_config()
+
+    for attempt in range(1, 4):
+        backend.record_generated_infrastructure_failure(
+            study,
+            branch,
+            config,
+            RuntimeError("streamed worker connection lost"),
+            source="streamed_no_replacement",
+        )
+        failed = study.get_trials(deepcopy=False, states=(TrialState.FAIL,))[-1]
+        assert failed.user_attrs["infrastructure_failure_attempt"] == attempt
+        assert failed.user_attrs["infrastructure_quarantined"] is (attempt == 3)
+        assert (config.config_id in backend.terminal_config_ids(study, branch)) is (
+            attempt == 3
+        )
+
+    assert not study.get_trials(deepcopy=False, states=(TrialState.COMPLETE,))
+
+
 def test_duplicate_proposal_failure_does_not_exclude_the_configuration(
     tmp_path,
 ) -> None:

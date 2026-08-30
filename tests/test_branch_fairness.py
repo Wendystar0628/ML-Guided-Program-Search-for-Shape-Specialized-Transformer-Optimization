@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import time
 from dataclasses import dataclass, replace
 
@@ -26,9 +25,9 @@ from autotune.search_engine import (
     SearchRequest,
     SearchStageTimings,
     _branch_rank,
-    _branch_screen_seconds,
-    _completed_config_ids,
     _RunState,
+    _survivor_allocation,
+    _survivor_capacity,
 )
 from autotune.search_space import BranchSpace, ParameterDomain, StructureSpec
 from autotune.study_storage import SearchStorage, StudyIdentity
@@ -220,7 +219,7 @@ def _plan(request: SearchRequest, branches: tuple[BranchSpace, ...]) -> SearchPl
     )
 
 
-def test_screening_reuses_history_and_reaches_three_unique_points(
+def test_screening_reuses_history_and_gives_every_branch_one_witness(
     tmp_path,
 ) -> None:
     branches = (
@@ -257,10 +256,10 @@ def test_screening_reuses_history_and_reaches_three_unique_points(
         backend,
         deadline=time.monotonic() + 30.0,
     )
-    assert state.budget.new_level1_trials == 5
+    assert state.budget.new_level1_trials == 1
     for branch in branches:
         completed = backend.completed_trials(studies[branch.branch_id], branch)
-        assert len({trial.config.config_id for trial in completed}) == 3
+        assert len({trial.config.config_id for trial in completed}) == 1
 
 
 def test_duplicate_tpe_proposal_uses_one_unseen_point_without_extra_budget(
@@ -467,30 +466,26 @@ def test_branch_rank_uses_best_measured_median_without_extrapolation(
     assert _branch_rank(backend, study, branch) == (0, 8.0, branch.branch_id)
 
 
-def test_branch_screen_seconds_uses_only_valid_persisted_costs(tmp_path) -> None:
-    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 6)))
-    backend = OptunaBackend(SearchStorage(tmp_path), seed=9)
-    study = backend.create_study(
-        StudyIdentity("cost", branch.branch_id, "test", "search-v1")
+def test_survivor_capacity_concentrates_budget_past_tpe_startup() -> None:
+    branches = (
+        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_ATTENTION_BRANCH, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_CORE, choices=tuple(range(1, 21))),
     )
-    costs: tuple[object, ...] = (1.0, 2.5, "invalid")
-    for index, cost in enumerate(costs):
-        config = branch.config_at(index)
-        backend.record_completed(
-            study,
-            branch,
-            config,
-            replace(
-                _measurement(config, float(index + 1)),
-                metrics={"screen_evaluation_seconds": cost},
-            ),
-            source="history",
-        )
+    counts = {branch.branch_id: 1 for branch in branches}
 
-    assert _branch_screen_seconds(backend, study, branch) == pytest.approx(3.5)
+    assert _survivor_capacity(branches, counts, remaining_trials=20) == 2
+    assert _survivor_capacity(branches, counts, remaining_trials=9) == 0
+    counts[branches[0].branch_id] = 11
+    assert _survivor_capacity(branches, counts, remaining_trials=20) == 3
+
+    counts = {branch.branch_id: 1 for branch in branches}
+    assert _survivor_allocation(branches, counts, remaining_trials=20) == (1, 2)
+    assert _survivor_allocation(branches, counts, remaining_trials=9) == (0, 4)
 
 
-def test_successive_halving_races_equal_cost_and_keeps_fastest_half(
+def test_survivor_scheduler_reaches_the_first_guided_trial(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -509,218 +504,69 @@ def test_successive_halving_races_equal_cost_and_keeps_fastest_half(
     )
     backend = OptunaBackend(engine.storage, seed=request.seed)
     studies = {
-        branch.branch_id: backend.create_study(plan.identity_for(branch.branch_id))
+        branch.branch_id: backend.create_study(
+            plan.identity_for(branch.branch_id),
+            n_startup_trials=startup_trial_count(branch),
+        )
         for branch in branches
     }
-    state = _RunState(studies=studies)
-    latency_by_branch = {
-        branch.branch_id: float(index + 1) for index, branch in enumerate(branches)
-    }
-    call_order: list[str] = []
-
-    def measure_once(
-        current_plan: SearchPlan,
-        current_state: _RunState,
-        current_backend: OptunaBackend,
-        branch: BranchSpace,
-    ) -> bool:
-        del current_plan
-        study = current_state.studies[branch.branch_id]
-        index = len(current_backend.completed_trials(study, branch))
-        config = branch.config_at(index)
-        measurement = replace(
-            _measurement(config, latency_by_branch[branch.branch_id]),
-            metrics={"screen_evaluation_seconds": 1.0},
-        )
-        current_backend.record_completed(
-            study,
-            branch,
-            config,
-            measurement,
-            source="test",
-        )
-        current_state.budget.new_level1_trials += 1
-        call_order.append(branch.branch_id)
-        return True
-
-    monkeypatch.setattr(engine, "_ask_and_measure", measure_once)
-
-    active = engine._run_successive_halving(
-        plan,
-        state,
-        backend,
-        deadline=time.monotonic() + 1.0,
-    )
-
-    assert active == (branches[0],)
-    assert state.halving_rungs == 3
-    assert state.halving_pruned_branches == 3
-    assert {call_order.count(branch.branch_id) for branch in branches[2:]} == {1}
-    assert call_order.count(branches[1].branch_id) == 2
-    assert call_order.count(branches[0].branch_id) == 3
-    expected_first_rung = [branch.branch_id for branch in branches]
-    random.Random(f"{request.seed}:{request.case_id}:halving:0").shuffle(
-        expected_first_rung
-    )
-    assert call_order[:4] == expected_first_rung
-
-
-def test_halving_pruning_is_local_to_one_search_invocation(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    branches = (
-        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 21))),
-        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 21))),
-    )
-    request = _request(max_trials=6)
-    plan = _plan(request, branches)
-    engine = SearchEngine(
-        storage=SearchStorage(tmp_path),
-        evaluator=_Evaluator(request.scope),
-        plan_builder=_PlanBuilder(),
-    )
-    backend = OptunaBackend(engine.storage, seed=request.seed)
-    studies = {
-        branch.branch_id: backend.create_study(plan.identity_for(branch.branch_id))
-        for branch in branches
-    }
-    calls: list[str] = []
-
-    def measure_once(
-        current_plan: SearchPlan,
-        current_state: _RunState,
-        current_backend: OptunaBackend,
-        branch: BranchSpace,
-    ) -> bool:
-        del current_plan
-        study = current_state.studies[branch.branch_id]
-        index = len(current_backend.completed_trials(study, branch))
-        config = branch.config_at(index)
-        latency = 1.0 if branch is branches[0] else 2.0
-        current_backend.record_completed(
-            study,
-            branch,
-            config,
-            replace(
-                _measurement(config, latency),
-                metrics={"screen_evaluation_seconds": 1.0},
-            ),
-            source="test",
-        )
-        current_state.budget.new_level1_trials += 1
-        calls.append(branch.branch_id)
-        return True
-
-    monkeypatch.setattr(engine, "_ask_and_measure", measure_once)
-    first = _RunState(studies=studies)
-    engine._run_successive_halving(
-        plan,
-        first,
-        backend,
-        deadline=time.monotonic() + 1.0,
-    )
-    first_run_calls = len(calls)
-
-    second = _RunState(studies=studies)
-    engine._run_successive_halving(
-        plan,
-        second,
-        backend,
-        deadline=time.monotonic() + 1.0,
-    )
-
-    assert set(calls[first_run_calls : first_run_calls + 2]) == {
-        branch.branch_id for branch in branches
-    }
-
-
-def test_historical_screening_first_new_pull_supplies_cost(tmp_path) -> None:
-    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 9)))
-    request = _request(max_trials=1)
-    plan = _plan(request, (branch,))
-    engine = SearchEngine(
-        storage=SearchStorage(tmp_path),
-        evaluator=_RecordingEvaluator(request.scope),
-        plan_builder=_PlanBuilder(),
-    )
-    backend = OptunaBackend(engine.storage, seed=request.seed)
-    study = backend.create_study(plan.identity_for(branch.branch_id))
-    for index in range(3):
-        config = branch.config_at(index)
+    for index, branch in enumerate(branches):
+        config = branch.default_config()
         backend.record_completed(
+            studies[branch.branch_id],
+            branch,
+            config,
+            _measurement(config, float(index + 1)),
+            source="witness",
+        )
+    state = _RunState(studies=studies)
+
+    def measure_once(
+        current_plan: SearchPlan,
+        current_state: _RunState,
+        current_backend: OptunaBackend,
+        branch: BranchSpace,
+    ) -> bool:
+        del current_plan
+        study = current_state.studies[branch.branch_id]
+        seen = current_backend.terminal_config_ids(study, branch)
+        config = next(
+            branch.config_at(index)
+            for index in range(branch.cardinality)
+            if branch.config_at(index).config_id not in seen
+        )
+        current_backend.record_completed(
             study,
             branch,
             config,
-            _measurement(config, float(10 - index)),
-            source="legacy_history",
+            _measurement(config, 1.0),
+            source="test",
         )
-    state = _RunState(studies={branch.branch_id: study})
+        current_state.budget.new_level1_trials += 1
+        return True
 
-    active = engine._run_successive_halving(
+    monkeypatch.setattr(engine, "_ask_and_measure", measure_once)
+
+    engine._run_survivor_tpe(
         plan,
         state,
         backend,
         deadline=time.monotonic() + 30.0,
     )
-    completed = sorted(
-        backend.completed_trials(study, branch),
-        key=lambda trial: trial.number,
-    )
-    assert active == (branch,)
-    assert state.budget.new_level1_trials == 1
-    assert len(completed) == 4
-    assert "screen_evaluation_seconds" not in completed[0].measurement.metrics
-    assert completed[-1].measurement.metrics["screen_evaluation_seconds"] > 0.0
-    assert _branch_screen_seconds(backend, study, branch) > 0.0
+
+    counts = [len(backend.completed_trials(studies[b.branch_id], b)) for b in branches]
+    assert counts[0] >= startup_trial_count(branches[0]) + 1
+    assert any(count > 1 for count in counts[1:])
+    assert sum(counts) == len(branches) + 20
+    assert state.budget.new_level1_trials == 20
+    assert state.selection_rounds == 1
+    assert state.pruned_branches == 3
 
 
 def test_invalid_constraint_history_uses_three_infeasible_dimensions() -> None:
     trial = create_trial(value=1.0, user_attrs={"constraints": "invalid"})
 
     assert _constraints_from_trial(trial) == (1.0, 1.0, 1.0)
-
-
-def test_no_feasible_single_branch_stops_when_its_space_is_exhausted(tmp_path) -> None:
-    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 17)))
-    request = _request(max_trials=20)
-    plan = _plan(request, (branch,))
-    engine = SearchEngine(
-        storage=SearchStorage(tmp_path),
-        evaluator=_InfeasibleEvaluator(request.scope),  # type: ignore[arg-type]
-        plan_builder=_PlanBuilder(),
-    )
-    backend = OptunaBackend(engine.storage, seed=request.seed)
-    study = backend.create_study(plan.identity_for(branch.branch_id))
-    for index in range(3):
-        config = branch.config_at(index)
-        backend.record_completed(
-            study,
-            branch,
-            config,
-            TrialMeasurement.infeasible(
-                config_id=config.config_id,
-                fidelity=Fidelity.SCREEN,
-                scope=request.scope,
-                penalty_ms=1_000_000_000.0,
-                constraints=ConstraintVector(runtime=1.0),
-                failure_kind="constraint_violation",
-            ),
-            source="history",
-        )
-    state = _RunState(studies={branch.branch_id: study})
-
-    active = engine._run_successive_halving(
-        plan,
-        state,
-        backend,
-        deadline=time.monotonic() + 30.0,
-    )
-
-    assert active == ()
-    assert state.budget.new_level1_trials == 13
-    assert len(_completed_config_ids(backend, study, branch)) == 16
-    assert engine._select_promotions(plan, state, backend) == ()
 
 
 def test_plan_keeps_unique_warm_start_branches(
@@ -824,7 +670,7 @@ def test_stage_timings_require_finite_non_negative_seconds(value: float) -> None
         SearchStageTimings(total=value)
 
 
-def test_partial_mandatory_screen_can_reach_formal_and_deployment(
+def test_partial_resident_coverage_persists_without_selection(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -860,10 +706,10 @@ def test_partial_mandatory_screen_can_reach_formal_and_deployment(
     backend = OptunaBackend(engine.storage, seed=request.seed)
     optional_study = backend.create_study(plan.identity_for(optional.branch_id))
     assert result.new_level1_trials == 1
-    assert result.stop_reason == "completed"
-    assert result.enhanced_measurements
-    assert result.formal_challenger_measurement is not None
-    assert result.deployment_approved
+    assert result.stop_reason == "insufficient_screen_budget"
+    assert not result.enhanced_measurements
+    assert result.formal_challenger_measurement is None
+    assert not result.deployment_approved
     assert engine.storage.attempted_challenger_ids(
         case_id=request.case_id,
         environment=request.environment,
@@ -873,7 +719,7 @@ def test_partial_mandatory_screen_can_reach_formal_and_deployment(
     assert backend.completed_trials(optional_study, optional) == ()
 
 
-def test_historical_challenger_cannot_block_one_new_screen_point(
+def test_small_budget_adds_a_real_exploration_point(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -902,6 +748,7 @@ def test_historical_challenger_cannot_block_one_new_screen_point(
     assert result.new_level1_trials == 1
     assert result.stop_reason == "completed"
     assert result.enhanced_measurements
+    assert len(backend.completed_trials(study, branch)) == 2
 
 
 def test_exhausted_space_can_close_history_without_new_screen_point(
@@ -971,76 +818,6 @@ def test_new_screen_point_can_outrank_historical_candidate(
         measurement.config_id == new_winner.config_id
         for measurement in result.enhanced_measurements
     )
-
-
-def test_forced_exploration_precedes_successive_halving(
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    exhausted_best = _branch(
-        PrecisionPlan.INPUT_DTYPE,
-        choices=tuple(range(1, 11)),
-    )
-    underexplored_loser = _branch(
-        PrecisionPlan.FP16_QKV_ATTENTION,
-        choices=tuple(range(1, 13)),
-    )
-    request = _request(max_trials=1)
-    plan = _plan(request, (exhausted_best, underexplored_loser))
-    engine = SearchEngine(
-        storage=SearchStorage(tmp_path),
-        evaluator=_Evaluator(request.scope),
-        plan_builder=_PlanBuilder(),
-    )
-    backend = OptunaBackend(engine.storage, seed=request.seed)
-    studies = {
-        branch.branch_id: backend.create_study(plan.identity_for(branch.branch_id))
-        for branch in plan.search_space.branches
-    }
-    for index in range(exhausted_best.cardinality):
-        config = exhausted_best.config_at(index)
-        backend.record_completed(
-            studies[exhausted_best.branch_id],
-            exhausted_best,
-            config,
-            _measurement(config, 1.0),
-            source="previous_pass",
-        )
-    for index in range(10):
-        config = underexplored_loser.config_at(index)
-        backend.record_completed(
-            studies[underexplored_loser.branch_id],
-            underexplored_loser,
-            config,
-            _measurement(config, 10.0),
-            source="previous_pass",
-        )
-    monkeypatch.setattr(engine, "plan", lambda _: plan)
-    original_halving = engine._run_successive_halving
-    trials_seen_at_halving: list[int] = []
-
-    def _record_halving(
-        current_plan: SearchPlan,
-        state: _RunState,
-        current_backend: OptunaBackend,
-        *,
-        deadline: float,
-    ) -> tuple[BranchSpace, ...]:
-        trials_seen_at_halving.append(state.budget.new_level1_trials)
-        return original_halving(
-            current_plan,
-            state,
-            current_backend,
-            deadline=deadline,
-        )
-
-    monkeypatch.setattr(engine, "_run_successive_halving", _record_halving)
-
-    result = engine.run(request)
-
-    assert result.new_level1_trials == 1
-    assert trials_seen_at_halving
-    assert trials_seen_at_halving[0] == 1
 
 
 def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(

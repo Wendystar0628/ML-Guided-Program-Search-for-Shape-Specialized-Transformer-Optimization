@@ -118,11 +118,15 @@ For Shape 14, one script invocation performs one bounded streamed search and at
 most one Formal challenger comparison. Time limits are soft because an
 already-started measurement is allowed to finish.
 
-The search uses persistent branch-local TPE to choose new programs and
-Successive Halving to allocate more Level-1 budget to promising branches. The
+Resident search gives every generated structure one Screen witness, then spends
+most of the remaining fixed Trial budget on the largest ranked survivor set
+that can cross TPE's startup threshold and receive guided proposals. About 10%
+is reserved for least-sampled alternatives so one noisy witness does not lock
+out a structure. Shape 14 instead
+enumerates its small, high-value finite space without replacement; the portable
+Reference implementation remains a fallback, not a performance challenger. The
 resident workflow additionally uses deployment-based early stopping across
-complete sweeps; Shape 14 uses one bounded batch per invocation because its
-Formal comparison dominates wall time. Re-running a script resumes the studies in
+complete sweeps. Re-running a script resumes the studies in
 `observations/search/resident/` or `observations/search/shape14/`; it does not
 start the search from zero.
 
@@ -146,6 +150,9 @@ opportunity instead of restarting the search.
 # Override a budget when needed (all other parameters keep their defaults)
 .\scripts\optimize_shapes_01_13.ps1 -BudgetSecondsPerShape 240 -MaxIterations 6
 .\scripts\optimize_shape_14.ps1 -BudgetSeconds 1200 -MaxNewTrials 12
+
+# Rotate the generated structure sample on a later outer optimization cycle
+.\scripts\optimize_shapes_01_13.ps1 -Seed 1235 -StructureSeed 1235
 
 # Inspect the GPU environment
 .\.venv\Scripts\python.exe cli.py probe --device cuda:0

@@ -58,6 +58,7 @@ def _search_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--budget-seconds", type=_positive_float, default=900.0)
     parser.add_argument("--max-trials", type=_positive_int)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument("--structure-seed", type=int)
     _variant_arguments(parser)
 
 
@@ -254,6 +255,7 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
         budget_seconds=args.budget_seconds,
         max_trials=args.max_trials,
         seed=args.seed,
+        structure_seed=args.structure_seed,
         variant=_variant(args),
     )
     target = (
@@ -317,6 +319,7 @@ def _run_log_request(
         "compute_capability": compute_capability,
         "variant": request.variant.to_dict(),
         "seed": request.seed,
+        "structure_seed": request.structure_seed,
         "budget_seconds_per_shape": request.budget_seconds,
         "max_trials_per_shape": request.max_trials,
         "study_database": str(storage_root / "search.sqlite3"),
@@ -358,6 +361,7 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         budget_seconds=args.budget_seconds,
         max_trials=args.max_trials,
         seed=args.seed,
+        structure_seed=args.structure_seed,
         variant=_variant(args),
     )
     log_request = _run_log_request(request, group=args.group)

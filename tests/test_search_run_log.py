@@ -133,7 +133,7 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
     assert shape_event["screen"]["new_trials"] == 3
     assert shape_event["screen"]["failure_counts_total"] == {"accuracy_constraint": 2}
     assert shape_event["screen"]["scheduler"]["algorithm"] == (
-        "cost_aware_successive_halving"
+        "fixed_budget_survivor_tpe"
     )
     assert shape_event["timing_seconds"] == {
         "planning": 0.1,

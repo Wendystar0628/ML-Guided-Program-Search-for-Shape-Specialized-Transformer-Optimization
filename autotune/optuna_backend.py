@@ -27,6 +27,33 @@ from .study_storage import SearchStorage, StudyIdentity
 _INFRASTRUCTURE_FAILURES_BEFORE_QUARANTINE = 3
 
 
+def _infrastructure_failure_attrs(
+    study: Study,
+    config: ConfigSpec,
+    error: BaseException,
+) -> dict[str, object]:
+    prior_failures = sum(
+        1
+        for frozen in study.get_trials(
+            deepcopy=False,
+            states=(TrialState.FAIL,),
+        )
+        if frozen.user_attrs.get("infrastructure_error") is not None
+        and frozen.user_attrs.get("config_id") == config.config_id
+    )
+    attempt = prior_failures + 1
+    return {
+        "config": config.to_dict(),
+        "config_id": config.config_id,
+        "infrastructure_error": type(error).__name__,
+        "infrastructure_message": str(error)[:1000],
+        "infrastructure_failure_attempt": attempt,
+        "infrastructure_quarantined": (
+            attempt >= _INFRASTRUCTURE_FAILURES_BEFORE_QUARANTINE
+        ),
+    }
+
+
 def _constraints_from_trial(trial: FrozenTrial) -> Sequence[float]:
     """Return finite constraints for Optuna's feasibility-aware TPE."""
 
@@ -288,26 +315,42 @@ class OptunaBackend:
     ) -> None:
         """Record an infrastructure failure without teaching TPE a fake score."""
 
-        prior_failures = sum(
-            1
-            for frozen in study.get_trials(
-                deepcopy=False,
-                states=(TrialState.FAIL,),
-            )
-            if frozen.user_attrs.get("infrastructure_error") is not None
-            and frozen.user_attrs.get("config_id") == config.config_id
-        )
-        attempt = prior_failures + 1
-        trial.set_user_attr("config", config.to_dict())
-        trial.set_user_attr("config_id", config.config_id)
-        trial.set_user_attr("infrastructure_error", type(error).__name__)
-        trial.set_user_attr("infrastructure_message", str(error)[:1000])
-        trial.set_user_attr("infrastructure_failure_attempt", attempt)
-        trial.set_user_attr(
-            "infrastructure_quarantined",
-            attempt >= _INFRASTRUCTURE_FAILURES_BEFORE_QUARANTINE,
-        )
+        for key, value in _infrastructure_failure_attrs(
+            study,
+            config,
+            error,
+        ).items():
+            trial.set_user_attr(key, value)
         study.tell(trial, state=TrialState.FAIL)
+
+    @staticmethod
+    def record_generated_infrastructure_failure(
+        study: Study,
+        branch: BranchSpace,
+        config: ConfigSpec,
+        error: BaseException,
+        *,
+        source: str,
+    ) -> None:
+        """Persist failure evidence for a deterministically generated candidate."""
+
+        parameters = branch.parameters_for(config)
+        if parameters is None:
+            raise ValueError("config does not belong to the branch")
+        distributions = {
+            domain.name: CategoricalDistribution(list(domain.choices))
+            for domain in branch.domains
+        }
+        attrs = _infrastructure_failure_attrs(study, config, error)
+        attrs["generated_source"] = source
+        study.add_trial(
+            optuna.trial.create_trial(
+                state=TrialState.FAIL,
+                params=parameters,
+                distributions=distributions,
+                user_attrs=attrs,
+            )
+        )
 
     @staticmethod
     def reject_duplicate(

@@ -2,6 +2,7 @@
 param(
     [string]$Device = 'cuda:0',
     [int]$Seed = 1234,
+    [int]$StructureSeed = 1234,
     [double]$BudgetSeconds = 900,
     [int]$MaxNewTrials = 12
 )
@@ -14,18 +15,23 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $cli = Join-Path $projectRoot 'cli.py'
+$effectiveStructureSeed = if ($PSBoundParameters.ContainsKey('StructureSeed')) {
+    $StructureSeed
+} else {
+    $Seed
+}
 
-# One invocation is one bounded search-to-deployment pass. Shape 14 has 36
-# Screen configurations; persistent studies let later invocations continue
-# from prior evidence without placing several expensive Formal comparisons in
-# one run. The 15-minute soft search budget plus one sequential Formal test is
-# designed to finish in roughly 20-27 minutes on the validated RTX 4080.
+# One invocation is one bounded search-to-deployment pass. Shape 14 persistently
+# enumerates 34 high-value Triton/native points without replacement; the very
+# slow Reference implementation is retained only as a fallback. One invocation
+# runs at most one sequential Formal comparison.
 & $python $cli search `
     --case-id official_14 `
     --device $Device `
     --budget-seconds $BudgetSeconds `
     --max-trials $MaxNewTrials `
     --seed $Seed `
+    --structure-seed $effectiveStructureSeed `
     --dtype float32 `
     --padding-ratio 0 `
     --input-scale 1
