@@ -44,7 +44,7 @@ autotune/
   search_engine.py          one-shape staged search
   search_sweep.py           one sweep across a shape group
   optimization_loop.py      repeated sweeps and convergence stopping
-  run_log.py                compact append-only search decision history
+  run_log.py                compact run timeline and deployment decisions
   evaluation.py             trial and promotion measurements
   optuna_backend.py         Optuna TPE adapter
   study_storage.py          local study identity and SQLite location
@@ -73,10 +73,22 @@ observations/
 ```
 
 `summary.json` is updated after every completed Shape and contains the ordered
-results plus the resident geometric-mean speedup. Search JSONL files retain only
-high-value milestones; detailed Optuna Trials remain in SQLite. These generated
-files are not committed. Deployed winners live in
-`deployment/deployed_configs.json`.
+benchmark results plus the resident geometric-mean speedup. Search persistence
+is intentionally layered:
+
+- `search.sqlite3` is the detailed evidence store. It retains complete Screen
+  Trials and reusable Enhanced measurements, including program configurations,
+  constraints, timing, memory, execution signatures, failures, and evidence
+  identities.
+- Each compact JSONL run log is the readable decision timeline. It records the
+  run ID, stage durations and budget overruns, structure coverage, compact
+  incumbent and challenger programs for Formal comparison, paired ratios, and
+  the explicit deployment outcome without duplicating every Trial.
+- `deployment/deployed_configs.json` is only the current exact-environment
+  deployment table consumed by `solution/`; it is not deployment history.
+
+These generated observation files are not committed. The deployment table is
+committed so the measured current winners remain available to the runtime.
 
 ## Setup
 

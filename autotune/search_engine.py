@@ -110,6 +110,29 @@ class SearchRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchStageTimings:
+    """Wall-clock seconds spent in the major search stages."""
+
+    planning: float = 0.0
+    screen: float = 0.0
+    enhanced: float = 0.0
+    formal: float = 0.0
+    total: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("planning", "screen", "enhanced", "formal", "total"):
+            value = getattr(self, name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0.0
+            ):
+                raise ValueError(f"{name} must be finite and non-negative")
+            object.__setattr__(self, name, float(value))
+
+
+@dataclass(frozen=True, slots=True)
 class SearchPlan:
     """Static plan-builder-pruned branches and their persistent Study identities."""
 
@@ -147,6 +170,10 @@ class SearchResult:
     halving_rungs: int = 0
     halving_pruned_branches: int = 0
     halving_active_branches: int = 0
+    stage_timings: SearchStageTimings = field(default_factory=SearchStageTimings)
+    budget_seconds: float = 0.0
+    covered_branches: int = 0
+    mandatory_coverage_complete: bool = False
 
     def __post_init__(self) -> None:
         formal = self.formal_challenger_measurement
@@ -178,10 +205,25 @@ class SearchResult:
             "halving_rungs",
             "halving_pruned_branches",
             "halving_active_branches",
+            "covered_branches",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        if self.covered_branches > self.branch_count:
+            raise ValueError("covered_branches must not exceed branch_count")
+        if not isinstance(self.stage_timings, SearchStageTimings):
+            raise TypeError("stage_timings must be SearchStageTimings")
+        if (
+            isinstance(self.budget_seconds, bool)
+            or not isinstance(self.budget_seconds, (int, float))
+            or not math.isfinite(self.budget_seconds)
+            or self.budget_seconds < 0.0
+        ):
+            raise ValueError("budget_seconds must be finite and non-negative")
+        object.__setattr__(self, "budget_seconds", float(self.budget_seconds))
+        if not isinstance(self.mandatory_coverage_complete, bool):
+            raise TypeError("mandatory_coverage_complete must be a boolean")
         if not 0 <= self.feasible_level1 <= self.completed_level1:
             raise ValueError("feasible_level1 must be within completed_level1")
         if self.best_screen_median_ms is not None and (
@@ -421,17 +463,22 @@ class SearchEngine:
     def run(self, request: SearchRequest) -> SearchResult:
         """Execute fair screening, adaptive TPE, and fidelity promotion."""
 
-        plan = self.plan(request)
-        backend = OptunaBackend(self.storage, seed=request.seed)
-        run_state = _RunState(
-            studies={
-                branch.branch_id: backend.create_study(
-                    plan.identity_for(branch.branch_id),
-                    n_startup_trials=startup_trial_count(branch),
-                )
-                for branch in plan.search_space.branches
-            }
-        )
+        total_started = time.perf_counter()
+        planning_started = total_started
+        try:
+            plan = self.plan(request)
+            backend = OptunaBackend(self.storage, seed=request.seed)
+            run_state = _RunState(
+                studies={
+                    branch.branch_id: backend.create_study(
+                        plan.identity_for(branch.branch_id),
+                        n_startup_trials=startup_trial_count(branch),
+                    )
+                    for branch in plan.search_space.branches
+                }
+            )
+        finally:
+            planning_seconds = time.perf_counter() - planning_started
         start = time.monotonic()
         budget = request.budget
         screen_deadline = start + float(budget.max_seconds) * 0.20
@@ -444,56 +491,64 @@ class SearchEngine:
         formal_challenger_measurement: TrialMeasurement | None = None
         formal_comparison: PairedMeasurement | None = None
         active: tuple[BranchSpace, ...] = ()
+        screen_complete = False
+        screen_seconds = 0.0
+        enhanced_seconds = 0.0
+        formal_seconds = 0.0
 
         try:
-            self._enqueue_initial_configs(plan, run_state, backend)
-            historical_promotions = self._select_promotions(
-                plan,
-                run_state,
-                backend,
-            )
-            has_historical_promotions = bool(historical_promotions)
-            new_trials_before = run_state.budget.new_level1_trials
-
-            screen_complete = self._screen_structures(
-                plan,
-                run_state,
-                backend,
-                deadline=screen_deadline,
-            )
-            fresh_deadline = (
-                screen_deadline if has_historical_promotions else level1_deadline
-            )
-
-            if (
-                _unseen_branches(plan, run_state, backend)
-                and run_state.budget.new_level1_trials == new_trials_before
-            ):
-                self._force_one_new_level1(
+            screen_started = time.perf_counter()
+            try:
+                self._enqueue_initial_configs(plan, run_state, backend)
+                historical_promotions = self._select_promotions(
                     plan,
                     run_state,
                     backend,
-                    deadline=fresh_deadline,
                 )
+                has_historical_promotions = bool(historical_promotions)
+                new_trials_before = run_state.budget.new_level1_trials
 
-            if time.monotonic() < fresh_deadline:
-                active = self._run_successive_halving(
+                screen_complete = self._screen_structures(
                     plan,
                     run_state,
                     backend,
-                    deadline=fresh_deadline,
+                    deadline=screen_deadline,
+                )
+                fresh_deadline = (
+                    screen_deadline if has_historical_promotions else level1_deadline
                 )
 
-            ranked_screen = self._ranked_level1(
-                run_state,
-                backend,
-                plan.search_space.branches,
-            )
-            promoted = self._select_promotions(
-                plan,
-                run_state,
-                backend,
-            )
+                if (
+                    _unseen_branches(plan, run_state, backend)
+                    and run_state.budget.new_level1_trials == new_trials_before
+                ):
+                    self._force_one_new_level1(
+                        plan,
+                        run_state,
+                        backend,
+                        deadline=fresh_deadline,
+                    )
+
+                if time.monotonic() < fresh_deadline:
+                    active = self._run_successive_halving(
+                        plan,
+                        run_state,
+                        backend,
+                        deadline=fresh_deadline,
+                    )
+
+                ranked_screen = self._ranked_level1(
+                    run_state,
+                    backend,
+                    plan.search_space.branches,
+                )
+                promoted = self._select_promotions(
+                    plan,
+                    run_state,
+                    backend,
+                )
+            finally:
+                screen_seconds = time.perf_counter() - screen_started
             if not ranked_screen:
                 selected_config = None
                 selected_measurement = None
@@ -503,44 +558,55 @@ class SearchEngine:
                     else "insufficient_screen_budget"
                 )
             else:
-                enhanced = self._evaluate_promotions(
-                    request,
-                    promoted,
-                    deadline=enhanced_deadline,
-                )
-                locked_challenger = self._lock_challenger(
-                    enhanced,
-                    incumbent=request.incumbent,
-                )
-                (
-                    selected_config,
-                    selected_measurement,
-                    formal_challenger_measurement,
-                    formal_comparison,
-                ) = self._run_formal(
-                    request,
-                    locked_challenger,
-                    deadline=final_deadline,
-                )
-                if (
-                    locked_challenger is not None
-                    and formal_challenger_measurement is not None
-                    and not (
-                        selected_config == locked_challenger
-                        and (formal_comparison is None or formal_comparison.promotes)
+                enhanced_started = time.perf_counter()
+                try:
+                    enhanced = self._evaluate_promotions(
+                        request,
+                        promoted,
+                        deadline=enhanced_deadline,
                     )
-                ):
-                    self.storage.record_challenger_attempt(
-                        case_id=request.case_id,
-                        environment=request.environment,
-                        incumbent_id=(
-                            None
-                            if request.incumbent is None
-                            else request.incumbent.config_id
-                        ),
-                        challenger_id=locked_challenger.config_id,
-                        promotion_identity=request.promotion_identity,
+                    locked_challenger = self._lock_challenger(
+                        enhanced,
+                        incumbent=request.incumbent,
                     )
+                finally:
+                    enhanced_seconds = time.perf_counter() - enhanced_started
+                formal_started = time.perf_counter()
+                try:
+                    (
+                        selected_config,
+                        selected_measurement,
+                        formal_challenger_measurement,
+                        formal_comparison,
+                    ) = self._run_formal(
+                        request,
+                        locked_challenger,
+                        deadline=final_deadline,
+                    )
+                    if (
+                        locked_challenger is not None
+                        and formal_challenger_measurement is not None
+                        and not (
+                            selected_config == locked_challenger
+                            and (
+                                formal_comparison is None
+                                or formal_comparison.promotes
+                            )
+                        )
+                    ):
+                        self.storage.record_challenger_attempt(
+                            case_id=request.case_id,
+                            environment=request.environment,
+                            incumbent_id=(
+                                None
+                                if request.incumbent is None
+                                else request.incumbent.config_id
+                            ),
+                            challenger_id=locked_challenger.config_id,
+                            promotion_identity=request.promotion_identity,
+                        )
+                finally:
+                    formal_seconds = time.perf_counter() - formal_started
                 stop_reason = (
                     "no_feasible_screen"
                     if not self._ranked_level1(
@@ -585,6 +651,15 @@ class SearchEngine:
             >= branch.cardinality
             for branch in plan.search_space.branches
         )
+        covered_branches = sum(
+            bool(
+                backend.terminal_config_ids(
+                    run_state.studies[branch.branch_id],
+                    branch,
+                )
+            )
+            for branch in plan.search_space.branches
+        )
         (
             feasible_level1,
             best_screen_config_id,
@@ -611,6 +686,16 @@ class SearchEngine:
             halving_rungs=run_state.halving_rungs,
             halving_pruned_branches=run_state.halving_pruned_branches,
             halving_active_branches=len(active),
+            stage_timings=SearchStageTimings(
+                planning=planning_seconds,
+                screen=screen_seconds,
+                enhanced=enhanced_seconds,
+                formal=formal_seconds,
+                total=time.perf_counter() - total_started,
+            ),
+            budget_seconds=budget.max_seconds,
+            covered_branches=covered_branches,
+            mandatory_coverage_complete=screen_complete,
         )
 
     @staticmethod
@@ -1194,4 +1279,5 @@ __all__ = [
     "SearchPlan",
     "SearchRequest",
     "SearchResult",
+    "SearchStageTimings",
 ]

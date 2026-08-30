@@ -17,16 +17,47 @@ if TYPE_CHECKING:
     from .search_sweep import ShapeSearchResult
 
 
+RUN_LOG_SCHEMA_VERSION = 1
+
+
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
-def _config_id(config: ConfigSpec | None) -> str | None:
-    return None if config is None else config.config_id
+def _program_summary(config: ConfigSpec | None) -> dict[str, Any] | None:
+    """Keep the two compared programs without copying every searched Trial."""
+
+    if config is None:
+        return None
+    payload = config.to_dict()
+    return {
+        "config_id": config.config_id,
+        "schema_version": payload["schema_version"],
+        "program": payload["program"],
+        "schedule": payload["schedule"],
+    }
+
+
+def _failure_message(measurement: TrialMeasurement) -> str | None:
+    if measurement.feasible:
+        return None
+    value = measurement.metrics.get("message")
+    if value is None:
+        value = measurement.metrics.get("plan_rejection")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+    return value[:500]
 
 
 def _measurement_summary(measurement: TrialMeasurement) -> dict[str, Any]:
-    return {
+    summary = {
         "config_id": measurement.config_id,
         "median_ms": measurement.median_ms,
         "p90_ms": measurement.p90_ms,
@@ -34,6 +65,20 @@ def _measurement_summary(measurement: TrialMeasurement) -> dict[str, Any]:
         "feasible": measurement.feasible,
         "failure_kind": measurement.failure_kind,
     }
+    if not measurement.feasible:
+        summary["failure_message"] = _failure_message(measurement)
+    return summary
+
+
+def _decision_outcome(item: ShapeSearchResult) -> str:
+    result = item.search_result
+    if item.deployment_updated:
+        return "published"
+    if result.deployment_approved:
+        return "approved_unchanged"
+    if result.formal_challenger_measurement is not None:
+        return "rejected"
+    return "not_run"
 
 
 class SearchRunLog:
@@ -56,6 +101,7 @@ class SearchRunLog:
             for character in target
         )
         self.path = root / f"{timestamp}_{mode}_{safe_target}.jsonl"
+        self.run_id = self.path.stem
         self._started = time.monotonic()
         self._last_shape = self._started
         self._last_iteration = self._started
@@ -71,10 +117,15 @@ class SearchRunLog:
         )
 
     def _append(self, event: dict[str, Any]) -> None:
+        payload = {
+            "schema_version": RUN_LOG_SCHEMA_VERSION,
+            "run_id": self.run_id,
+            **event,
+        }
         with self.path.open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(
                 json.dumps(
-                    event,
+                    payload,
                     ensure_ascii=False,
                     allow_nan=False,
                     separators=(",", ":"),
@@ -101,17 +152,21 @@ class SearchRunLog:
                 "paired_ratios": (
                     [] if comparison is None else list(comparison.paired_ratios)
                 ),
-                "rounds_used": (
-                    None if comparison is None else len(comparison.paired_ratios)
-                ),
-                "promotion_wins": (
-                    None if comparison is None else comparison.promotion_wins
-                ),
                 "promotion_decision": (
                     None if comparison is None else comparison.decision.value
                 ),
-                "promotes": result.deployment_approved,
             }
+        stage_timings = result.stage_timings
+        timing_seconds = {
+            "planning": stage_timings.planning,
+            "screen": stage_timings.screen,
+            "enhanced": stage_timings.enhanced,
+            "formal": stage_timings.formal,
+            "total": stage_timings.total,
+        }
+        budgeted_seconds = (
+            stage_timings.screen + stage_timings.enhanced + stage_timings.formal
+        )
         self._append(
             {
                 "event": "shape_finished",
@@ -120,6 +175,12 @@ class SearchRunLog:
                 "case_id": item.case_id,
                 "elapsed_seconds": round(now - self._last_shape, 3),
                 "stop_reason": result.stop_reason,
+                "timing_seconds": timing_seconds,
+                "budget_seconds": result.budget_seconds,
+                "overrun_seconds": max(
+                    0.0,
+                    budgeted_seconds - result.budget_seconds,
+                ),
                 "screen": {
                     "branches": result.branch_count,
                     "completed_trials_total": result.completed_level1,
@@ -128,6 +189,10 @@ class SearchRunLog:
                     "best_config_id": result.best_screen_config_id,
                     "best_median_ms": result.best_screen_median_ms,
                     "failure_counts_total": dict(result.screen_failure_counts),
+                    "covered_branches": result.covered_branches,
+                    "mandatory_coverage_complete": (
+                        result.mandatory_coverage_complete
+                    ),
                     "scheduler": {
                         "algorithm": "cost_aware_successive_halving",
                         "completed_rungs": result.halving_rungs,
@@ -141,12 +206,15 @@ class SearchRunLog:
                     for measurement in result.enhanced_measurements
                 ],
                 "decision": {
-                    "incumbent_config_id": _config_id(result.incumbent_config),
-                    "challenger_config_id": _config_id(result.locked_challenger),
-                    "selected_config_id": _config_id(result.selected_config),
+                    "outcome": _decision_outcome(item),
+                    "incumbent": _program_summary(result.incumbent_config),
+                    "challenger": _program_summary(result.locked_challenger),
+                    "selected_config_id": (
+                        None
+                        if result.selected_config is None
+                        else result.selected_config.config_id
+                    ),
                     "formal": formal_summary,
-                    "deployment_approved": result.deployment_approved,
-                    "deployment_updated": item.deployment_updated,
                 },
             }
         )

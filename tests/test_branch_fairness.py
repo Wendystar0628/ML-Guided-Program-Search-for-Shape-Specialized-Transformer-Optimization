@@ -24,6 +24,7 @@ from autotune.search_engine import (
     SearchEngine,
     SearchPlan,
     SearchRequest,
+    SearchStageTimings,
     _branch_rank,
     _branch_screen_seconds,
     _completed_config_ids,
@@ -783,6 +784,44 @@ def test_time_limited_partial_screen_has_no_winner(
     assert result.selected_config is None
     assert result.selected_measurement is None
     assert not result.deployment_approved
+
+
+def test_run_reports_stage_timings_budget_and_branch_coverage(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE)
+    request = _request(max_trials=3)
+    plan = _plan(request, (branch,))
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    monkeypatch.setattr(engine, "plan", lambda _: plan)
+
+    result = engine.run(request)
+
+    timings = result.stage_timings
+    assert result.budget_seconds == request.budget.max_seconds
+    assert result.covered_branches == 1
+    assert result.mandatory_coverage_complete
+    assert min(
+        timings.planning,
+        timings.screen,
+        timings.enhanced,
+        timings.formal,
+        timings.total,
+    ) >= 0.0
+    assert timings.total >= (
+        timings.planning + timings.screen + timings.enhanced + timings.formal
+    )
+
+
+@pytest.mark.parametrize("value", [-1.0, float("inf"), float("nan")])
+def test_stage_timings_require_finite_non_negative_seconds(value: float) -> None:
+    with pytest.raises(ValueError):
+        SearchStageTimings(total=value)
 
 
 def test_partial_mandatory_screen_can_reach_formal_and_deployment(

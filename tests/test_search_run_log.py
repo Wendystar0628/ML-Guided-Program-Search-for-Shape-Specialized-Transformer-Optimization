@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from autotune.evaluation import (
     ConstraintVector,
     EvaluationScope,
@@ -11,7 +13,11 @@ from autotune.evaluation import (
 )
 from autotune.optimization_loop import OptimizationIteration
 from autotune.run_log import SearchRunLog
-from autotune.search_engine import SearchResult, _screen_failure_kind
+from autotune.search_engine import (
+    SearchResult,
+    SearchStageTimings,
+    _screen_failure_kind,
+)
 from autotune.search_sweep import SearchSweepResult, ShapeSearchResult
 from solution.config import ConfigSpec, RuntimeBackend, ScheduleConfig, portable_config
 
@@ -64,6 +70,16 @@ def _shape_result() -> ShapeSearchResult:
             best_screen_config_id=challenger.config_id,
             best_screen_median_ms=0.98,
             screen_failure_counts=(("accuracy_constraint", 2),),
+            stage_timings=SearchStageTimings(
+                planning=0.1,
+                screen=4.0,
+                enhanced=2.0,
+                formal=4.5,
+                total=10.6,
+            ),
+            budget_seconds=10.0,
+            covered_branches=4,
+            mandatory_coverage_complete=True,
         ),
         deployment_updated=True,
     )
@@ -119,14 +135,42 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
     assert shape_event["screen"]["scheduler"]["algorithm"] == (
         "cost_aware_successive_halving"
     )
-    assert shape_event["decision"]["deployment_updated"] is True
-    assert shape_event["decision"]["formal"]["promotion_wins"] == 13
-    assert shape_event["decision"]["formal"]["rounds_used"] == 13
+    assert shape_event["timing_seconds"] == {
+        "planning": 0.1,
+        "screen": 4.0,
+        "enhanced": 2.0,
+        "formal": 4.5,
+        "total": 10.6,
+    }
+    assert shape_event["budget_seconds"] == 10.0
+    assert shape_event["overrun_seconds"] == pytest.approx(0.5)
+    assert shape_event["screen"]["covered_branches"] == 4
+    assert shape_event["screen"]["mandatory_coverage_complete"] is True
+    decision = shape_event["decision"]
+    assert decision["outcome"] == "published"
+    assert decision["selected_config_id"] == shape.selected_config.config_id
+    assert decision["incumbent"]["program"] == (
+        shape.search_result.incumbent_config.to_dict()["program"]
+    )
+    assert decision["incumbent"]["config_id"] == (
+        shape.search_result.incumbent_config.config_id
+    )
+    assert decision["challenger"]["program"] == (
+        shape.search_result.locked_challenger.to_dict()["program"]
+    )
+    assert decision["challenger"]["config_id"] == (
+        shape.search_result.locked_challenger.config_id
+    )
+    assert decision["challenger"]["schedule"] == (
+        shape.search_result.locked_challenger.to_dict()["schedule"]
+    )
     assert shape_event["decision"]["formal"]["promotion_decision"] == "promote"
     assert len(shape_event["decision"]["formal"]["paired_ratios"]) == 13
     assert len(shape_event["enhanced"]) == 1
     assert events[2]["no_deployment_streak"] == 0
     assert events[-1]["status"] == "finished"
+    assert all(event["schema_version"] == 1 for event in events)
+    assert all(event["run_id"] == run_log.path.stem for event in events)
 
     forbidden_keys = {
         "config",
@@ -134,6 +178,12 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
         "round_medians_ms",
         "expected_execution_signature",
         "actual_execution_signature",
+        "incumbent_config_id",
+        "challenger_config_id",
+        "deployment_approved",
+        "deployment_updated",
+        "rounds_used",
+        "promotion_wins",
     }
 
     def keys(value: object) -> set[str]:
@@ -162,6 +212,66 @@ def test_run_log_persists_a_short_failure_without_traceback(tmp_path) -> None:
     assert failure["error_type"] == "RuntimeError"
     assert len(failure["error_message"]) == 500
     assert "traceback" not in failure
+
+
+def test_decision_records_approved_unchanged_and_short_measurement_failure(
+    tmp_path,
+) -> None:
+    approved = _shape_result()
+    run_log = SearchRunLog(
+        root=tmp_path,
+        mode="search",
+        target="official_01",
+        request={"case_ids": ["official_01"]},
+    )
+    run_log.record_shape(
+        ShapeSearchResult(
+            approved.case_id,
+            approved.search_result,
+            deployment_updated=False,
+        )
+    )
+    assert _read_events(run_log.path)[1]["decision"]["outcome"] == (
+        "approved_unchanged"
+    )
+
+    incumbent = portable_config()
+    challenger = ConfigSpec(
+        program=incumbent.program,
+        schedule=ScheduleConfig(runtime=RuntimeBackend.CUDA_GRAPH),
+    )
+    failed_formal = TrialMeasurement.infeasible(
+        config_id=challenger.config_id,
+        fidelity=Fidelity.FORMAL,
+        scope=EvaluationScope.RESIDENT,
+        penalty_ms=1_000_000_000.0,
+        constraints=ConstraintVector(runtime=1.0),
+        failure_kind="runtime_resource_exhausted",
+        metrics={"message": "x" * 800},
+    )
+    rejected = ShapeSearchResult(
+        case_id="official_01",
+        search_result=SearchResult(
+            incumbent_config=incumbent,
+            selected_config=incumbent,
+            selected_measurement=None,
+            branch_count=1,
+            completed_level1=1,
+            enhanced_measurements=(),
+            locked_challenger=challenger,
+            formal_challenger_measurement=failed_formal,
+            formal_comparison=None,
+            stop_reason="no_feasible_formal",
+        ),
+        deployment_updated=False,
+    )
+    run_log.record_shape(rejected)
+
+    decision = _read_events(run_log.path)[2]["decision"]
+    assert decision["outcome"] == "rejected"
+    failure = decision["formal"]["challenger"]
+    assert failure["failure_kind"] == "runtime_resource_exhausted"
+    assert failure["failure_message"] == "x" * 500
 
 
 def test_screen_failure_summary_preserves_the_primary_constraint() -> None:
@@ -230,7 +340,7 @@ def test_run_log_keeps_no_candidate_and_interrupted_outcomes(tmp_path) -> None:
     events = _read_events(run_log.path)
     decision = events[1]["decision"]
     assert events[1]["stop_reason"] == "no_feasible_screen"
-    assert decision["challenger_config_id"] is None
-    assert decision["deployment_updated"] is False
+    assert decision["challenger"] is None
+    assert decision["outcome"] == "not_run"
     assert events[-1]["status"] == "interrupted"
     assert events[-1]["exit_code"] == 130
