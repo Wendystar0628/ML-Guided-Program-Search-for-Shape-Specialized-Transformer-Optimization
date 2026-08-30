@@ -22,7 +22,8 @@ batch cannot reside in GPU memory at once.
 - `deployment/`: measured per-device winners consumed by `solution/`.
 - `official/`: upstream benchmark semantics and the 14 workload definitions.
 - `tests/`: control-plane and GPU-path tests.
-- `scripts/`: the two public end-to-end optimization entry points.
+- `scripts/`: six end-to-end optimization entry points by workload group and
+  search depth.
 - `environments/`: machine-specific dependencies and environment activation.
 - `docs/`: competition rules, engineering notes, and deliverables.
 
@@ -74,10 +75,21 @@ force one cross-platform GPU runtime combination.
 
 ## Commands
 
+The `quick`, `standard`, and `deep` tiers target roughly 10 minutes, no more
+than 30 minutes, and about two hours on the reference machine. These are soft
+runtime classes: persisted search state and convergence stopping may finish a
+run earlier, while an already-started GPU measurement may finish later.
+
 ```powershell
-# Run the complete resident or Shape-14 optimization flow
-.\scripts\optimize_shapes_01_13.ps1
-.\scripts\optimize_shape_14.ps1
+# Run the complete resident optimization flow
+.\scripts\optimize_shapes_01_13_quick.ps1
+.\scripts\optimize_shapes_01_13_standard.ps1
+.\scripts\optimize_shapes_01_13_deep.ps1
+
+# Run the complete Shape-14 optimization flow
+.\scripts\optimize_shape_14_quick.ps1
+.\scripts\optimize_shape_14_standard.ps1
+.\scripts\optimize_shape_14_deep.ps1
 
 # Inspect the GPU environment
 .\.venv\Scripts\python.exe cli.py probe --device cuda:0

@@ -1,9 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Device = 'cuda:0',
-    [double]$BudgetSeconds = 900.0,
-    [int]$NoProgressPatience = 6,
-    [int]$MaxIterations = 20
+    [int]$Seed = 1234
 )
 
 Set-StrictMode -Version Latest
@@ -14,10 +12,14 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $cli = Join-Path $projectRoot 'cli.py'
+
+# Up to three 180-second sweeps per resident shape: roughly two hours total.
 & $python $cli optimize `
-    --group shape14 `
+    --group resident `
     --device $Device `
-    --budget-seconds $BudgetSeconds `
-    --no-progress-patience $NoProgressPatience `
-    --max-iterations $MaxIterations
+    --budget-seconds 180 `
+    --max-trials 128 `
+    --no-progress-patience 2 `
+    --max-iterations 3 `
+    --seed $Seed
 exit $LASTEXITCODE
