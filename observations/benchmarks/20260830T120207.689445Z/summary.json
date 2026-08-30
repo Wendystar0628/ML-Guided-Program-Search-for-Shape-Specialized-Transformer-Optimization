@@ -1,0 +1,36 @@
+{
+  "run_id": "20260830T120207.689445Z",
+  "status": "completed",
+  "preset": "smoke",
+  "device": "cuda:0",
+  "variant": {
+    "dtype": "float32",
+    "padding_ratio": 0.0,
+    "input_scale": 1.0
+  },
+  "started_at": "2026-08-30T12:02:07+00:00",
+  "finished_at": "2026-08-30T12:02:12+00:00",
+  "elapsed_seconds": 4.515,
+  "progress": {
+    "completed": 1,
+    "total": 1,
+    "passed": 1
+  },
+  "current_case_id": null,
+  "resident_geomean_speedup": null,
+  "shapes": [
+    {
+      "case_id": "official_01",
+      "config_id": "cfg-9f539083fcb8c8dae4e0ccf1753d981b1b22f22fdbb26a191a09b02fc4189ac1",
+      "passed": true,
+      "max_tolerance_ratio": 0.6107650399208069,
+      "median_ms": 0.3118080049753189,
+      "p90_ms": 0.5487615823745727,
+      "baseline_median_ms": 1.8775039911270142,
+      "speedup": 6.021346345087028,
+      "peak_memory_bytes": 37147648,
+      "execution_matches": true,
+      "status": "passed"
+    }
+  ]
+}

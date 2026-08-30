@@ -46,8 +46,8 @@ dist/
 # Mutable Agent working state
 agent_state/
 
-# Generated measurements, search state, logs, and device leases
-/observations/
+# Runtime-only device leases; benchmark and search observations are versioned.
+/observations/locks/
 
 # Interrupted staging data for the final performance report
 /docs/04_最终交付物/01_最终性能测试/result/.working/
