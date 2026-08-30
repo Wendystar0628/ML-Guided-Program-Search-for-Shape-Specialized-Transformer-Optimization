@@ -8,14 +8,13 @@ import json
 import shutil
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 OUTPUT_ROOT = Path(__file__).resolve().parent / "result"
 WORKING_ROOT = OUTPUT_ROOT / ".working"
-JSON_OUTPUT = OUTPUT_ROOT / "final_performance.json"
-MARKDOWN_OUTPUT = OUTPUT_ROOT / "final_performance.md"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -126,6 +125,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{hardware.get('cuda_version', 'N/A')}"
         ),
         f"- Measurement preset: `{report['measurement'].get('preset')}`",
+        f"- Completed at: {report.get('completed_at', report.get('finished_at'))}",
         "- Speedup: baseline median latency / deployed median latency",
         f"- Shapes 01-13 geometric mean speedup: {_number(geomean, 4)}x",
         "",
@@ -165,13 +165,31 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _prepare_output() -> None:
+def _timestamp() -> tuple[str, str]:
+    now = datetime.now(UTC)
+    return (
+        now.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        now.strftime("%Y%m%dT%H%M%S.%fZ"),
+    )
+
+
+def _prepare_working_directory() -> Path:
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
-    if WORKING_ROOT.exists():
-        shutil.rmtree(WORKING_ROOT)
-    JSON_OUTPUT.unlink(missing_ok=True)
-    MARKDOWN_OUTPUT.unlink(missing_ok=True)
-    WORKING_ROOT.mkdir(parents=True)
+    _, run_id = _timestamp()
+    working_directory = WORKING_ROOT / run_id
+    working_directory.mkdir(parents=True)
+    return working_directory
+
+
+def _completed_output_paths() -> tuple[str, Path, Path]:
+    completed_at, run_id = _timestamp()
+    run_directory = OUTPUT_ROOT / run_id
+    run_directory.mkdir(parents=True, exist_ok=False)
+    return (
+        completed_at,
+        run_directory / "final_performance.json",
+        run_directory / "final_performance.md",
+    )
 
 
 def _run(command: list[str]) -> int:
@@ -191,9 +209,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    _prepare_output()
-    hardware_path = WORKING_ROOT / "hardware.json"
-    benchmark_root = WORKING_ROOT / "benchmark"
+    working_directory = _prepare_working_directory()
+    hardware_path = working_directory / "hardware.json"
+    benchmark_root = working_directory / "benchmark"
     probe_code = _run(
         [
             sys.executable,
@@ -232,14 +250,20 @@ def main(argv: list[str] | None = None) -> int:
         _load_json(hardware_path),
         _load_json(PROJECT_ROOT / "official" / "test_shapes.json"),
     )
-    JSON_OUTPUT.write_text(
+    completed_at, json_output, markdown_output = _completed_output_paths()
+    report["completed_at"] = completed_at
+    json_output.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
         encoding="utf-8",
     )
-    MARKDOWN_OUTPUT.write_text(render_markdown(report), encoding="utf-8")
-    shutil.rmtree(WORKING_ROOT)
-    print(f"JSON result: {JSON_OUTPUT}")
-    print(f"Readable result: {MARKDOWN_OUTPUT}")
+    markdown_output.write_text(render_markdown(report), encoding="utf-8")
+    shutil.rmtree(working_directory)
+    try:
+        WORKING_ROOT.rmdir()
+    except OSError:
+        pass
+    print(f"JSON result: {json_output}")
+    print(f"Readable result: {markdown_output}")
     return benchmark_code
 
 

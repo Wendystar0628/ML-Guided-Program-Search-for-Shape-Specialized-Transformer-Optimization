@@ -77,7 +77,7 @@ def test_final_report_keeps_resident_baseline_and_marks_shape14() -> None:
     assert "| official_14 | N/A | 10.000 | 11.000 | N/A |" in markdown
 
 
-def test_main_writes_one_json_and_one_markdown_result(
+def test_main_keeps_each_completed_result_in_timestamp_order(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -85,8 +85,15 @@ def test_main_writes_one_json_and_one_markdown_result(
     output_root = tmp_path / "result"
     monkeypatch.setattr(module, "OUTPUT_ROOT", output_root)
     monkeypatch.setattr(module, "WORKING_ROOT", output_root / ".working")
-    monkeypatch.setattr(module, "JSON_OUTPUT", output_root / "final_performance.json")
-    monkeypatch.setattr(module, "MARKDOWN_OUTPUT", output_root / "final_performance.md")
+    timestamps = iter(
+        (
+            ("2026-08-30T13:00:00.000001Z", "20260830T130000.000001Z"),
+            ("2026-08-30T13:00:01.000001Z", "20260830T130001.000001Z"),
+            ("2026-08-30T13:00:02.000001Z", "20260830T130002.000001Z"),
+            ("2026-08-30T13:00:03.000001Z", "20260830T130003.000001Z"),
+        )
+    )
+    monkeypatch.setattr(module, "_timestamp", lambda: next(timestamps))
     workload_path = tmp_path / "official" / "test_shapes.json"
     workload_path.parent.mkdir()
     workload_path.write_text(
@@ -135,6 +142,19 @@ def test_main_writes_one_json_and_one_markdown_result(
     monkeypatch.setattr(module, "_run", fake_run)
 
     assert module.main(["--preset", "smoke"]) == 0
-    assert module.JSON_OUTPUT.is_file()
-    assert module.MARKDOWN_OUTPUT.is_file()
+    assert module.main(["--preset", "smoke"]) == 0
+
+    run_directories = sorted(path for path in output_root.iterdir() if path.is_dir())
+    assert [path.name for path in run_directories] == [
+        "20260830T130001.000001Z",
+        "20260830T130003.000001Z",
+    ]
+    for run_directory in run_directories:
+        json_path = run_directory / "final_performance.json"
+        assert json_path.is_file()
+        assert (run_directory / "final_performance.md").is_file()
+        result = json.loads(json_path.read_text(encoding="utf-8"))
+        assert result["completed_at"].replace(":", "").replace("-", "").startswith(
+            run_directory.name[:15]
+        )
     assert not module.WORKING_ROOT.exists()
