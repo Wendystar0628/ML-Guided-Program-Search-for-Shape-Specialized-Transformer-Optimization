@@ -17,6 +17,24 @@ from solution.config import ConfigSpec, portable_config, portable_streamed_confi
 from .protocols import RunVariant, TransformerShape, load_json
 
 
+def _streamed_fallback_config(device: str) -> ConfigSpec:
+    """Prefer the bounded Shape 14 kernel when the local CUDA stack supports it."""
+
+    resolved_device = torch.device(device)
+    if resolved_device.type == "cuda" and torch.cuda.is_available():
+        from solution.shape14.defaults import conservative_streamed_config
+        from solution.shape14.triton_streaming_dh64 import (
+            triton_streaming_dh64_causal_attention_available,
+        )
+
+        if (
+            triton_streaming_dh64_causal_attention_available()
+            and torch.cuda.get_device_capability(resolved_device) >= (8, 0)
+        ):
+            return conservative_streamed_config()
+    return portable_streamed_config()
+
+
 def shape_fingerprint(
     shape: TransformerShape,
     variant: RunVariant,
@@ -60,7 +78,7 @@ def resolve_config(
     )
     if deployed is not None:
         return deployed
-    return portable_streamed_config() if shape.streamed else portable_config()
+    return _streamed_fallback_config(device) if shape.streamed else portable_config()
 
 
 __all__ = ["resolve_config", "shape_fingerprint"]
