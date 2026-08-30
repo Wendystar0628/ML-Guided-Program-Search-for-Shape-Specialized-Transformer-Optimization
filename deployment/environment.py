@@ -248,9 +248,18 @@ class EnvironmentFingerprint:
 
     @property
     def identity(self) -> str:
-        """Stable Study/Deployment identity for this exact environment."""
+        """Stable deployment identity for this exact executable environment."""
 
         return stable_digest(self.to_dict())
+
+    @property
+    def measurement_identity(self) -> str:
+        """Hardware/runtime identity, independent of the measured source version."""
+
+        value = self.to_dict()
+        value.pop("official_definitions_digest")
+        value.pop("solution_implementation_digest")
+        return stable_digest(value)
 
 
 __all__ = [

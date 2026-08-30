@@ -77,6 +77,7 @@ def test_identity_is_stable_and_binds_every_environment_field() -> None:
         fingerprint.identity
     )
     assert len(fingerprint.identity) == 64
+    assert len(fingerprint.measurement_identity) == 64
 
     for field, changed in {
         "device_name": "Other GPU",
@@ -93,7 +94,22 @@ def test_identity_is_stable_and_binds_every_environment_field() -> None:
         "official_definitions_digest": "official-b",
         "solution_implementation_digest": "solution-b",
     }.items():
-        assert replace(fingerprint, **{field: changed}).identity != fingerprint.identity
+        updated = replace(fingerprint, **{field: changed})
+        assert updated.identity != fingerprint.identity
+        if field not in {
+            "official_definitions_digest",
+            "solution_implementation_digest",
+        }:
+            assert updated.measurement_identity != fingerprint.measurement_identity
+
+    for source_field in (
+        "official_definitions_digest",
+        "solution_implementation_digest",
+    ):
+        assert (
+            replace(fingerprint, **{source_field: "changed"}).measurement_identity
+            == fingerprint.measurement_identity
+        )
 
 
 def test_source_digests_track_only_their_owned_inputs(tmp_path: Path) -> None:

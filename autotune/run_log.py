@@ -129,11 +129,10 @@ class SearchRunLog:
                     "best_median_ms": result.best_screen_median_ms,
                     "failure_counts_total": dict(result.screen_failure_counts),
                     "scheduler": {
-                        "algorithm": "cost_aware_rising_bandit",
-                        "growth_window": 3,
-                        "completed_rounds": result.rising_rounds,
-                        "eliminated_branches": (result.rising_eliminated_branches),
-                        "active_branches": result.rising_active_branches,
+                        "algorithm": "cost_aware_successive_halving",
+                        "completed_rungs": result.halving_rungs,
+                        "pruned_branches": result.halving_pruned_branches,
+                        "active_branches": result.halving_active_branches,
                         "space_exhausted": result.level1_space_exhausted,
                     },
                 },
@@ -162,9 +161,7 @@ class SearchRunLog:
                 "iteration": iteration.index,
                 "elapsed_seconds": round(now - self._last_iteration, 3),
                 "deployment_updates": iteration.deployment_updates,
-                "shapes_with_level1_progress": (
-                    iteration.shapes_with_level1_progress
-                ),
+                "shapes_with_level1_progress": (iteration.shapes_with_level1_progress),
                 "no_progress_streak": iteration.no_progress_streak,
             }
         )

@@ -19,16 +19,31 @@ class StudyIdentity:
     case_id: str
     branch_id: str
     environment: str
+    search_identity: str
 
     @property
     def study_name(self) -> str:
-        return study_name_prefix(self.case_id, self.environment) + self.branch_id
+        return (
+            study_name_prefix(
+                self.case_id,
+                self.environment,
+                self.search_identity,
+            )
+            + self.branch_id
+        )
 
 
-def study_name_prefix(case_id: str, environment: str) -> str:
+def study_name_prefix(
+    case_id: str,
+    environment: str,
+    search_identity: str,
+) -> str:
     """Return the stable prefix shared by one task's branch studies."""
 
-    return f"{_slug(case_id)}-{_slug(environment)}-"
+    return (
+        f"{_slug(case_id)}-{_slug(environment)}-"
+        f"evidence-{_slug(search_identity)}-"
+    )
 
 
 class SearchStorage:
@@ -49,6 +64,7 @@ class SearchStorage:
         case_id: str,
         environment: str,
         incumbent_id: str | None,
+        promotion_identity: str,
     ) -> frozenset[str]:
         """Return challengers already decided against the same incumbent."""
 
@@ -56,10 +72,16 @@ class SearchStorage:
             rows = connection.execute(
                 """
                 SELECT challenger_id
-                FROM formal_attempts
-                WHERE case_id = ? AND environment = ? AND incumbent_id = ?
+                FROM formal_attempts_by_evidence
+                WHERE case_id = ? AND environment = ?
+                  AND promotion_identity = ? AND incumbent_id = ?
                 """,
-                (case_id, environment, incumbent_id or ""),
+                (
+                    case_id,
+                    environment,
+                    promotion_identity,
+                    incumbent_id or "",
+                ),
             )
         return frozenset(str(row[0]) for row in rows)
 
@@ -70,17 +92,25 @@ class SearchStorage:
         environment: str,
         incumbent_id: str | None,
         challenger_id: str,
+        promotion_identity: str,
     ) -> None:
-        """Persist one completed Formal decision for duplicate suppression."""
+        """Persist one rejected Formal decision for duplicate suppression."""
 
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT OR IGNORE INTO formal_attempts (
-                    case_id, environment, incumbent_id, challenger_id
-                ) VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO formal_attempts_by_evidence (
+                    case_id, environment, promotion_identity,
+                    incumbent_id, challenger_id
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (case_id, environment, incumbent_id or "", challenger_id),
+                (
+                    case_id,
+                    environment,
+                    promotion_identity,
+                    incumbent_id or "",
+                    challenger_id,
+                ),
             )
 
     def _connect(self) -> sqlite3.Connection:
@@ -88,12 +118,16 @@ class SearchStorage:
         connection = sqlite3.connect(self.database_path, timeout=30.0)
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS formal_attempts (
+            CREATE TABLE IF NOT EXISTS formal_attempts_by_evidence (
                 case_id TEXT NOT NULL,
                 environment TEXT NOT NULL,
+                promotion_identity TEXT NOT NULL,
                 incumbent_id TEXT NOT NULL,
                 challenger_id TEXT NOT NULL,
-                PRIMARY KEY (case_id, environment, incumbent_id, challenger_id)
+                PRIMARY KEY (
+                    case_id, environment, promotion_identity,
+                    incumbent_id, challenger_id
+                )
             )
             """
         )

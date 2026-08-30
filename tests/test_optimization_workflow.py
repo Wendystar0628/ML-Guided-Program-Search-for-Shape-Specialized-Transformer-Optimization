@@ -97,7 +97,6 @@ def test_failed_historical_formal_does_not_reset_no_progress_patience() -> None:
                     SimpleNamespace(
                         deployment_updated=False,
                         search_result=SimpleNamespace(
-                            made_formal_progress=True,
                             made_level1_progress=False,
                             level1_space_exhausted=False,
                         ),

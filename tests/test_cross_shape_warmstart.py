@@ -440,6 +440,7 @@ def test_best_screen_candidate_uses_only_the_exact_environment() -> None:
                 case_id=shape.case_id,
                 branch_id=f"branch-{config.config_id}",
                 environment=environment,
+                search_identity="search-v1",
             ).study_name,
             best_trial=optuna.trial.create_trial(
                 value=latency_ms,
@@ -455,9 +456,27 @@ def test_best_screen_candidate_uses_only_the_exact_environment() -> None:
         shape=shape,
         variant=variant,
         environment="current",
+        search_identity="search-v1",
         source_order=7,
     )
 
     assert len(selected) == 1
     assert selected[0].config == portable
     assert selected[0].source_order == 7
+
+
+def test_measurement_environment_preserves_exact_variant_values() -> None:
+    hardware = _hardware()
+    first = search_sweep.RunVariant(
+        padding_ratio=0.12345641,
+        input_scale=1.2345641,
+    )
+    second = search_sweep.RunVariant(
+        padding_ratio=0.12345649,
+        input_scale=1.2345649,
+    )
+
+    assert search_sweep._measurement_environment_identity(
+        hardware,
+        first,
+    ) != search_sweep._measurement_environment_identity(hardware, second)

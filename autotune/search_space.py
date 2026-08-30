@@ -6,8 +6,9 @@ import hashlib
 import itertools
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+import random
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from solution.config import (
@@ -47,6 +48,8 @@ _PROJECTION_FIELDS = (
     "ffn_input_projection",
     "ffn_output_projection",
 )
+
+
 def _projection_patterns(
     precision_plan: PrecisionPlan,
 ) -> tuple[tuple[str, ProjectionTuple], ...]:
@@ -454,6 +457,11 @@ class BranchSpace:
     structure: StructureSpec
     domains: tuple[ParameterDomain, ...]
     scope: str
+    witness_parameters: tuple[tuple[str, Scalar], ...] | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         names = [domain.name for domain in self.domains]
@@ -461,6 +469,14 @@ class BranchSpace:
             raise ValueError("branch parameter names must be unique")
         if self.scope not in {"resident", "streamed"}:
             raise ValueError("scope must be resident or streamed")
+        if self.witness_parameters is not None:
+            witness = dict(self.witness_parameters)
+            if set(witness) != set(names):
+                raise ValueError("branch witness parameters disagree with domains")
+            if any(
+                witness[domain.name] not in domain.choices for domain in self.domains
+            ):
+                raise ValueError("branch witness parameter is outside its domain")
 
     @property
     def branch_id(self) -> str:
@@ -514,6 +530,8 @@ class BranchSpace:
         return index
 
     def default_parameters(self) -> dict[str, Scalar]:
+        if self.witness_parameters is not None:
+            return dict(self.witness_parameters)
         return {domain.name: domain.default for domain in self.domains}
 
     def default_config(self) -> ConfigSpec:
@@ -1231,13 +1249,53 @@ def _primitive_pairs(branch: BranchSpace) -> frozenset[PrimitivePair]:
     return frozenset(itertools.combinations(tokens, 2))
 
 
-def _pairwise_cover(
+def _candidate_witness_parameters(
+    branch: BranchSpace,
+) -> tuple[dict[str, Scalar], ...]:
+    """Return the default and at most two one-coordinate alternatives."""
+
+    defaults = {domain.name: domain.default for domain in branch.domains}
+    values = [defaults]
+    for domain in branch.domains:
+        alternative = next(
+            (choice for choice in domain.choices if choice != domain.default),
+            None,
+        )
+        if alternative is None:
+            continue
+        parameters = dict(defaults)
+        parameters[domain.name] = alternative
+        values.append(parameters)
+        if len(values) == 3:
+            break
+    return tuple(values)
+
+
+def _with_first_feasible_witness(
+    branch: BranchSpace,
+    accepted: Callable[[ConfigSpec], bool],
+) -> BranchSpace | None:
+    """Keep a branch when one of three cheap representative points is legal."""
+
+    for parameters in _candidate_witness_parameters(branch):
+        try:
+            config = branch.build(parameters)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if accepted(config):
+            witness = tuple((name, parameters[name]) for name in branch.parameter_names)
+            return replace(branch, witness_parameters=witness)
+    return None
+
+
+def _select_structure_branches(
     candidates: Sequence[BranchSpace],
     *,
     required: Sequence[BranchSpace],
     limit: int,
+    seed: int,
 ) -> tuple[tuple[BranchSpace, ...], frozenset[str]]:
-    """Select a bounded deterministic covering array from legal structures."""
+    """Cover primitives, then split optional budget across coverage and rotation."""
 
     by_id = {branch.branch_id: branch for branch in candidates}
     selected: list[BranchSpace] = []
@@ -1291,8 +1349,13 @@ def _pairwise_cover(
             "max_branches is too small to cover every legal primitive value"
         )
 
-    # Spend the remaining structure budget on legal pairwise interactions.
-    while covered_pairs != universe_pairs and len(selected) < limit:
+    # Half of the optional budget greedily expands interaction coverage. The
+    # other half rotates through legal structures so repeated sweeps do not
+    # freeze exploration at one deterministic covering-array prefix.
+    optional_slots = limit - len(selected)
+    pairwise_slots = optional_slots // 2
+    pairwise_added = 0
+    while covered_pairs != universe_pairs and pairwise_added < pairwise_slots:
         remaining = [
             branch for branch in candidates if branch.branch_id not in selected_ids
         ]
@@ -1313,6 +1376,15 @@ def _pairwise_cover(
         selected_ids.add(branch.branch_id)
         covered_singletons |= _primitive_tokens(branch)
         covered_pairs |= _primitive_pairs(branch)
+        pairwise_added += 1
+
+    remaining = [
+        branch for branch in candidates if branch.branch_id not in selected_ids
+    ]
+    random.Random(seed).shuffle(remaining)
+    for branch in remaining[: limit - len(selected)]:
+        selected.append(branch)
+        selected_ids.add(branch.branch_id)
     return tuple(selected), mandatory_ids
 
 
@@ -1326,6 +1398,7 @@ class ProgramSearchSpace:
         context: SearchContext,
         max_branches: int = DEFAULT_MAX_STRUCTURE_BRANCHES,
         required_configs: Iterable[ConfigSpec] = (),
+        seed: int = 0,
     ) -> None:
         if (
             isinstance(max_branches, bool)
@@ -1333,6 +1406,8 @@ class ProgramSearchSpace:
             or max_branches <= 0
         ):
             raise ValueError("max_branches must be a positive integer")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise TypeError("seed must be an integer")
         self.plan_builder = plan_builder
         self.context = context
         candidates: list[BranchSpace] = []
@@ -1342,12 +1417,9 @@ class ProgramSearchSpace:
                 domains=_domains_for_structure(structure, context),
                 scope=context.scope,
             )
-            try:
-                default = branch.default_config()
-            except (TypeError, ValueError):
-                continue
-            if self.accepted(default):
-                candidates.append(branch)
+            witnessed = _with_first_feasible_witness(branch, self.accepted)
+            if witnessed is not None:
+                candidates.append(witnessed)
         required: list[BranchSpace] = []
         if context.scope == "resident":
             portable = next(
@@ -1363,20 +1435,27 @@ class ProgramSearchSpace:
                 domains=_domains_for_structure(structure, context),
                 scope=context.scope,
             )
-            if (
-                branch.parameters_for(config) is not None
-                and self.accepted(config)
-                and all(item.branch_id != branch.branch_id for item in candidates)
-            ):
-                candidates.append(branch)
-            if branch.parameters_for(config) is not None and self.accepted(config):
-                required.append(branch)
+            parameters = branch.parameters_for(config)
+            if parameters is None or not self.accepted(config):
+                continue
+            existing = next(
+                (item for item in candidates if item.branch_id == branch.branch_id),
+                None,
+            )
+            if existing is None:
+                witness = tuple(
+                    (name, parameters[name]) for name in branch.parameter_names
+                )
+                existing = replace(branch, witness_parameters=witness)
+                candidates.append(existing)
+            required.append(existing)
         if not candidates:
             raise ValueError("plan builder accepted no search branches")
-        branches, mandatory = _pairwise_cover(
+        branches, mandatory = _select_structure_branches(
             candidates,
             required=required,
             limit=max_branches,
+            seed=seed,
         )
         self.branches = branches
         self.mandatory_branch_ids = mandatory

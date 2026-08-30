@@ -24,6 +24,8 @@ from .evaluation import (
 from .search_space import BranchSpace
 from .study_storage import SearchStorage, StudyIdentity
 
+_INFRASTRUCTURE_FAILURES_BEFORE_QUARANTINE = 3
+
 
 def _constraints_from_trial(trial: FrozenTrial) -> Sequence[float]:
     """Return finite constraints for Optuna's feasibility-aware TPE."""
@@ -204,7 +206,15 @@ class OptunaBackend:
         parameters = branch.parameters_for(config)
         if parameters is None:
             return False
-        if config.config_id in cls.trial_config_ids(study, branch):
+        pending_ids = cls.trial_config_ids(
+            study,
+            branch,
+            states=(TrialState.WAITING, TrialState.RUNNING),
+        )
+        if (
+            config.config_id in pending_ids
+            or config.config_id in cls.terminal_config_ids(study, branch)
+        ):
             return False
         study.enqueue_trial(
             parameters,
@@ -212,7 +222,9 @@ class OptunaBackend:
                 "queued_config": config.to_dict(),
                 "warm_start_source": source,
             },
-            skip_if_exists=True,
+            # Retriable FAIL trials deliberately remain eligible for a later
+            # process. Pending and terminal duplicates are rejected above.
+            skip_if_exists=False,
         )
         return True
 
@@ -276,10 +288,25 @@ class OptunaBackend:
     ) -> None:
         """Record an infrastructure failure without teaching TPE a fake score."""
 
+        prior_failures = sum(
+            1
+            for frozen in study.get_trials(
+                deepcopy=False,
+                states=(TrialState.FAIL,),
+            )
+            if frozen.user_attrs.get("infrastructure_error") is not None
+            and frozen.user_attrs.get("config_id") == config.config_id
+        )
+        attempt = prior_failures + 1
         trial.set_user_attr("config", config.to_dict())
         trial.set_user_attr("config_id", config.config_id)
         trial.set_user_attr("infrastructure_error", type(error).__name__)
         trial.set_user_attr("infrastructure_message", str(error)[:1000])
+        trial.set_user_attr("infrastructure_failure_attempt", attempt)
+        trial.set_user_attr(
+            "infrastructure_quarantined",
+            attempt >= _INFRASTRUCTURE_FAILURES_BEFORE_QUARANTINE,
+        )
         study.tell(trial, state=TrialState.FAIL)
 
     @staticmethod
@@ -353,11 +380,33 @@ class OptunaBackend:
         study: Study,
         branch: BranchSpace,
     ) -> tuple[ConfigSpec, ...]:
-        return cls.trial_configs(
-            study,
-            branch,
-            states=(TrialState.COMPLETE, TrialState.FAIL),
-        )
+        values = {
+            config.config_id: config
+            for config in cls.trial_configs(
+                study,
+                branch,
+                states=(TrialState.COMPLETE,),
+            )
+        }
+        infrastructure_failures: dict[str, list[ConfigSpec]] = {}
+        for frozen in study.get_trials(
+            deepcopy=False,
+            states=(TrialState.FAIL,),
+        ):
+            # A duplicate proposal carries no new evidence about the real
+            # configuration and must never quarantine it.
+            if "duplicate_config_id" in frozen.user_attrs:
+                continue
+            if frozen.user_attrs.get("infrastructure_error") is None:
+                continue
+            config = cls._trial_config(frozen, branch)
+            if config is None:
+                continue
+            infrastructure_failures.setdefault(config.config_id, []).append(config)
+        for config_id, failures in infrastructure_failures.items():
+            if len(failures) >= _INFRASTRUCTURE_FAILURES_BEFORE_QUARANTINE:
+                values.setdefault(config_id, failures[-1])
+        return tuple(values.values())
 
     @classmethod
     def terminal_config_ids(
@@ -365,7 +414,7 @@ class OptunaBackend:
         study: Study,
         branch: BranchSpace,
     ) -> frozenset[str]:
-        """Return unique configurations with a COMPLETE or FAIL outcome."""
+        """Return COMPLETE configs and repeatedly failing infrastructure configs."""
 
         return frozenset(
             config.config_id for config in cls.terminal_configs(study, branch)

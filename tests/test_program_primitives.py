@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import itertools
 from collections.abc import Iterable
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -68,9 +70,139 @@ _FP16_FIELDS = {
 }
 
 
-def test_structure_cover_limit_has_one_shared_default() -> None:
+def test_default_structure_budget_remains_bounded() -> None:
     assert SearchBudget(max_seconds=1.0).max_structure_branches == 36
     assert DEFAULT_MAX_STRUCTURE_BRANCHES == 36
+
+
+def _selection_branch(
+    *,
+    attention: AttentionBackend,
+    qkv_materialization: QKVMaterialization,
+    ffn: FFNBackend,
+    runtime: RuntimeBackend,
+) -> BranchSpace:
+    return BranchSpace(
+        structure=StructureSpec(
+            attention=attention,
+            precision_plan=PrecisionPlan.INPUT_DTYPE,
+            qkv_materialization=qkv_materialization,
+            attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+            ffn=ffn,
+            residual_norm=ResidualNormBackend.TORCH,
+            initial_norm=InitialNormBackend.TORCH,
+            runtime=runtime,
+        ),
+        domains=(),
+        scope="resident",
+    )
+
+
+def test_structure_selection_covers_values_then_rotates_seeded_exploration() -> None:
+    candidates = tuple(
+        _selection_branch(
+            attention=attention,
+            qkv_materialization=qkv_materialization,
+            ffn=ffn,
+            runtime=runtime,
+        )
+        for attention, qkv_materialization, ffn, runtime in itertools.product(
+            (
+                AttentionBackend.CAUSAL_SDPA,
+                AttentionBackend.FP16_EFFICIENT_SDPA,
+                AttentionBackend.FP16_CUDNN_SDPA,
+            ),
+            (QKVMaterialization.VIEW, QKVMaterialization.CONTIGUOUS),
+            (FFNBackend.TORCH, FFNBackend.COMPILED),
+            (RuntimeBackend.EAGER, RuntimeBackend.CUDA_GRAPH),
+        )
+    )
+    required = (candidates[0],)
+
+    first, mandatory = space_module._select_structure_branches(
+        candidates,
+        required=required,
+        limit=12,
+        seed=17,
+    )
+    repeated, repeated_mandatory = space_module._select_structure_branches(
+        candidates,
+        required=required,
+        limit=12,
+        seed=17,
+    )
+    rotated, rotated_mandatory = space_module._select_structure_branches(
+        candidates,
+        required=required,
+        limit=12,
+        seed=18,
+    )
+
+    universe = set().union(
+        *(space_module._primitive_tokens(branch) for branch in candidates)
+    )
+    mandatory_branches = tuple(
+        branch for branch in first if branch.branch_id in mandatory
+    )
+    covered = set().union(
+        *(space_module._primitive_tokens(branch) for branch in mandatory_branches)
+    )
+    pairwise_end = len(mandatory) + (12 - len(mandatory)) // 2
+
+    assert required[0].branch_id in mandatory
+    assert covered == universe
+    assert tuple(branch.branch_id for branch in repeated) == tuple(
+        branch.branch_id for branch in first
+    )
+    assert repeated_mandatory == mandatory == rotated_mandatory
+    assert tuple(branch.branch_id for branch in rotated[:pairwise_end]) == tuple(
+        branch.branch_id for branch in first[:pairwise_end]
+    )
+    assert {branch.branch_id for branch in rotated[pairwise_end:]} != {
+        branch.branch_id for branch in first[pairwise_end:]
+    }
+
+
+def test_program_space_uses_a_cheap_legal_witness_when_default_is_rejected(
+    monkeypatch,
+) -> None:
+    structure = StructureSpec(
+        attention=AttentionBackend.CAUSAL_SDPA,
+        precision_plan=PrecisionPlan.INPUT_DTYPE,
+        qkv_materialization=QKVMaterialization.VIEW,
+        attention_output_bridge=AttentionOutputBridge.TORCH_BHSD_TO_BSD,
+        ffn=FFNBackend.TORCH,
+        residual_norm=ResidualNormBackend.TORCH,
+        initial_norm=InitialNormBackend.TORCH,
+        runtime=RuntimeBackend.CUDA_GRAPH,
+    )
+    evaluated: list[ConfigSpec] = []
+
+    class _PlanBuilder:
+        def evaluate(self, config, context, hardware=None):
+            evaluated.append(config)
+            return SimpleNamespace(
+                accepted=config.schedule.reuse_unchanged_input,
+            )
+
+    monkeypatch.setattr(
+        space_module,
+        "_structure_specs",
+        lambda context: (structure,),
+    )
+    space = space_module.ProgramSearchSpace(
+        plan_builder=_PlanBuilder(),
+        context=SearchContext(
+            execution_context=_official07_context(),
+            scope="resident",
+        ),
+        max_branches=1,
+        seed=9,
+    )
+
+    assert len(evaluated) == 2
+    assert len(space.branches) == 1
+    assert space.branches[0].default_config().schedule.reuse_unchanged_input
 
 
 def test_compiled_forward_search_exposes_all_supported_modes() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass, replace
 
@@ -23,7 +24,8 @@ from autotune.search_engine import (
     SearchEngine,
     SearchPlan,
     SearchRequest,
-    _branch_progress,
+    _branch_rank,
+    _branch_screen_seconds,
     _completed_config_ids,
     _RunState,
 )
@@ -187,6 +189,9 @@ def _request(
         hardware=object(),
         scope=EvaluationScope.RESIDENT,
         environment="test",
+        search_identity="search-v1",
+        enhanced_identity="enhanced-v1",
+        promotion_identity="promotion-v1",
         budget=SearchBudget(
             max_seconds=max_seconds,
             max_trials=max_trials,
@@ -207,6 +212,7 @@ def _plan(request: SearchRequest, branches: tuple[BranchSpace, ...]) -> SearchPl
                 case_id=request.case_id,
                 branch_id=branch.branch_id,
                 environment=request.environment,
+                search_identity=request.search_identity,
             )
             for branch in branches
         ),
@@ -367,6 +373,7 @@ def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -
         environment=request.environment,
         incumbent_id=incumbent.config_id,
         challenger_id=rejected.config_id,
+        promotion_identity=request.promotion_identity,
     )
 
     promoted = engine._select_promotions(plan, state, backend)
@@ -376,7 +383,39 @@ def test_formal_history_skips_rejected_challenger_for_same_incumbent(tmp_path) -
         case_id=request.case_id,
         environment=request.environment,
         incumbent_id=incumbent.config_id,
+        promotion_identity=request.promotion_identity,
     ) == frozenset({rejected.config_id})
+
+
+def test_enhanced_evidence_cache_avoids_remeasurement(tmp_path) -> None:
+    request = _request(max_trials=1)
+    config = _branch(PrecisionPlan.INPUT_DTYPE).default_config()
+    evaluator = _RecordingEvaluator(request.scope)
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=evaluator,
+        plan_builder=_PlanBuilder(),
+    )
+    cached = _measurement(
+        config,
+        0.75,
+        scope=request.scope,
+        fidelity=Fidelity.ENHANCED,
+    )
+    assert engine.evaluation_cache.put(
+        case_id=request.case_id,
+        evidence_identity=request.enhanced_identity,
+        measurement=cached,
+    )
+
+    values = engine._evaluate_promotions(
+        request,
+        (config,),
+        deadline=time.monotonic() + 1.0,
+    )
+
+    assert values == ((config, cached),)
+    assert evaluator.calls == []
 
 
 def test_plan_allows_trial_cap_below_already_persisted_screen_coverage(
@@ -406,103 +445,61 @@ def test_plan_allows_trial_cap_below_already_persisted_screen_coverage(
     assert len(plan.search_space.branches) == 2
 
 
-def test_branch_progress_reconstructs_best_curve_and_recent_gain(tmp_path) -> None:
-    branch = _branch(
-        PrecisionPlan.INPUT_DTYPE,
-        choices=tuple(range(1, 13)),
-    )
+def test_branch_rank_uses_best_measured_median_without_extrapolation(
+    tmp_path,
+) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 6)))
     backend = OptunaBackend(SearchStorage(tmp_path), seed=7)
-    study = backend.create_study(StudyIdentity("curve", branch.branch_id, "test"))
-    values: tuple[float | None, ...] = (10.0, 8.0, 9.0, None, 7.0)
-    for index, latency in enumerate(values):
+    study = backend.create_study(
+        StudyIdentity("rank", branch.branch_id, "test", "search-v1")
+    )
+    for index, latency in enumerate((10.0, 8.0, 9.0)):
         config = branch.config_at(index)
-        measurement = (
-            _measurement(config, latency)
-            if latency is not None
-            else TrialMeasurement.infeasible(
-                config_id=config.config_id,
-                fidelity=Fidelity.SCREEN,
-                scope=EvaluationScope.RESIDENT,
-                penalty_ms=1_000_000_000.0,
-                constraints=ConstraintVector(runtime=1.0),
-                failure_kind="constraint_violation",
-            )
-        )
         backend.record_completed(
             study,
             branch,
             config,
-            measurement,
+            _measurement(config, latency),
             source="history",
         )
 
-    progress = _branch_progress(
-        backend,
-        study,
-        branch,
-        remaining_seconds=30.0,
+    assert _branch_rank(backend, study, branch) == (0, 8.0, branch.branch_id)
+
+
+def test_branch_screen_seconds_uses_only_valid_persisted_costs(tmp_path) -> None:
+    branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 6)))
+    backend = OptunaBackend(SearchStorage(tmp_path), seed=9)
+    study = backend.create_study(
+        StudyIdentity("cost", branch.branch_id, "test", "search-v1")
     )
+    costs: tuple[object, ...] = (1.0, 2.5, "invalid")
+    for index, cost in enumerate(costs):
+        config = branch.config_at(index)
+        backend.record_completed(
+            study,
+            branch,
+            config,
+            replace(
+                _measurement(config, float(index + 1)),
+                metrics={"screen_evaluation_seconds": cost},
+            ),
+            source="history",
+        )
 
-    assert progress.pulls == 5
-    assert progress.best_curve_ms == (10.0, 8.0, 8.0, 8.0, 7.0)
-    assert progress.best_latency_ms == 7.0
-    assert progress.recent_gain_ms_per_pull == pytest.approx(1.0 / 3.0)
-    assert progress.mean_trial_seconds is None
-    assert not progress.ready_for_elimination
+    assert _branch_screen_seconds(backend, study, branch) == pytest.approx(3.5)
 
 
-def test_branch_progress_uses_screen_cost_for_optimistic_bound(tmp_path) -> None:
+def test_successive_halving_races_equal_cost_and_keeps_fastest_half(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     branches = (
         _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 21))),
         _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_ATTENTION_BRANCH, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_CORE, choices=tuple(range(1, 21))),
     )
-    backend = OptunaBackend(SearchStorage(tmp_path), seed=9)
-    progress_values = []
-    for branch, cost in zip(branches, (1.0, 10.0), strict=True):
-        study = backend.create_study(StudyIdentity("cost", branch.branch_id, "test"))
-        for index, latency in enumerate(
-            (10.0, 9.8, 9.6, 9.4, 9.2, 9.0, 8.9, 8.8, 8.7, 8.6)
-        ):
-            config = branch.config_at(index)
-            measurement = replace(
-                _measurement(config, latency),
-                metrics={"screen_evaluation_seconds": cost},
-            )
-            backend.record_completed(
-                study,
-                branch,
-                config,
-                measurement,
-                source="history",
-            )
-        progress_values.append(
-            _branch_progress(
-                backend,
-                study,
-                branch,
-                remaining_seconds=30.0,
-            )
-        )
-
-    cheap, expensive = progress_values
-    assert cheap.mean_trial_seconds == 1.0
-    assert cheap.optimistic_latency_ms == pytest.approx(8.6 - 10 * 0.1)
-    assert expensive.mean_trial_seconds == 10.0
-    assert expensive.optimistic_latency_ms == pytest.approx(8.6 - 3 * 0.1)
-
-
-def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
-    branches = (
-        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 13))),
-        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 13))),
-        _branch(PrecisionPlan.FP16_ATTENTION_BRANCH, choices=tuple(range(1, 13))),
-    )
-    curves = (
-        (1.0,) * 10,
-        (1.2,) * 10,
-        (2.0, 1.9, 1.8, 1.7, 1.6, 1.5, 1.4, 1.3, 1.2, 1.1),
-    )
-    request = _request(max_trials=100)
+    request = _request(max_trials=20)
     plan = _plan(request, branches)
     engine = SearchEngine(
         storage=SearchStorage(tmp_path),
@@ -510,60 +507,131 @@ def test_rising_prunes_flat_loser_but_keeps_best_and_improver(tmp_path) -> None:
         plan_builder=_PlanBuilder(),
     )
     backend = OptunaBackend(engine.storage, seed=request.seed)
-    studies = {}
-    for branch, curve in zip(branches, curves, strict=True):
-        study = backend.create_study(plan.identity_for(branch.branch_id))
-        studies[branch.branch_id] = study
-        for index, latency in enumerate(curve[:4]):
-            config = branch.config_at(index)
-            backend.record_completed(
-                study,
-                branch,
-                config,
-                replace(
-                    _measurement(config, latency),
-                    metrics={"screen_evaluation_seconds": 1.0},
-                ),
-                source="history",
-            )
+    studies = {
+        branch.branch_id: backend.create_study(plan.identity_for(branch.branch_id))
+        for branch in branches
+    }
     state = _RunState(studies=studies)
+    latency_by_branch = {
+        branch.branch_id: float(index + 1) for index, branch in enumerate(branches)
+    }
+    call_order: list[str] = []
 
-    active = engine._prune_rising_branches(
+    def measure_once(
+        current_plan: SearchPlan,
+        current_state: _RunState,
+        current_backend: OptunaBackend,
+        branch: BranchSpace,
+    ) -> bool:
+        del current_plan
+        study = current_state.studies[branch.branch_id]
+        index = len(current_backend.completed_trials(study, branch))
+        config = branch.config_at(index)
+        measurement = replace(
+            _measurement(config, latency_by_branch[branch.branch_id]),
+            metrics={"screen_evaluation_seconds": 1.0},
+        )
+        current_backend.record_completed(
+            study,
+            branch,
+            config,
+            measurement,
+            source="test",
+        )
+        current_state.budget.new_level1_trials += 1
+        call_order.append(branch.branch_id)
+        return True
+
+    monkeypatch.setattr(engine, "_ask_and_measure", measure_once)
+
+    active = engine._run_successive_halving(
         plan,
         state,
         backend,
-        branches,
-        deadline=time.monotonic() + 30.0,
+        deadline=time.monotonic() + 1.0,
     )
 
-    assert active == branches
-    assert state.rising_eliminated_branches == 0
+    assert active == (branches[0],)
+    assert state.halving_rungs == 3
+    assert state.halving_pruned_branches == 3
+    assert {call_order.count(branch.branch_id) for branch in branches[2:]} == {1}
+    assert call_order.count(branches[1].branch_id) == 2
+    assert call_order.count(branches[0].branch_id) == 3
+    expected_first_rung = [branch.branch_id for branch in branches]
+    random.Random(f"{request.seed}:{request.case_id}:halving:0").shuffle(
+        expected_first_rung
+    )
+    assert call_order[:4] == expected_first_rung
 
-    for branch, curve in zip(branches, curves, strict=True):
-        study = studies[branch.branch_id]
-        for index, latency in enumerate(curve[4:], start=4):
-            config = branch.config_at(index)
-            backend.record_completed(
-                study,
-                branch,
-                config,
-                replace(
-                    _measurement(config, latency),
-                    metrics={"screen_evaluation_seconds": 1.0},
-                ),
-                source="history",
-            )
 
-    active = engine._prune_rising_branches(
+def test_halving_pruning_is_local_to_one_search_invocation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    branches = (
+        _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 21))),
+        _branch(PrecisionPlan.FP16_QKV_ATTENTION, choices=tuple(range(1, 21))),
+    )
+    request = _request(max_trials=6)
+    plan = _plan(request, branches)
+    engine = SearchEngine(
+        storage=SearchStorage(tmp_path),
+        evaluator=_Evaluator(request.scope),
+        plan_builder=_PlanBuilder(),
+    )
+    backend = OptunaBackend(engine.storage, seed=request.seed)
+    studies = {
+        branch.branch_id: backend.create_study(plan.identity_for(branch.branch_id))
+        for branch in branches
+    }
+    calls: list[str] = []
+
+    def measure_once(
+        current_plan: SearchPlan,
+        current_state: _RunState,
+        current_backend: OptunaBackend,
+        branch: BranchSpace,
+    ) -> bool:
+        del current_plan
+        study = current_state.studies[branch.branch_id]
+        index = len(current_backend.completed_trials(study, branch))
+        config = branch.config_at(index)
+        latency = 1.0 if branch is branches[0] else 2.0
+        current_backend.record_completed(
+            study,
+            branch,
+            config,
+            replace(
+                _measurement(config, latency),
+                metrics={"screen_evaluation_seconds": 1.0},
+            ),
+            source="test",
+        )
+        current_state.budget.new_level1_trials += 1
+        calls.append(branch.branch_id)
+        return True
+
+    monkeypatch.setattr(engine, "_ask_and_measure", measure_once)
+    first = _RunState(studies=studies)
+    engine._run_successive_halving(
         plan,
-        state,
+        first,
         backend,
-        active,
-        deadline=time.monotonic() + 30.0,
+        deadline=time.monotonic() + 1.0,
+    )
+    first_run_calls = len(calls)
+
+    second = _RunState(studies=studies)
+    engine._run_successive_halving(
+        plan,
+        second,
+        backend,
+        deadline=time.monotonic() + 1.0,
     )
 
-    assert active == (branches[0], branches[2])
-    assert state.rising_eliminated_branches == 1
+    assert set(calls[first_run_calls : first_run_calls + 2]) == {
+        branch.branch_id for branch in branches
+    }
 
 
 def test_historical_screening_first_new_pull_supplies_cost(tmp_path) -> None:
@@ -588,7 +656,7 @@ def test_historical_screening_first_new_pull_supplies_cost(tmp_path) -> None:
         )
     state = _RunState(studies={branch.branch_id: study})
 
-    active = engine._run_rising_bandit(
+    active = engine._run_successive_halving(
         plan,
         state,
         backend,
@@ -598,20 +666,12 @@ def test_historical_screening_first_new_pull_supplies_cost(tmp_path) -> None:
         backend.completed_trials(study, branch),
         key=lambda trial: trial.number,
     )
-    progress = _branch_progress(
-        backend,
-        study,
-        branch,
-        remaining_seconds=30.0,
-    )
-
     assert active == (branch,)
     assert state.budget.new_level1_trials == 1
     assert len(completed) == 4
     assert "screen_evaluation_seconds" not in completed[0].measurement.metrics
     assert completed[-1].measurement.metrics["screen_evaluation_seconds"] > 0.0
-    assert progress.mean_trial_seconds is not None
-    assert not progress.ready_for_elimination
+    assert _branch_screen_seconds(backend, study, branch) > 0.0
 
 
 def test_invalid_constraint_history_uses_three_infeasible_dimensions() -> None:
@@ -620,7 +680,7 @@ def test_invalid_constraint_history_uses_three_infeasible_dimensions() -> None:
     assert _constraints_from_trial(trial) == (1.0, 1.0, 1.0)
 
 
-def test_no_feasible_branch_stops_at_tpe_startup_threshold(tmp_path) -> None:
+def test_no_feasible_single_branch_stops_when_its_space_is_exhausted(tmp_path) -> None:
     branch = _branch(PrecisionPlan.INPUT_DTYPE, choices=tuple(range(1, 17)))
     request = _request(max_trials=20)
     plan = _plan(request, (branch,))
@@ -649,7 +709,7 @@ def test_no_feasible_branch_stops_at_tpe_startup_threshold(tmp_path) -> None:
         )
     state = _RunState(studies={branch.branch_id: study})
 
-    active = engine._run_rising_bandit(
+    active = engine._run_successive_halving(
         plan,
         state,
         backend,
@@ -657,8 +717,8 @@ def test_no_feasible_branch_stops_at_tpe_startup_threshold(tmp_path) -> None:
     )
 
     assert active == ()
-    assert state.budget.new_level1_trials == 7
-    assert len(_completed_config_ids(backend, study, branch)) == 10
+    assert state.budget.new_level1_trials == 13
+    assert len(_completed_config_ids(backend, study, branch)) == 16
     assert engine._select_promotions(plan, state, backend) == ()
 
 
@@ -744,6 +804,7 @@ def test_partial_mandatory_screen_can_reach_formal_and_deployment(
                 case_id=request.case_id,
                 branch_id=branch.branch_id,
                 environment=request.environment,
+                search_identity=request.search_identity,
             )
             for branch in search_space.branches
         ),
@@ -764,6 +825,12 @@ def test_partial_mandatory_screen_can_reach_formal_and_deployment(
     assert result.enhanced_measurements
     assert result.formal_challenger_measurement is not None
     assert result.deployment_approved
+    assert engine.storage.attempted_challenger_ids(
+        case_id=request.case_id,
+        environment=request.environment,
+        incumbent_id=None,
+        promotion_identity=request.promotion_identity,
+    ) == frozenset()
     assert backend.completed_trials(optional_study, optional) == ()
 
 
@@ -867,7 +934,7 @@ def test_new_screen_point_can_outrank_historical_candidate(
     )
 
 
-def test_forced_exploration_precedes_rising_pruning(
+def test_forced_exploration_precedes_successive_halving(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -910,33 +977,31 @@ def test_forced_exploration_precedes_rising_pruning(
             source="previous_pass",
         )
     monkeypatch.setattr(engine, "plan", lambda _: plan)
-    original_prune = engine._prune_rising_branches
-    trials_seen_at_prune: list[int] = []
+    original_halving = engine._run_successive_halving
+    trials_seen_at_halving: list[int] = []
 
-    def _record_prune(
+    def _record_halving(
         current_plan: SearchPlan,
         state: _RunState,
         current_backend: OptunaBackend,
-        active: tuple[BranchSpace, ...],
         *,
         deadline: float,
     ) -> tuple[BranchSpace, ...]:
-        trials_seen_at_prune.append(state.budget.new_level1_trials)
-        return original_prune(
+        trials_seen_at_halving.append(state.budget.new_level1_trials)
+        return original_halving(
             current_plan,
             state,
             current_backend,
-            active,
             deadline=deadline,
         )
 
-    monkeypatch.setattr(engine, "_prune_rising_branches", _record_prune)
+    monkeypatch.setattr(engine, "_run_successive_halving", _record_halving)
 
     result = engine.run(request)
 
     assert result.new_level1_trials == 1
-    assert trials_seen_at_prune
-    assert trials_seen_at_prune[0] == 1
+    assert trials_seen_at_halving
+    assert trials_seen_at_halving[0] == 1
 
 
 def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(
@@ -960,7 +1025,7 @@ def test_tpe_startup_uses_ten_or_the_finite_branch_cardinality(
     assert startup_trial_count(tiny) == 3
 
     backend = OptunaBackend(SearchStorage(tmp_path), seed=7)
-    identity = StudyIdentity("startup", normal.branch_id, "test")
+    identity = StudyIdentity("startup", normal.branch_id, "test", "search-v1")
     study = backend.create_study(identity, n_startup_trials=10)
     for index in range(10):
         config = normal.config_at(index)
@@ -1022,7 +1087,7 @@ def test_duplicate_fallback_benchmark_error_propagates(
     assert state.budget.new_level1_trials == 1
 
 
-def test_failed_config_is_persisted_and_not_requeued(
+def test_one_infrastructure_failure_remains_retryable(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1047,8 +1112,8 @@ def test_failed_config_is_persisted_and_not_requeued(
     with pytest.raises(RuntimeError, match="benchmark infrastructure failed"):
         engine._ask_and_measure(plan, state, backend, branch)
 
-    assert failed_config.config_id in backend.terminal_config_ids(study, branch)
-    assert not backend.enqueue(
+    assert failed_config.config_id not in backend.terminal_config_ids(study, branch)
+    assert backend.enqueue(
         study,
         branch,
         failed_config,

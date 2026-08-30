@@ -47,11 +47,12 @@ def best_screen_candidates(
     shape: TransformerShape,
     variant: RunVariant,
     environment: str,
+    search_identity: str,
     source_order: int,
 ) -> tuple[WarmStartCandidate, ...]:
     """Return the best feasible Screen configuration for one historical task."""
 
-    prefix = study_name_prefix(shape.case_id, environment)
+    prefix = study_name_prefix(shape.case_id, environment, search_identity)
     best: tuple[float, ConfigSpec] | None = None
     for summary in summaries:
         if not summary.study_name.startswith(prefix):

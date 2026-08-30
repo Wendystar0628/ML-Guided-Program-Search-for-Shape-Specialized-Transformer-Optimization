@@ -17,6 +17,7 @@ from benchmarking.protocols import (
     load_shape,
     load_shapes,
 )
+from deployment.environment import stable_digest
 from deployment.registry import (
     EnvironmentFingerprint,
     ShapeFingerprint,
@@ -40,6 +41,7 @@ from .evaluation import (
     execution_signatures_match,
     normalized_accuracy_constraint,
 )
+from .evidence_identity import evidence_identity
 from .meta_warmstart import (
     WarmStartCandidate,
     best_screen_candidates,
@@ -49,6 +51,20 @@ from .meta_warmstart import (
 from .promotion import promotion_should_stop
 from .search_engine import SearchBudget, SearchEngine, SearchRequest, SearchResult
 from .study_storage import SearchStorage
+
+
+def _measurement_environment_identity(
+    hardware: EnvironmentFingerprint,
+    variant: RunVariant,
+) -> str:
+    """Identify measurement conditions without rounding variant values."""
+
+    return stable_digest(
+        {
+            "hardware_runtime": hardware.measurement_identity,
+            "variant": variant.to_dict(),
+        }
+    )
 
 
 def execution_context(
@@ -317,11 +333,17 @@ class SearchSweep:
             request.storage_root
             or request.project_root / "observations" / "search"
         )
+        evidence = evidence_identity(request.project_root)
         plan_builder = PlanBuilder()
-        environment = (
-            f"{hardware_key.identity}-{request.variant.dtype}-"
-            f"padding{request.variant.padding_ratio:g}-"
-            f"scale{request.variant.input_scale:g}"
+        environment = _measurement_environment_identity(
+            hardware_key,
+            request.variant,
+        )
+        enhanced_identity = stable_digest(
+            {
+                "environment": environment,
+                "evidence": evidence.enhanced,
+            }
         )
         known_shapes = load_shapes(request.project_root)
         shape_by_fingerprint = {
@@ -351,6 +373,7 @@ class SearchSweep:
                 shape=source_shape,
                 variant=request.variant,
                 environment=environment,
+                search_identity=evidence.search,
                 source_order=warm_start_order,
             )
             warm_start_candidates.extend(candidates)
@@ -390,6 +413,9 @@ class SearchSweep:
                 hardware=capabilities,
                 scope=scope,
                 environment=environment,
+                search_identity=evidence.search,
+                enhanced_identity=enhanced_identity,
+                promotion_identity=evidence.promotion,
                 budget=SearchBudget(
                     max_seconds=request.budget_seconds,
                     max_trials=request.max_trials,

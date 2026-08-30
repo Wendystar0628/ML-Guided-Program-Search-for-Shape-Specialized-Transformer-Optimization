@@ -117,7 +117,7 @@ def test_run_log_keeps_only_replayable_search_decisions(tmp_path) -> None:
     assert shape_event["screen"]["new_trials"] == 3
     assert shape_event["screen"]["failure_counts_total"] == {"accuracy_constraint": 2}
     assert shape_event["screen"]["scheduler"]["algorithm"] == (
-        "cost_aware_rising_bandit"
+        "cost_aware_successive_halving"
     )
     assert shape_event["decision"]["deployment_updated"] is True
     assert shape_event["decision"]["formal"]["promotion_wins"] == 13
