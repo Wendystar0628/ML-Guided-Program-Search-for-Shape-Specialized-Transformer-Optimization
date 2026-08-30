@@ -164,6 +164,7 @@ def classify_infeasible_exception(exc: Exception) -> str | None:
         candidate_failure_markers = (
             "compiled ffn compilation failed",
             "full-stack compiled forward compilation failed",
+            "compiled residual layernorm is ineligible",
             "compiled residual layernorm execution failed",
         )
         if any(marker in message for marker in candidate_failure_markers):

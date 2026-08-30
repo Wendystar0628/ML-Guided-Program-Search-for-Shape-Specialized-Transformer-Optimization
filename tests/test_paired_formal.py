@@ -281,6 +281,7 @@ def test_only_known_config_domain_exceptions_are_infeasible() -> None:
     for message in (
         "compiled FFN compilation failed",
         "full-stack compiled forward compilation failed",
+        "compiled residual LayerNorm is ineligible for the requested inputs",
         "compiled residual LayerNorm execution failed",
     ):
         assert (

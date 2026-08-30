@@ -78,6 +78,612 @@
               "reuse_unchanged_input": false
             }
           }
+        },
+        {
+          "shape": {
+            "batch_size": 1,
+            "qkv_dim": 128,
+            "heads": 4,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_cudnn_sdpa",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "fp16_shadow",
+              "ffn_output_projection": "fp16_shadow",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "compiled",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": {
+                "block_m": 16,
+                "block_n": 64,
+                "block_k": 64,
+                "num_warps": 8,
+                "num_stages": 3
+              },
+              "residual_norm_launch": {
+                "block_rows": 8,
+                "num_warps": 1
+              },
+              "initial_norm_launch": {
+                "block_rows": 1,
+                "num_warps": 4
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": null,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 4,
+            "qkv_dim": 128,
+            "heads": 4,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_efficient_sdpa",
+              "qkv_projection": "input_dtype",
+              "attention_output_projection": "input_dtype",
+              "ffn_input_projection": "autocast_fp16",
+              "ffn_output_projection": "input_dtype",
+              "precision_plan": "fp16_ffn_input_fp32_gelu",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "torch_bhsd_to_bsd",
+              "ffn": "torch",
+              "residual_norm": "torch",
+              "initial_norm": "torch"
+            },
+            "schedule": {
+              "runtime": "compiled_forward",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": null,
+              "residual_norm_launch": null,
+              "initial_norm_launch": null,
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": "max-autotune",
+              "batch_tile_size": null,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 16,
+            "qkv_dim": 128,
+            "heads": 4,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_cudnn_sdpa",
+              "qkv_projection": "autocast_fp16",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "fp16_shadow",
+              "ffn_output_projection": "fp16_shadow",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "compiled",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 8,
+                "num_stages": 2
+              },
+              "residual_norm_launch": {
+                "block_rows": 4,
+                "num_warps": 1
+              },
+              "initial_norm_launch": {
+                "block_rows": 8,
+                "num_warps": 2
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": null,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 128,
+            "qkv_dim": 128,
+            "heads": 4,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_cudnn_sdpa",
+              "qkv_projection": "autocast_fp16",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "fp16_shadow",
+              "ffn_output_projection": "fp16_shadow",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "compiled",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 8,
+                "num_stages": 2
+              },
+              "residual_norm_launch": {
+                "block_rows": 4,
+                "num_warps": 1
+              },
+              "initial_norm_launch": {
+                "block_rows": 8,
+                "num_warps": 2
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": null,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 32,
+            "heads": 4,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 32,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_efficient_sdpa",
+              "qkv_projection": "input_dtype",
+              "attention_output_projection": "input_dtype",
+              "ffn_input_projection": "input_dtype",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_ffn_output",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "torch_bhsd_to_bsd",
+              "ffn": "triton_exact_gelu",
+              "residual_norm": "compiled",
+              "initial_norm": "torch"
+            },
+            "schedule": {
+              "runtime": "batch_tiled_cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": null,
+              "residual_norm_launch": null,
+              "initial_norm_launch": null,
+              "ffn_launch": {
+                "block_size": 256,
+                "num_warps": 4
+              },
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": 32,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 1024,
+            "heads": 4,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 1024,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "causal_sdpa",
+              "qkv_projection": "input_dtype",
+              "attention_output_projection": "input_dtype",
+              "ffn_input_projection": "input_dtype",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_ffn_output",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "torch_bhsd_to_bsd",
+              "ffn": "triton_exact_gelu",
+              "residual_norm": "compiled",
+              "initial_norm": "torch"
+            },
+            "schedule": {
+              "runtime": "batch_tiled_cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": null,
+              "residual_norm_launch": null,
+              "initial_norm_launch": null,
+              "ffn_launch": {
+                "block_size": 256,
+                "num_warps": 4
+              },
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": 32,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 128,
+            "heads": 1,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_efficient_sdpa",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "autocast_fp16",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "triton_native_bhsd",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "torch",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "batch_tiled_cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": {
+                "block_m": 64,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 4
+              },
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 32,
+                "num_warps": 4,
+                "num_stages": 2
+              },
+              "residual_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": 32,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 128,
+            "heads": 2,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_cudnn_sdpa",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "fp16_shadow",
+              "ffn_output_projection": "fp16_shadow",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "contiguous",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "compiled",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": null,
+              "attention_output_projection_launch": {
+                "block_m": 16,
+                "block_n": 64,
+                "block_k": 64,
+                "num_warps": 8,
+                "num_stages": 3
+              },
+              "residual_norm_launch": {
+                "block_rows": 8,
+                "num_warps": 1
+              },
+              "initial_norm_launch": {
+                "block_rows": 1,
+                "num_warps": 4
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": null,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 128,
+            "heads": 16,
+            "seq_len": 128,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_efficient_sdpa",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "autocast_fp16",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "triton_native_bhsd",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "torch",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "batch_tiled_cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": {
+                "block_m": 64,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 4
+              },
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 32,
+                "num_warps": 4,
+                "num_stages": 2
+              },
+              "residual_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": 32,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 128,
+            "heads": 4,
+            "seq_len": 32,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_efficient_sdpa",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "autocast_fp16",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "triton_native_bhsd",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "torch",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "batch_tiled_cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": {
+                "block_m": 64,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 4
+              },
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 32,
+                "num_warps": 4,
+                "num_stages": 2
+              },
+              "residual_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": 32,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
+        },
+        {
+          "shape": {
+            "batch_size": 64,
+            "qkv_dim": 128,
+            "heads": 4,
+            "seq_len": 1024,
+            "layers": 4,
+            "causal": true,
+            "ffn_dim": 128,
+            "dtype": "float32",
+            "padding_ratio": 0.0,
+            "input_scale": 1.0
+          },
+          "config": {
+            "schema_version": 4,
+            "program": {
+              "attention": "fp16_efficient_sdpa",
+              "qkv_projection": "fp16_shadow",
+              "attention_output_projection": "fp16_shadow",
+              "ffn_input_projection": "autocast_fp16",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "triton_native_bhsd",
+              "attention_output_bridge": "triton_bhsd_projection",
+              "ffn": "torch",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
+            },
+            "schedule": {
+              "runtime": "batch_tiled_cuda_graph",
+              "attention_launch": null,
+              "qkv_launch": {
+                "block_m": 64,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 4
+              },
+              "attention_output_projection_launch": {
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 32,
+                "num_warps": 4,
+                "num_stages": 2
+              },
+              "residual_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "ffn_launch": null,
+              "ffn_input_launch": null,
+              "compile_mode": null,
+              "batch_tile_size": 32,
+              "microbatch_size": null,
+              "reuse_unchanged_input": false
+            }
+          }
         }
       ]
     }
