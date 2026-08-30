@@ -166,6 +166,7 @@ def classify_infeasible_exception(exc: Exception) -> str | None:
             "full-stack compiled forward compilation failed",
             "compiled residual layernorm is ineligible",
             "compiled residual layernorm execution failed",
+            "forced fp16 cudnn sdpa is unavailable",
         )
         if any(marker in message for marker in candidate_failure_markers):
             return "candidate_execution_failed"

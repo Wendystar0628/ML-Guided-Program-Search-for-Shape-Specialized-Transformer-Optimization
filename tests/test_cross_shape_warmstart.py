@@ -130,6 +130,43 @@ class _AcceptingSearchSpace:
         return object()
 
 
+def test_search_sweep_isolates_shapes_in_order_and_forwards_observer(
+    monkeypatch,
+) -> None:
+    first = search_sweep.ShapeSearchResult(
+        "first",
+        _completed_result(portable_config(), 1.0),
+        False,
+    )
+    second = search_sweep.ShapeSearchResult(
+        "second",
+        _completed_result(_graph_config(), 0.9),
+        True,
+    )
+    results_by_case = {"first": first, "second": second}
+    isolated_calls: list[tuple[str, ...]] = []
+
+    def run_worker(target, request):
+        assert target is search_sweep._run_one_shape_worker
+        isolated_calls.append(request.case_ids)
+        return results_by_case[request.case_ids[0]]
+
+    monkeypatch.setattr(search_sweep, "run_in_fresh_process", run_worker)
+    observed: list[search_sweep.ShapeSearchResult] = []
+
+    result = search_sweep.SearchSweep(observer=observed.append).run(
+        search_sweep.SearchSweepRequest(
+            project_root=search_sweep.Path("."),
+            case_ids=("first", "second"),
+            budget_seconds=1.0,
+        )
+    )
+
+    assert isolated_calls == [("first",), ("second",)]
+    assert result.shape_results == (first, second)
+    assert observed == [first, second]
+
+
 def test_service_combines_registry_family_and_earlier_approved_winner(
     monkeypatch,
 ) -> None:
@@ -225,7 +262,10 @@ def test_service_combines_registry_family_and_earlier_approved_winner(
     monkeypatch.setattr(search_sweep, "SearchEngine", _SearchEngine)
 
     observed_shapes = []
-    result = search_sweep.SearchSweep(observed_shapes.append).run(
+    result = search_sweep.SearchSweep(
+        observed_shapes.append,
+        isolate_shapes=False,
+    ).run(
         search_sweep.SearchSweepRequest(
             project_root=search_sweep.Path("."),
             case_ids=("first", "second"),
@@ -297,7 +337,7 @@ def test_service_stops_the_shape_sweep_immediately_after_interrupt(monkeypatch) 
     monkeypatch.setattr(search_sweep, "BenchmarkEvaluator", lambda **kwargs: object())
     monkeypatch.setattr(search_sweep, "SearchEngine", _SearchEngine)
 
-    result = search_sweep.SearchSweep().run(
+    result = search_sweep.SearchSweep(isolate_shapes=False).run(
         search_sweep.SearchSweepRequest(
             project_root=search_sweep.Path("."),
             case_ids=("first", "second"),

@@ -46,11 +46,8 @@ dist/
 # Mutable Agent working state
 agent_state/
 
-# Generated search state
-/search_state/
-
-# Direct benchmark outputs
-/benchmark_runs/
+# Generated measurements, search state, logs, and device leases
+/observations/
 
 # Curated Markdown documentation is tracked. Raw meeting captures stay local.
 /docs/*.mkv

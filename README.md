@@ -48,16 +48,33 @@ autotune/
   evaluation.py             trial and promotion measurements
   optuna_backend.py         Optuna TPE adapter
   study_storage.py          local study identity and SQLite location
+
+benchmarking/
+  suite.py                  ordered, fresh-process Shape measurement
+  device_queue.py           one shared lease per CUDA device
+  measure.py                in-process measurement used by each worker
 ```
 
-The main entry point is [`cli.py`](cli.py). Generated Optuna state lives in
-`search_state/search.sqlite3`. Human-readable search and optimization milestones
-are appended to one JSONL file per invocation under `search_state/runs/`. Both
-are local working data and are not committed. The JSONL stays intentionally
-small; use the SQLite database only when an individual Trial needs inspection.
-Direct benchmark output defaults to `benchmark_runs/`. Deployed winners are
-stored in `deployment/deployed_configs.json` and match the complete measured
-software and hardware environment.
+The main entry point is [`cli.py`](cli.py). GPU commands share one device lease,
+so benchmark, profile, search, and optimization jobs do not compete for the same
+GPU. A benchmark runs Shapes in order and measures each Shape in a fresh process,
+preventing CUDA Graph, allocator, compilation, and model state from leaking into
+the next result.
+
+Local observations use one layout:
+
+```text
+observations/
+  benchmarks/<run-id>/summary.json
+  search/search.sqlite3
+  search/logs/<run-id>.jsonl
+```
+
+`summary.json` is updated after every completed Shape and contains the ordered
+results plus the resident geometric-mean speedup. Search JSONL files retain only
+high-value milestones; detailed Optuna Trials remain in SQLite. These generated
+files are not committed. Deployed winners live in
+`deployment/deployed_configs.json`.
 
 ## Setup
 
@@ -94,14 +111,25 @@ run earlier, while an already-started GPU measurement may finish later.
 # Inspect the GPU environment
 .\.venv\Scripts\python.exe cli.py probe --device cuda:0
 
+# Benchmark Shapes 01-13 in isolated processes (resident is the default group)
+.\.venv\Scripts\python.exe cli.py benchmark `
+  --preset formal `
+  --device cuda:0
+
+# Benchmark Shape 14 separately
+.\.venv\Scripts\python.exe cli.py benchmark `
+  --group shape14 `
+  --preset smoke `
+  --device cuda:0
+
 # Search one or more official shapes
 .\.venv\Scripts\python.exe cli.py search `
   --case-id official_01 `
   --device cuda:0 `
   --budget-seconds 900
 
-# Measure one explicit ConfigSpec
-.\.venv\Scripts\python.exe cli.py run `
+# Benchmark one explicit ConfigSpec in a fresh process
+.\.venv\Scripts\python.exe cli.py benchmark `
   --case-id official_01 `
   --config path\to\config.json `
   --preset smoke `

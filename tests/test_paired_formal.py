@@ -283,6 +283,7 @@ def test_only_known_config_domain_exceptions_are_infeasible() -> None:
         "full-stack compiled forward compilation failed",
         "compiled residual LayerNorm is ineligible for the requested inputs",
         "compiled residual LayerNorm execution failed",
+        "forced FP16 cuDNN SDPA is unavailable for this CUDA request",
     ):
         assert (
             classify_infeasible_exception(RuntimeError(message))

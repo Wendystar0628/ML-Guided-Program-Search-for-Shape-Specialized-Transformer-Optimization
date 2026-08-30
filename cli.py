@@ -9,27 +9,21 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 
-from benchmarking.measure import measure_config, profile_config
+from benchmarking.configuration import resolve_config
+from benchmarking.device_queue import DeviceLease
+from benchmarking.measure import profile_config
 from benchmarking.probe import execute_probe
 from benchmarking.protocols import (
     ContractError,
-    MeasurementProtocol,
     RunVariant,
-    TransformerShape,
-    load_json,
     load_resident_shapes,
     load_shape,
     load_shapes,
     load_streamed_shapes,
     write_json,
 )
+from benchmarking.suite import new_run_directory, run_benchmark_suite
 from deployment.environment import configure_process_math_mode
-from deployment.registry import (
-    EnvironmentFingerprint,
-    ShapeFingerprint,
-    resolve_deployed_config,
-)
-from solution.config import ConfigSpec, portable_config, portable_streamed_config
 
 if TYPE_CHECKING:
     from autotune.search_sweep import SearchSweepRequest
@@ -74,13 +68,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    run = commands.add_parser("run", help="measure one or all official shapes")
-    run.add_argument("--case-id", action="append")
-    run.add_argument("--config", type=Path)
-    run.add_argument("--preset", choices=("smoke", "formal"), default="smoke")
-    run.add_argument("--device", default="cuda:0")
-    run.add_argument("--output", type=Path)
-    _variant_arguments(run)
+    benchmark = commands.add_parser(
+        "benchmark",
+        help="measure official shapes in isolated GPU processes",
+    )
+    benchmark.add_argument(
+        "--group",
+        choices=("resident", "shape14", "all"),
+        default="resident",
+    )
+    benchmark.add_argument("--case-id", action="append")
+    benchmark.add_argument("--config", type=Path)
+    benchmark.add_argument(
+        "--preset",
+        choices=("smoke", "formal"),
+        default="smoke",
+    )
+    benchmark.add_argument("--device", default="cuda:0")
+    benchmark.add_argument("--output", type=Path)
+    _variant_arguments(benchmark)
 
     profile = commands.add_parser("profile", help="profile one resident shape")
     profile.add_argument("--case-id", required=True)
@@ -121,48 +127,11 @@ def _variant(args: argparse.Namespace) -> RunVariant:
     )
 
 
-def _shape_key(shape: TransformerShape, variant: RunVariant) -> ShapeFingerprint:
-    return ShapeFingerprint(
-        batch_size=shape.batch_size,
-        qkv_dim=shape.d_model,
-        heads=shape.num_heads,
-        seq_len=shape.seq_len,
-        layers=shape.num_layers,
-        causal=shape.causal,
-        ffn_dim=shape.ffn_dim,
-        dtype=variant.dtype,
-        padding_ratio=variant.padding_ratio,
-        input_scale=variant.input_scale,
-    )
-
-
-def _default_config(
-    shape: TransformerShape,
-    variant: RunVariant,
-    device: str,
-) -> ConfigSpec:
-    hardware = EnvironmentFingerprint.detect(torch.device(device))
-    deployed = resolve_deployed_config(
-        hardware=hardware,
-        shape=_shape_key(shape, variant),
-    )
-    if deployed is not None:
-        return deployed
-    return portable_streamed_config() if shape.streamed else portable_config()
-
-
-def _config(
-    path: Path | None,
-    shape: TransformerShape,
-    variant: RunVariant,
-    device: str,
-) -> ConfigSpec:
-    if path is None:
-        return _default_config(shape, variant, device)
-    return ConfigSpec.from_dict(load_json(path))
-
-
 def _print_result(value: dict[str, Any]) -> None:
+    if value.get("error") is not None:
+        print(f"{value['case_id']}: FAIL")
+        print(f"  error: {value['error']}")
+        return
     print(f"{value['case_id']}: {'PASS' if value['passed'] else 'FAIL'}")
     print(f"  optimized median: {value['median_ms']:.6f} ms")
     print(f"  optimized p90:    {value['p90_ms']:.6f} ms")
@@ -171,32 +140,38 @@ def _print_result(value: dict[str, Any]) -> None:
         print(f"  speedup:          {value['speedup']:.4f}x")
 
 
-def _run(args: argparse.Namespace, project_root: Path) -> int:
-    variant = _variant(args)
-    shapes = (
-        tuple(load_shape(project_root, case_id) for case_id in args.case_id)
-        if args.case_id
-        else load_shapes(project_root)
+def _benchmark_case_ids(project_root: Path, args: argparse.Namespace) -> tuple[str, ...]:
+    if args.case_id:
+        return tuple(args.case_id)
+    if args.group == "resident":
+        shapes = load_resident_shapes(project_root)
+    elif args.group == "shape14":
+        shapes = load_streamed_shapes(project_root)
+    else:
+        shapes = load_shapes(project_root)
+    return tuple(shape.case_id for shape in shapes)
+
+
+def _benchmark(args: argparse.Namespace, project_root: Path) -> int:
+    output_directory = args.output or new_run_directory(
+        project_root / "observations" / "benchmarks"
     )
-    if args.config is not None and len(shapes) != 1:
-        raise ContractError("--config requires exactly one --case-id")
-    output_root = args.output or project_root / "benchmark_runs"
-    exit_code = 0
-    for shape in shapes:
-        result = measure_config(
-            shape,
-            _config(args.config, shape, variant, args.device),
-            variant,
-            MeasurementProtocol.for_preset(args.preset),
-            args.device,
-            include_baseline=not shape.streamed,
-        )
-        document = result.to_dict()
-        _print_result(document)
-        write_json(output_root / f"{shape.case_id}.json", document)
-        if not result.passed:
-            exit_code = 1
-    return exit_code
+    print(f"benchmark summary: {output_directory / 'summary.json'}")
+    suite = run_benchmark_suite(
+        project_root=project_root,
+        case_ids=_benchmark_case_ids(project_root, args),
+        config_path=args.config,
+        variant=_variant(args),
+        preset=args.preset,
+        device=args.device,
+        output_directory=output_directory,
+    )
+    for result in suite.summary["shapes"]:
+        _print_result(result)
+    geomean = suite.summary["resident_geomean_speedup"]
+    if geomean is not None:
+        print(f"resident geomean speedup: {geomean:.4f}x")
+    return suite.exit_code
 
 
 def _profile(args: argparse.Namespace, project_root: Path) -> int:
@@ -204,7 +179,13 @@ def _profile(args: argparse.Namespace, project_root: Path) -> int:
     variant = _variant(args)
     operations = profile_config(
         shape,
-        _config(args.config, shape, variant, args.device),
+        resolve_config(
+            args.config,
+            shape,
+            variant,
+            args.device,
+            project_root=project_root,
+        ),
         variant,
         args.device,
         iterations=args.iterations,
@@ -247,7 +228,11 @@ def _search(args: argparse.Namespace, project_root: Path) -> int:
         else f"{len(request.case_ids)}-shapes"
     )
     run_log = SearchRunLog(
-        root=(request.storage_root or project_root / "search_state") / "runs",
+        root=(
+            request.storage_root
+            or project_root / "observations" / "search"
+        )
+        / "logs",
         mode="search",
         target=target,
         request=_run_log_request(request),
@@ -293,7 +278,10 @@ def _run_log_request(
             compute_capability = f"{major}.{minor}"
     except (RuntimeError, ValueError):
         pass
-    storage_root = request.storage_root or request.project_root / "search_state"
+    storage_root = (
+        request.storage_root
+        or request.project_root / "observations" / "search"
+    )
     value: dict[str, Any] = {
         "case_ids": list(request.case_ids),
         "device": request.device,
@@ -349,7 +337,11 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
         }
     )
     run_log = SearchRunLog(
-        root=(request.storage_root or project_root / "search_state") / "runs",
+        root=(
+            request.storage_root
+            or project_root / "observations" / "search"
+        )
+        / "logs",
         mode="optimize",
         target=args.group,
         request=log_request,
@@ -407,17 +399,22 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     project_root = Path(__file__).resolve().parent
     try:
-        if args.command == "run":
-            return _run(args, project_root)
-        if args.command == "profile":
-            return _profile(args, project_root)
         if args.command == "probe":
             return _probe(args)
-        if args.command == "search":
-            return _search(args, project_root)
-        if args.command == "optimize":
-            return _optimize(args, project_root)
-        raise ContractError(f"unsupported command: {args.command}")
+        with DeviceLease(
+            device=args.device,
+            root=project_root / "observations" / "locks",
+            on_wait=print,
+        ):
+            if args.command == "benchmark":
+                return _benchmark(args, project_root)
+            if args.command == "profile":
+                return _profile(args, project_root)
+            if args.command == "search":
+                return _search(args, project_root)
+            if args.command == "optimize":
+                return _optimize(args, project_root)
+            raise ContractError(f"unsupported command: {args.command}")
     except (ContractError, TypeError, ValueError, RuntimeError) as exc:
         print(f"error: {exc}")
         return 1

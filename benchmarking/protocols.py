@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -159,10 +160,15 @@ def load_streamed_shapes(project_root: Path) -> tuple[TransformerShape, ...]:
 
 def write_json(path: Path, value: object) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
 
 

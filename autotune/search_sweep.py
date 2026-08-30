@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from benchmarking.device_queue import run_in_fresh_process
 from benchmarking.measure import BenchmarkResult, measure_config, measure_paired_configs
 from benchmarking.protocols import (
     MeasurementProtocol,
@@ -278,10 +279,32 @@ def _shape_key(shape: TransformerShape, variant: RunVariant) -> ShapeFingerprint
 class SearchSweep:
     """Run one bounded search pass across an explicit group of shapes."""
 
-    def __init__(self, observer: ShapeObserver | None = None) -> None:
+    def __init__(
+        self,
+        observer: ShapeObserver | None = None,
+        *,
+        isolate_shapes: bool = True,
+    ) -> None:
         self.observer = observer
+        self.isolate_shapes = isolate_shapes
 
     def run(self, request: SearchSweepRequest) -> SearchSweepResult:
+        if self.isolate_shapes:
+            results: list[ShapeSearchResult] = []
+            for case_id in request.case_ids:
+                shape_result = run_in_fresh_process(
+                    _run_one_shape_worker,
+                    replace(request, case_ids=(case_id,)),
+                )
+                results.append(shape_result)
+                if self.observer is not None:
+                    self.observer(shape_result)
+                if shape_result.search_result.stop_reason == "interrupted":
+                    break
+            return SearchSweepResult(tuple(results))
+        return self._run_in_process(request)
+
+    def _run_in_process(self, request: SearchSweepRequest) -> SearchSweepResult:
         device = torch.device(request.device)
         if device.type != "cuda" or not torch.cuda.is_available():
             raise ValueError("program search requires a CUDA device")
@@ -291,7 +314,8 @@ class SearchSweep:
         )
         capabilities = HardwareCapabilities.detect(device)
         storage = SearchStorage(
-            request.storage_root or request.project_root / "search_state"
+            request.storage_root
+            or request.project_root / "observations" / "search"
         )
         plan_builder = PlanBuilder()
         environment = (
@@ -419,6 +443,13 @@ class SearchSweep:
                 warm_start_order += 1
 
         return SearchSweepResult(tuple(results))
+
+
+def _run_one_shape_worker(request: SearchSweepRequest) -> ShapeSearchResult:
+    result = SearchSweep(isolate_shapes=False).run(request)
+    if len(result.shape_results) != 1:
+        raise RuntimeError("isolated search worker did not return exactly one shape")
+    return result.shape_results[0]
 
 
 __all__ = [
