@@ -2,10 +2,8 @@
 param(
     [string]$Device = 'cuda:0',
     [int]$Seed = 1234,
-    [double]$BudgetSecondsPerIteration = 1200,
-    [int]$MaxNewTrialsPerIteration = 12,
-    [int]$MaxIterations = 4,
-    [int]$NoDeploymentPatience = 3
+    [double]$BudgetSeconds = 900,
+    [int]$MaxNewTrials = 12
 )
 
 Set-StrictMode -Version Latest
@@ -17,16 +15,16 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 $cli = Join-Path $projectRoot 'cli.py'
 
-# Shape 14 has 36 Screen configurations. Batches of 12 cover the 10-point
-# mandatory structure set, leave two racing points, and provide up to three
-# Formal challenger opportunities before the finite space is exhausted.
-& $python $cli optimize `
-    --group shape14 `
+# One invocation is one bounded search-to-deployment pass. Shape 14 has 36
+# Screen configurations; persistent studies let later invocations continue
+# from prior evidence without placing several expensive Formal comparisons in
+# one run. The 15-minute soft search budget plus one sequential Formal test is
+# designed to finish in roughly 20-27 minutes on the validated RTX 4080.
+& $python $cli search `
+    --case-id official_14 `
     --device $Device `
-    --budget-seconds $BudgetSecondsPerIteration `
-    --max-trials $MaxNewTrialsPerIteration `
-    --max-iterations $MaxIterations `
-    --no-deployment-patience $NoDeploymentPatience `
+    --budget-seconds $BudgetSeconds `
+    --max-trials $MaxNewTrials `
     --seed $Seed `
     --dtype float32 `
     --padding-ratio 0 `

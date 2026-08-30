@@ -113,25 +113,28 @@ force one cross-platform GPU runtime combination.
 
 The two optimization scripts run the complete search-to-deployment flow in the
 foreground. GPU measurements are serial: Shapes do not compete for the device.
-For Shapes 01-13, the time and trial limits apply to each Shape in each sweep;
-for Shape 14, they apply to its single streamed search in each iteration. Time
-limits are soft because an already-started measurement is allowed to finish.
+For Shapes 01-13, the time and trial limits apply to each Shape in each sweep.
+For Shape 14, one script invocation performs one bounded streamed search and at
+most one Formal challenger comparison. Time limits are soft because an
+already-started measurement is allowed to finish.
 
-The search uses persistent branch-local TPE to choose new programs, Successive
-Halving to allocate more Level-1 budget to promising branches, and
-deployment-based early stopping when several complete iterations produce no new
-winner. Shape 14 additionally searches its finite program space in bounded
-batches. Re-running a script resumes the studies in
+The search uses persistent branch-local TPE to choose new programs and
+Successive Halving to allocate more Level-1 budget to promising branches. The
+resident workflow additionally uses deployment-based early stopping across
+complete sweeps; Shape 14 uses one bounded batch per invocation because its
+Formal comparison dominates wall time. Re-running a script resumes the studies in
 `observations/search/resident/` or `observations/search/shape14/`; it does not
 start the search from zero.
 
 The resident defaults are 180 seconds and at most 96 new trials per Shape per
-sweep, with at most four sweeps. Shape 14 defaults to 1200 seconds and at most
-12 new trials per iteration, also with at most four iterations. Both stop after
-three consecutive complete iterations without a deployment update. These are
-search scheduling limits rather than wall-clock guarantees: deployment
-convergence may stop a run earlier, while an already-started measurement may
-finish after its soft time budget.
+sweep, with at most four sweeps and a three-sweep deployment plateau stop.
+Shape 14 defaults to one 900-second soft search budget and at most 12 new Screen
+trials. Its sequential Formal comparison adds roughly 5.5-10.5 minutes on the
+validated RTX 4080, so a normal invocation is expected to finish in about
+20-27 minutes. This is an operating target rather than a hard timeout: an
+already-started GPU measurement is allowed to finish. Re-running the script
+continues the persistent Shape-14 studies and creates the next deployment
+opportunity instead of restarting the search.
 
 ```powershell
 # Run the complete resident optimization flow
@@ -142,7 +145,7 @@ finish after its soft time budget.
 
 # Override a budget when needed (all other parameters keep their defaults)
 .\scripts\optimize_shapes_01_13.ps1 -BudgetSecondsPerShape 240 -MaxIterations 6
-.\scripts\optimize_shape_14.ps1 -BudgetSecondsPerIteration 1800 -MaxIterations 6
+.\scripts\optimize_shape_14.ps1 -BudgetSeconds 1200 -MaxNewTrials 12
 
 # Inspect the GPU environment
 .\.venv\Scripts\python.exe cli.py probe --device cuda:0
