@@ -39,3 +39,7 @@ Shape 12 融合 FFN 边界获得可重复部署收益 | 新积木在一个 Trito
 新边界积木应与各 Shape 的最强 Attention 家族组合 | Shape 09 保留 cuDNN SDPA，只替换 FFN 边界后，Formal 从 0.235520 ms 降到 0.222208 ms，9 个配对中位加速 1.0557×并晋升 | 强制统一 Efficient SDPA 会混入 Attention 退化；结构合成应保留独立成熟库优势 | 搜索器按 HeadDim 与硬件能力生成 cuDNN、Efficient 或 Dh8 的单一融合结构
 
 小行数形态不适合当前融合 FFN 边界 | Shape 03 的融合候选由 Screen 约 0.079 ms 退化到 Enhanced 约 0.165 ms；最终由已有精确 GELU/调度结构以 1.025×晋升。Shape 02 的最佳 challenger Formal 仅为 incumbent 的 0.854× | 128/512 行时单层仅 8/32 个 CTA，融合后占用率损失高于中间张量流量收益 | 执行层保留通用 D=F=128 合同，搜索层只在实测有效的 2048/8192 行开放；小行数等待持久化或启动专用方法
+
+Shape 05 的编译主线优于当前融合边界 | 16384 行融合见证点 Screen 为 0.465920 ms，当前 compiled-forward incumbent Formal 为 0.423936 ms；同轮最佳非融合 challenger 仅 1.0172×并被拒绝 | 行数增加不能补偿替换完整 Inductor 图带来的损失，当前融合积木的收益区间不是单调随 M 扩张 | 搜索层继续只开放已实测获益的 2048/8192 行，不为 Shape 05 扩充融合调度预算
+
+Shape 07 的首层归一化与 QKV 投影适合融合 | 新 Triton 积木保持 FP16 语义边界，在一个 kernel 内完成首层 LayerNorm 与原生 BHSD QKV；Formal 从 0.092160 ms 降到 0.080896 ms，6 个配对均为 1.1392×并自动部署 | 删除一次启动和归一化中间张量的显存往返，对 D32 小模型尤其有效 | 仅在 B64/S128/D32/H4 的严格数学合同下启用，不扩散为通用规则

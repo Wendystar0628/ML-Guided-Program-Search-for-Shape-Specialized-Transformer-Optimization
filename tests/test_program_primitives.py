@@ -34,6 +34,7 @@ from solution.config import (
     RuntimeBackend,
     ScheduleConfig,
     TritonAttentionParams,
+    TritonGemmParams,
     TritonNormParams,
     TritonQKVParams,
 )
@@ -850,6 +851,64 @@ def test_exact_d32_plan_rejects_a_warp_count_the_specialized_kernel_cannot_run()
     assert any(
         violation.code == "unsupported_launch_value" for violation in result.violations
     )
+
+
+def test_shape07_fused_initial_norm_qkv_is_one_single_factor_branch() -> None:
+    context = _official07_context()
+    hardware = replace(
+        _cudnn_hardware(),
+        triton_dh8_attention=True,
+        triton_initial_norm=True,
+        triton_qkv_native_bhsd=True,
+        triton_linear_exact_gelu=True,
+        triton_linear_residual_norm=True,
+    )
+    config = ConfigSpec(
+        program=ProgramConfig(
+            attention=AttentionBackend.TRITON_DH8,
+            qkv_projection=ProjectionBackend.FP16_SHADOW,
+            attention_output_projection=ProjectionBackend.FP16_SHADOW,
+            ffn_input_projection=ProjectionBackend.FP16_SHADOW,
+            ffn_output_projection=ProjectionBackend.FP16_SHADOW,
+            precision_plan=PrecisionPlan.FP16_CORE,
+            qkv_materialization=QKVMaterialization.TRITON_NATIVE_BHSD,
+            attention_output_bridge=AttentionOutputBridge.ATTENTION_DIRECT_BSD,
+            ffn=FFNBackend.TRITON_LINEAR_EXACT_GELU,
+            residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
+            initial_norm=InitialNormBackend.TRITON_FUSED_QKV,
+        ),
+        schedule=ScheduleConfig(
+            runtime=RuntimeBackend.CUDA_GRAPH,
+            attention_launch=TritonAttentionParams(64, 32, 2, 3),
+            qkv_launch=TritonQKVParams(16, 128, 32, 4),
+            residual_norm_launch=TritonNormParams(16, 4),
+            ffn_input_launch=TritonGemmParams(32, 16, 32, 8, 4),
+            reuse_unchanged_input=True,
+        ),
+    )
+
+    plan = PlanBuilder().build(config, context, hardware)
+    assert plan.use_fused_initial_norm_qkv
+    assert plan.initial_norm_launch is None
+
+    space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=context,
+            scope="resident",
+            hardware=hardware,
+        ),
+        max_branches=36,
+        seed=1241,
+    )
+    branches = tuple(
+        branch
+        for branch in space.branches
+        if branch.structure.initial_norm is InitialNormBackend.TRITON_FUSED_QKV
+    )
+    assert len(branches) == 1
+    assert branches[0].cardinality == 1
+    assert branches[0].default_config() == config
 
 
 def test_structure_generation_prunes_unimplemented_attention_output_bridges() -> None:

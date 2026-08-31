@@ -16,7 +16,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "8afa411f4eec4943eed29a6df6a64cf611ec70e7feee2d3644338dcfb540053c"
+        "solution_implementation_digest": "605e33c8e73c7d7556c7cbe78eb180a49ffada93bb86859261ac684eaa8092cd"
       },
       "entries": [
         {
@@ -324,7 +324,7 @@
               "attention_output_bridge": "attention_direct_bsd",
               "ffn": "triton_linear_exact_gelu",
               "residual_norm": "triton_linear_mixed",
-              "initial_norm": "torch"
+              "initial_norm": "triton_fused_qkv"
             },
             "schedule": {
               "runtime": "cuda_graph",
@@ -335,10 +335,10 @@
                 "num_stages": 3
               },
               "qkv_launch": {
-                "block_m": 64,
-                "block_n": 16,
+                "block_m": 16,
+                "block_n": 128,
                 "block_k": 32,
-                "num_warps": 8
+                "num_warps": 4
               },
               "attention_output_projection_launch": null,
               "residual_norm_launch": {

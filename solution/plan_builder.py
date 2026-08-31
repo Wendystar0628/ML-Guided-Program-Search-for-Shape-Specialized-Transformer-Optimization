@@ -1094,8 +1094,71 @@ class PlanBuilder:
         hardware: HardwareCapabilities,
         reject: Any,
     ) -> None:
-        if config.program.initial_norm is InitialNormBackend.TORCH:
+        backend = config.program.initial_norm
+        if backend is InitialNormBackend.TORCH:
             return
+        if backend is InitialNormBackend.TRITON_FUSED_QKV:
+            if config.schedule.initial_norm_launch is not None:
+                reject(
+                    "launch_incompatible",
+                    "schedule.initial_norm_launch",
+                    "fused initial norm uses the QKV launch configuration",
+                )
+            if not hardware.triton_initial_norm or not hardware.triton_qkv_native_bhsd:
+                reject(
+                    "backend_unavailable",
+                    "program.initial_norm",
+                    "fused initial norm/QKV requires Triton norm and native QKV",
+                )
+            if (
+                context.batch_size != 64
+                or context.seq_len != 128
+                or context.d_model != 32
+                or context.num_heads != 4
+                or context.has_valid_token_mask
+            ):
+                reject(
+                    "unsupported_shape",
+                    "program.initial_norm",
+                    "fused initial norm/QKV is specialized for unmasked B64 S128 D32 H4",
+                )
+            if (
+                config.program.qkv_materialization
+                is not QKVMaterialization.TRITON_NATIVE_BHSD
+                or config.program.qkv_projection is not ProjectionBackend.FP16_SHADOW
+            ):
+                reject(
+                    "qkv_incompatible",
+                    "program.initial_norm",
+                    "fused initial norm/QKV requires FP16 native-layout QKV",
+                )
+            if context.device.type != "cuda" or context.dtype != torch.float32:
+                reject(
+                    "requires_cuda_float32",
+                    "program.initial_norm",
+                    "fused initial norm/QKV requires CUDA FP32 input",
+                )
+            if config.schedule.runtime is not RuntimeBackend.CUDA_GRAPH:
+                reject(
+                    "runtime_incompatible",
+                    "schedule.runtime",
+                    "fused initial norm/QKV currently requires CUDA Graph",
+                )
+            if config.program.precision_plan is not PrecisionPlan.FP16_CORE:
+                reject(
+                    "precision_incompatible",
+                    "program.precision_plan",
+                    "fused initial norm/QKV requires the full FP16 core plan",
+                )
+            if config.program.residual_norm is not ResidualNormBackend.TRITON_LINEAR_MIXED:
+                reject(
+                    "residual_norm_incompatible",
+                    "program.residual_norm",
+                    "fused initial norm/QKV requires the deployed mixed residual stream",
+                )
+            return
+        if backend is not InitialNormBackend.TRITON_FP16:
+            raise AssertionError(f"unhandled initial norm backend: {backend}")
         launch = config.schedule.initial_norm_launch
         assert launch is not None
         if launch.block_rows not in {1, 2, 4, 8} or launch.num_warps not in {

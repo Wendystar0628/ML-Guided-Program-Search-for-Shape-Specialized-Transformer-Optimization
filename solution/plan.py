@@ -252,6 +252,10 @@ class ExecutionPlan:
         return self.initial_norm_backend is InitialNormBackend.TRITON_FP16
 
     @property
+    def use_fused_initial_norm_qkv(self) -> bool:
+        return self.initial_norm_backend is InitialNormBackend.TRITON_FUSED_QKV
+
+    @property
     def use_linear_boundary_fusion(self) -> bool:
         return self.residual_norm_backend is ResidualNormBackend.TRITON_LINEAR_MIXED
 

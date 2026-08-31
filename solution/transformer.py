@@ -60,8 +60,10 @@ from .kernels.norm import (
 )
 from .kernels.projection import (
     TRITON_ATTENTION_OUTPUT_PROJECTION_BACKEND,
+    TRITON_INITIAL_NORM_QKV_NATIVE_BHSD_BACKEND,
     TRITON_QKV_NATIVE_BHSD_BACKEND,
     prevalidated_triton_attention_output_projection,
+    prevalidated_triton_initial_norm_qkv_native_bhsd,
     prevalidated_triton_qkv_native_bhsd,
 )
 from .operators import (
@@ -373,6 +375,7 @@ class _SelfAttention(nn.Module):
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
         *,
+        initial_norm: nn.LayerNorm | None = None,
         boundary_residual: torch.Tensor | None = None,
         boundary_norm: nn.LayerNorm | None = None,
         final_boundary: bool = False,
@@ -387,23 +390,42 @@ class _SelfAttention(nn.Module):
             weight, bias = self.qkv_proj.fp16_shadow_parameters()
             if bias is None:
                 raise RuntimeError("Triton native-layout QKV requires a bias")
-            query, key, projected_value, actual_marker = (
-                prevalidated_triton_qkv_native_bhsd(
-                    value.to(torch.float16),
-                    weight,
-                    bias,
-                    num_heads=self.num_heads,
-                    block_m=launch.block_m,
-                    block_n=launch.block_n,
-                    block_k=launch.block_k,
-                    num_warps=launch.num_warps,
+            if initial_norm is not None:
+                query, key, projected_value, actual_marker = (
+                    prevalidated_triton_initial_norm_qkv_native_bhsd(
+                        value,
+                        initial_norm,
+                        weight,
+                        bias,
+                        block_m=launch.block_m,
+                        block_n=launch.block_n,
+                        block_k=launch.block_k,
+                        num_warps=launch.num_warps,
+                    )
                 )
-            )
-            _strict_backend_marker(
-                actual_marker,
-                expected_marker=TRITON_QKV_NATIVE_BHSD_BACKEND,
-                planned_backend=plan.qkv_materialization.value,
-            )
+                _strict_backend_marker(
+                    actual_marker,
+                    expected_marker=TRITON_INITIAL_NORM_QKV_NATIVE_BHSD_BACKEND,
+                    planned_backend=plan.initial_norm_backend.value,
+                )
+            else:
+                query, key, projected_value, actual_marker = (
+                    prevalidated_triton_qkv_native_bhsd(
+                        value.to(torch.float16),
+                        weight,
+                        bias,
+                        num_heads=self.num_heads,
+                        block_m=launch.block_m,
+                        block_n=launch.block_n,
+                        block_k=launch.block_k,
+                        num_warps=launch.num_warps,
+                    )
+                )
+                _strict_backend_marker(
+                    actual_marker,
+                    expected_marker=TRITON_QKV_NATIVE_BHSD_BACKEND,
+                    planned_backend=plan.qkv_materialization.value,
+                )
             materialization = QKVMaterialization.TRITON_NATIVE_BHSD
             qkv_compute_dtype = str(query.dtype).removeprefix("torch.")
         else:
@@ -774,6 +796,7 @@ class _TransformerBlock(nn.Module):
         plan: ExecutionPlan,
         observation: _ExecutionObservation | None,
         *,
+        initial_norm: nn.LayerNorm | None = None,
         boundary_residual: torch.Tensor | None = None,
         boundary_norm: nn.LayerNorm | None = None,
     ) -> torch.Tensor | _FusedBoundaryResult:
@@ -785,6 +808,7 @@ class _TransformerBlock(nn.Module):
             causal,
             plan,
             observation,
+            initial_norm=initial_norm,
             boundary_residual=boundary_residual,
             boundary_norm=boundary_norm,
         )
@@ -1337,7 +1361,14 @@ class UserOptimizedTransformer(nn.Module):
         if not self.layers:
             value = self.final_norm(value)
         else:
-            if plan.use_triton_initial_fp16_norm:
+            if plan.use_fused_initial_norm_qkv:
+                normalized = value
+                if observation is not None:
+                    observation.initial_norm_backends.append(
+                        InitialNormBackend.TRITON_FUSED_QKV.value
+                    )
+                    observation.initial_norm_launches.append(None)
+            elif plan.use_triton_initial_fp16_norm:
                 launch = plan.initial_norm_launch
                 if launch is None:
                     raise RuntimeError(
@@ -1383,6 +1414,7 @@ class UserOptimizedTransformer(nn.Module):
                     ResidualNormBackend.TRITON_LINEAR_MIXED,
                 }
                 and not plan.use_triton_initial_fp16_norm
+                and not plan.use_fused_initial_norm_qkv
             ):
                 normalized = normalized.to(torch.float16)
             for layer_index, layer in enumerate(self.layers):
@@ -1396,6 +1428,11 @@ class UserOptimizedTransformer(nn.Module):
                     bool(self.config.causal),
                     plan,
                     observation,
+                    initial_norm=(
+                        layer.norm1
+                        if layer_index == 0 and plan.use_fused_initial_norm_qkv
+                        else None
+                    ),
                     boundary_residual=value if plan.use_linear_boundary_fusion else None,
                     boundary_norm=layer.norm2 if plan.use_linear_boundary_fusion else None,
                 )

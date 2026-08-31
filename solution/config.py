@@ -85,6 +85,7 @@ class InitialNormBackend(StrEnum):
 
     TORCH = "torch"
     TRITON_FP16 = "triton_fp16"
+    TRITON_FUSED_QKV = "triton_fused_qkv"
 
 
 class RuntimeBackend(StrEnum):

@@ -430,6 +430,20 @@ def _context_supports_fused_ffn_boundary(context: SearchContext) -> bool:
     )
 
 
+def _context_supports_fused_initial_qkv(context: SearchContext) -> bool:
+    execution = context.execution_context
+    return bool(
+        not execution.has_valid_token_mask
+        and execution.batch_size == 64
+        and execution.seq_len == 128
+        and execution.d_model == 32
+        and execution.ffn_dim == 32
+        and execution.num_heads == 4
+        and getattr(context.hardware, "triton_initial_norm", False)
+        and getattr(context.hardware, "triton_qkv_native_bhsd", False)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BranchSpace:
     """A StructureSpec and the finite parameters that remain active inside it."""
@@ -755,6 +769,9 @@ def _domains_for_structure(
 ) -> tuple[ParameterDomain, ...]:
     model_width = int(context.execution_context.d_model)
     ffn_width = int(context.execution_context.ffn_dim)
+    fused_initial_qkv = (
+        structure.initial_norm is InitialNormBackend.TRITON_FUSED_QKV
+    )
     projection_choices = _projection_pattern_choices(
         structure.precision_plan,
         require_qkv_shadow=(
@@ -796,6 +813,8 @@ def _domains_for_structure(
         AttentionBackend.TRITON_DH8,
     }:
         block_m, block_n, warps, stages = _attention_defaults(structure.attention)
+        if fused_initial_qkv:
+            block_m, block_n, warps, stages = 64, 32, 2, 3
         if (
             structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
             and structure.attention is AttentionBackend.TRITON_DH8
@@ -804,7 +823,11 @@ def _domains_for_structure(
             # Preserve Shape 11's proven attention schedule when the experiment
             # changes only the FFN boundary.
             block_m, block_n, warps, stages = 128, 64, 4, 1
-        tile_choices = _attention_tile_choices(context.execution_context.seq_len)
+        tile_choices = (
+            ("64x32",)
+            if fused_initial_qkv
+            else _attention_tile_choices(context.execution_context.seq_len)
+        )
         default_tile = f"{block_m}x{block_n}"
         if default_tile not in tile_choices:
             default_tile = tile_choices[0]
@@ -817,12 +840,12 @@ def _domains_for_structure(
                 ),
                 ParameterDomain(
                     "attention_num_warps",
-                    (2, 4, 8),
+                    (2,) if fused_initial_qkv else (2, 4, 8),
                     warps,
                 ),
                 ParameterDomain(
                     "attention_num_stages",
-                    (1, 2, 3, 4),
+                    (3,) if fused_initial_qkv else (1, 2, 3, 4),
                     stages,
                 ),
             )
@@ -839,7 +862,9 @@ def _domains_for_structure(
             and context.execution_context.num_heads == 16
         )
         default_tile = (
-            "128x64x64"
+            "16x128x32"
+            if fused_initial_qkv
+            else "128x64x64"
             if shape11_fused_witness
             else "32x32x32"
             if model_width == 32
@@ -849,13 +874,13 @@ def _domains_for_structure(
             (
                 ParameterDomain(
                     "qkv_gemm_tile",
-                    tile_choices,
+                    ("16x128x32",) if fused_initial_qkv else tile_choices,
                     default_tile,
                 ),
                 ParameterDomain(
                     "qkv_num_warps",
-                    (2, 4, 8),
-                    8 if shape11_fused_witness else 4,
+                    (4,) if fused_initial_qkv else (2, 4, 8),
+                    4 if fused_initial_qkv else 8 if shape11_fused_witness else 4,
                 ),
             )
         )
@@ -934,13 +959,18 @@ def _domains_for_structure(
             else:
                 norm_rows = (16, 32, 64) if model_width == 32 else (16, 32)
                 norm_warps = (2, 4) if model_width == 32 else (4, 8)
+        if fused_initial_qkv:
+            norm_rows = (16,)
+            norm_warps = (4,)
         domains.extend(
             (
                 ParameterDomain(
                     "residual_block_rows",
                     norm_rows,
                     (
-                        32
+                        16
+                        if fused_initial_qkv
+                        else 32
                         if structure.residual_norm
                         is ResidualNormBackend.TRITON_LINEAR_MIXED
                         and model_width == 32
@@ -1016,23 +1046,29 @@ def _domains_for_structure(
             input_width=model_width,
             supported_block_k=(16, 32, 64, 128),
         )
-        default_tile = "32x32x32" if model_width == 32 else "64x64x32"
+        default_tile = (
+            "32x16x32"
+            if fused_initial_qkv
+            else "32x32x32"
+            if model_width == 32
+            else "64x64x32"
+        )
         domains.extend(
             (
                 ParameterDomain(
                     "ffn_input_gemm_tile",
-                    tile_choices,
+                    ("32x16x32",) if fused_initial_qkv else tile_choices,
                     default_tile,
                 ),
                 ParameterDomain(
                     "ffn_input_num_warps",
-                    (1, 2, 4, 8),
-                    4,
+                    (8,) if fused_initial_qkv else (1, 2, 4, 8),
+                    8 if fused_initial_qkv else 4,
                 ),
                 ParameterDomain(
                     "ffn_input_num_stages",
-                    (1, 2, 3, 4),
-                    2,
+                    (4,) if fused_initial_qkv else (1, 2, 3, 4),
+                    4 if fused_initial_qkv else 2,
                 ),
             )
         )
@@ -1047,9 +1083,10 @@ def _domains_for_structure(
         domains.append(
             ParameterDomain(
                 "reuse_unchanged_input",
-                (False, True),
+                (True,) if fused_initial_qkv else (False, True),
                 bool(
-                    structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+                    fused_initial_qkv
+                    or structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
                     and structure.attention is AttentionBackend.TRITON_DH8
                     and context.execution_context.num_heads == 16
                 ),
@@ -1084,6 +1121,20 @@ def _search_structure_supported(
     structure: StructureSpec,
     context: SearchContext,
 ) -> bool:
+    if structure.initial_norm is InitialNormBackend.TRITON_FUSED_QKV:
+        return bool(
+            _context_supports_fused_initial_qkv(context)
+            and structure.attention is AttentionBackend.TRITON_DH8
+            and structure.precision_plan is PrecisionPlan.FP16_CORE
+            and structure.qkv_materialization
+            is QKVMaterialization.TRITON_NATIVE_BHSD
+            and structure.attention_output_bridge
+            is AttentionOutputBridge.ATTENTION_DIRECT_BSD
+            and structure.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU
+            and structure.residual_norm
+            is ResidualNormBackend.TRITON_LINEAR_MIXED
+            and structure.runtime is RuntimeBackend.CUDA_GRAPH
+        )
     if structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY:
         direct_dh8 = bool(
             structure.attention is AttentionBackend.TRITON_DH8
@@ -1219,7 +1270,10 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         qkv_materializations,
         ffns,
         ResidualNormBackend,
-        InitialNormBackend,
+        (
+            InitialNormBackend.TORCH,
+            InitialNormBackend.TRITON_FP16,
+        ),
         runtimes,
     ):
         fp16_fields = fp16_projection_fields(precision_plan)
@@ -1364,6 +1418,19 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
         )
         if _search_structure_supported(fused_ffn_boundary, context):
             values.append(fused_ffn_boundary)
+    if _context_supports_fused_initial_qkv(context):
+        fused_initial_qkv = StructureSpec(
+            attention=AttentionBackend.TRITON_DH8,
+            precision_plan=PrecisionPlan.FP16_CORE,
+            qkv_materialization=QKVMaterialization.TRITON_NATIVE_BHSD,
+            attention_output_bridge=AttentionOutputBridge.ATTENTION_DIRECT_BSD,
+            ffn=FFNBackend.TRITON_LINEAR_EXACT_GELU,
+            residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
+            initial_norm=InitialNormBackend.TRITON_FUSED_QKV,
+            runtime=RuntimeBackend.CUDA_GRAPH,
+        )
+        if _search_structure_supported(fused_initial_qkv, context):
+            values.append(fused_initial_qkv)
     return tuple(values)
 
 
