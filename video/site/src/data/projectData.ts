@@ -19,8 +19,8 @@ export type PerformancePoint = {
 export const headline = {
   kicker: 'TIKTOK TECHJAM 2026 · TRACK 3 · HARDWARE EFFICIENCY',
   title: [
-    'Shape-specialized Transformer execution',
-    'via learning-guided program search',
+    'ML-Guided Program Search for',
+    'Shape-Specialized Transformer Optimization',
   ],
   subject:
     'A measurement-driven study of complete execution programs across 13 resident Transformer workloads.',
