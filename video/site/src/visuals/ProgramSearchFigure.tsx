@@ -1,3 +1,6 @@
+import { useState, type CSSProperties } from 'react'
+import type { SearchStep } from '../motion/motionTypes'
+
 type SearchEvidenceItem = {
   label: string
   value: number
@@ -9,299 +12,340 @@ type PromotionThreshold = {
 }
 
 type ProgramSearchFigureProps = {
+  activeStep?: SearchStep
   evidence: readonly SearchEvidenceItem[]
   thresholds: readonly PromotionThreshold[]
   tpeEquation: string
 }
 
+type GateId = 'legality' | 'screen' | 'enhanced' | 'formal' | 'registry'
+
+const stepRank: Record<SearchStep, number> = {
+  sample: 0,
+  reject: 1,
+  screen: 2,
+  enhanced: 3,
+  formal: 4,
+  registry: 5,
+}
+
 const candidatePaths = [
-  { d: 'M76 224 C174 224 194 286 294 286 S430 252 608 252', legal: true },
-  { d: 'M76 252 C170 252 210 320 302 320 S446 274 608 274', legal: false },
-  { d: 'M76 280 C168 280 212 238 314 238 S456 296 608 296', legal: true },
-  { d: 'M76 308 C182 308 212 356 328 356 S468 318 608 318', legal: false },
-  { d: 'M76 336 C170 336 230 274 340 274 S472 340 608 340', legal: true },
-  { d: 'M76 364 C180 364 234 392 346 392 S486 362 608 362', legal: true },
-  { d: 'M76 392 C176 392 230 330 330 330 S478 384 608 384', legal: false },
-  { d: 'M76 420 C176 420 236 438 348 438 S488 406 608 406', legal: true },
-  { d: 'M76 448 C166 448 222 382 326 382 S468 428 608 428', legal: false },
-  { d: 'M76 476 C180 476 238 472 350 472 S490 450 608 450', legal: true },
-  { d: 'M76 504 C168 504 218 426 314 426 S458 472 608 472', legal: false },
-  { d: 'M76 532 C174 532 226 512 342 512 S486 494 608 494', legal: true },
-  { d: 'M76 560 C176 560 212 462 304 462 S448 516 608 516', legal: false },
+  { y: 278, gateY: 302, legal: true },
+  { y: 302, gateY: 326, legal: false },
+  { y: 326, gateY: 342, legal: true },
+  { y: 350, gateY: 366, legal: false },
+  { y: 374, gateY: 382, legal: true },
+  { y: 398, gateY: 406, legal: true },
+  { y: 422, gateY: 422, legal: false },
+  { y: 446, gateY: 438, legal: true },
+  { y: 470, gateY: 462, legal: false },
+  { y: 494, gateY: 478, legal: true },
+  { y: 518, gateY: 494, legal: false },
+  { y: 542, gateY: 518, legal: true },
+  { y: 566, gateY: 534, legal: false },
+  { y: 590, gateY: 558, legal: true },
+  { y: 614, gateY: 574, legal: false },
 ] as const
 
-const legalPaths = [
-  'M608 252 C690 252 726 314 818 342',
-  'M608 296 C692 296 732 334 818 358',
-  'M608 340 C694 340 740 350 818 374',
-  'M608 362 C696 362 746 374 818 390',
-  'M608 406 C696 406 746 410 818 406',
-  'M608 450 C692 450 738 434 818 422',
-  'M608 494 C690 494 730 456 818 438',
+const screenPaths = [
+  { startY: 302, endY: 360, survives: true },
+  { startY: 342, endY: 384, survives: false },
+  { startY: 382, endY: 408, survives: true },
+  { startY: 406, endY: 432, survives: true },
+  { startY: 438, endY: 456, survives: false },
+  { startY: 478, endY: 480, survives: true },
+  { startY: 518, endY: 504, survives: false },
+  { startY: 558, endY: 528, survives: true },
 ] as const
 
-const screenSurvivors = [
-  'M818 350 C876 350 928 368 1008 382',
-  'M818 374 C882 374 932 382 1008 394',
-  'M818 406 C882 406 934 410 1008 406',
-  'M818 438 C878 438 930 424 1008 418',
+const enhancedPaths = [
+  { startY: 360, endY: 398, survives: false },
+  { startY: 408, endY: 422, survives: true },
+  { startY: 432, endY: 446, survives: false },
+  { startY: 480, endY: 470, survives: true },
+  { startY: 528, endY: 494, survives: false },
 ] as const
 
-const screenRejects = [
-  'M818 358 C840 358 854 360 878 364',
-  'M818 390 C840 390 854 392 878 394',
-  'M818 422 C840 422 854 420 878 416',
+const formalPaths = [
+  { startY: 422, endY: 438, wins: false },
+  { startY: 470, endY: 454, wins: true },
 ] as const
 
-const enhancedSurvivors = [
-  'M1008 382 C1072 382 1126 394 1218 400',
-  'M1008 418 C1072 418 1126 412 1218 408',
-] as const
+const gates: ReadonlyArray<{
+  id: GateId
+  x: number
+  label: string
+  noteTitle: string
+  noteLines: readonly string[]
+  noteX: number
+  noteY: number
+}> = [
+  {
+    id: 'legality',
+    x: 620,
+    label: 'STATIC LEGALITY',
+    noteTitle: 'REJECT BEFORE GPU WORK',
+    noteLines: ['Shape · capability · layout', 'Precision · fusion · runtime'],
+    noteX: 456,
+    noteY: 664,
+  },
+  {
+    id: 'screen',
+    x: 980,
+    label: 'SCREEN · 65%',
+    noteTitle: 'SCREEN TRAINS TPE',
+    noteLines: ['All COMPLETE observations', 'Accuracy · path · runtime constraints'],
+    noteX: 826,
+    noteY: 178,
+  },
+  {
+    id: 'enhanced',
+    x: 1320,
+    label: 'ENHANCED · 82%',
+    noteTitle: 'REMEASURE THE FRONTIER',
+    noteLines: ['Fastest eligible 20%', 'Maximum eight resident candidates'],
+    noteX: 1166,
+    noteY: 664,
+  },
+  {
+    id: 'formal',
+    x: 1630,
+    label: 'FORMAL · 100%',
+    noteTitle: 'LOCK ONE CHALLENGER',
+    noteLines: ['Alternating paired blocks', 'Sequential gate is preset'],
+    noteX: 1476,
+    noteY: 178,
+  },
+  {
+    id: 'registry',
+    x: 2040,
+    label: 'REGISTRY',
+    noteTitle: 'EXACT MATCH ONLY',
+    noteLines: ['Stores the approved ConfigSpec', 'Measured stack identity + Shape variant'],
+    noteX: 1702,
+    noteY: 664,
+  },
+]
 
-const enhancedRejects = [
-  'M1008 394 C1034 394 1050 396 1078 398',
-  'M1008 406 C1034 406 1050 404 1078 402',
-] as const
+const evidenceUnits = ['SCREEN ENTRIES', 'ENHANCED ENTRIES', 'FORMAL COMPARISONS', 'DEPLOYMENT UPDATES'] as const
 
-const stageTicks = [
-  { x: 608, label: 'LEGAL?' },
-  { x: 818, label: 'SCREEN' },
-  { x: 1008, label: 'ENHANCED' },
-  { x: 1218, label: 'FORMAL' },
-] as const
-
-const rejectionMarks = [274, 318, 384, 428, 472, 516] as const
-
-const screenRejectionMarks = [364, 394, 416] as const
-
-const enhancedRejectionMarks = [398, 402] as const
-
-const evidenceUnits = ['ENTRIES', 'ENTRIES', 'COMPARISONS', 'UPDATES'] as const
+function pathStyle(index: number): CSSProperties {
+  return { '--path-index': index } as CSSProperties
+}
 
 export function ProgramSearchFigure({
+  activeStep = 'sample',
   evidence,
   thresholds,
   tpeEquation,
 }: ProgramSearchFigureProps) {
+  const [activeGate, setActiveGate] = useState<GateId | null>(null)
+  const rank = stepRank[activeStep]
+  const inspectedGate = gates.find((gate) => gate.id === activeGate)
+
   return (
-    <figure className="program-search-figure">
+    <figure className="program-search-figure" data-active-step={activeStep}>
       <svg
         className="program-search-figure__svg"
-        viewBox="0 0 1600 820"
+        viewBox="0 0 2200 860"
         role="img"
         aria-labelledby="program-search-figure-title program-search-figure-description"
       >
-        <title id="program-search-figure-title">Program search convergence</title>
+        <title id="program-search-figure-title">Conditional program search corridor</title>
         <desc id="program-search-figure-description">
-          Candidate configurations are rejected by legality and progressively narrowed by screen,
-          enhanced, and formal measurement before one program enters the registry.
+          Typed execution programs are proposed inside compatible branches, filtered by static
+          legality, narrowed through Screen, Enhanced and Formal GPU evidence, then committed to an
+          measured-stack-and-Shape registry under the applicable Formal rule.
         </desc>
 
+        <defs>
+          <linearGradient id="search-corridor-wash" x1="0" x2="1">
+            <stop offset="0" stopColor="#2457d6" stopOpacity="0.055" />
+            <stop offset="0.74" stopColor="#2457d6" stopOpacity="0.015" />
+            <stop offset="1" stopColor="#f06432" stopOpacity="0.075" />
+          </linearGradient>
+          <marker id="search-winner-arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+            <path d="M0 0 L12 6 L0 12 Z" className="search-winner-arrow" />
+          </marker>
+        </defs>
+
+        <path
+          className="search-corridor-field"
+          d="M92 220 H620 L980 294 L1320 354 L1630 402 L2110 424 V488 L1630 506 L1320 566 L980 626 L620 666 H92 Z"
+          fill="url(#search-corridor-wash)"
+        />
+        <path className="search-corridor-boundary" d="M92 220 H620 L980 294 L1320 354 L1630 402 L2110 424" />
+        <path className="search-corridor-boundary" d="M92 666 H620 L980 626 L1320 566 L1630 506 L2110 488" />
+
         <g className="search-calibration" aria-hidden="true">
-          <path className="search-calibration__rail" d="M76 184 H1518" />
-          {Array.from({ length: 25 }, (_, index) => {
-            const x = 76 + index * 60
+          <path className="search-calibration__rail" d="M94 202 H2110" />
+          {Array.from({ length: 34 }, (_, index) => {
+            const x = 94 + index * 61
             return (
-              <line
-                key={x}
-                className="search-calibration__tick"
-                x1={x}
-                y1="176"
-                x2={x}
-                y2={index % 4 === 0 ? 194 : 188}
-              />
+              <line key={x} className="search-calibration__tick" x1={x} y1="190" x2={x} y2={index % 5 === 0 ? 210 : 202} />
             )
           })}
         </g>
 
         <g className="search-tpe" aria-label={`Conditional TPE score ${tpeEquation}`}>
-          <text className="search-tpe__label" x="78" y="78">
-            CONDITIONAL TPE
-          </text>
-          <text className="search-tpe__equation" x="78" y="124">
-            {tpeEquation}
-          </text>
-          <path
-            className="search-density search-density--l"
-            d="M252 132 C282 132 286 84 322 84 C358 84 364 146 402 146"
-          />
-          <path
-            className="search-density search-density--g"
-            d="M252 146 C292 146 304 112 344 112 C378 112 384 132 402 132"
-          />
-          <line className="search-density__baseline" x1="252" y1="154" x2="402" y2="154" />
+          <text className="search-tpe__label" x="96" y="72">BRANCH-LOCAL CONDITIONAL TPE</text>
+          <text className="search-tpe__equation" x="96" y="132">ℓ(x) = p(x | y &lt; y*)</text>
+          <text className="search-tpe__equation search-tpe__equation--secondary" x="96" y="174">g(x) = p(x | y ≥ y*)</text>
+          <text className="search-tpe__ratio" x="476" y="132">FAVOR HIGH {tpeEquation}</text>
+          <path className="search-density search-density--l" d="M478 172 C526 172 530 110 578 110 C626 110 636 184 690 184" />
+          <path className="search-density search-density--g" d="M478 184 C528 184 546 140 600 140 C646 140 660 166 690 166" />
+          <line className="search-density__baseline" x1="478" y1="194" x2="690" y2="194" />
         </g>
 
-        <g className="search-stage search-stage--input">
-          <text className="search-stage__label" x="76" y="650">
-            WORKLOAD
-          </text>
-          <path className="search-stage__rule" d="M76 622 H214" />
-        </g>
-
-        <g className="search-stage search-stage--config">
-          <text className="search-stage__label" x="330" y="650" textAnchor="middle">
-            CONFIG
-          </text>
-          <path className="search-stage__rule" d="M248 622 H412" />
-          <circle className="search-config-node" cx="286" cy="622" r="5" />
-          <circle className="search-config-node" cx="330" cy="622" r="5" />
-          <circle className="search-config-node" cx="374" cy="622" r="5" />
-        </g>
-
-        <g className="search-stage-gates">
-          {stageTicks.map((stage) => (
-            <g key={stage.label} className={`search-gate search-gate--${stage.label.toLowerCase().replace('?', '')}`}>
-              <line className="search-gate__line" x1={stage.x} y1="210" x2={stage.x} y2="566" />
-              <line className="search-gate__cap" x1={stage.x - 11} y1="210" x2={stage.x + 11} y2="210" />
-              <line className="search-gate__cap" x1={stage.x - 11} y1="566" x2={stage.x + 11} y2="566" />
-              <text className="search-gate__label" x={stage.x} y="162" textAnchor="middle">
-                {stage.label}
-              </text>
-            </g>
-          ))}
+        <g className="search-stage search-stage--origin">
+          <text className="search-stage__label" x="96" y="256">EXECUTIONPLAN CANDIDATES</text>
+          <text className="search-stage__purpose" x="96" y="696">FIXED-BUDGET SURVIVOR TPE</text>
         </g>
 
         <g className="search-paths search-paths--candidates" fill="none">
-          {candidatePaths.map((path, index) => (
+          {candidatePaths.map((path, index) => {
+            const rejected = !path.legal && rank >= stepRank.reject
+            return (
+              <path
+                key={`${path.y}-${path.gateY}`}
+                className={`search-path search-path--candidate ${path.legal ? 'search-path--legal' : 'search-path--illegal'} ${rejected ? 'is-rejected' : 'is-revealed'}`}
+                d={`M96 ${path.y} C248 ${path.y} 344 ${path.gateY} 620 ${path.gateY}`}
+                pathLength="1"
+                style={pathStyle(index)}
+              />
+            )
+          })}
+        </g>
+
+        <g className={`search-paths search-paths--screen ${rank >= stepRank.screen ? 'is-revealed' : 'is-pending'}`} fill="none">
+          {screenPaths.map((path, index) => (
             <path
-              key={path.d}
-              className={`search-path search-path--candidate ${
-                path.legal ? 'search-path--legal' : 'search-path--illegal'
-              }`}
-              d={path.d}
+              key={`${path.startY}-${path.endY}`}
+              className={`search-path search-path--measured ${path.survives ? 'search-path--survivor' : 'search-path--rejected'}`}
+              d={`M620 ${path.startY} C760 ${path.startY} 842 ${path.endY} 980 ${path.endY}`}
               pathLength="1"
-              style={{ '--path-index': index } as React.CSSProperties}
+              style={pathStyle(index)}
             />
           ))}
         </g>
 
-        <g className="search-paths search-paths--legal" fill="none">
-          {legalPaths.map((path, index) => (
+        <g className={`search-paths search-paths--enhanced ${rank >= stepRank.enhanced ? 'is-revealed' : 'is-pending'}`} fill="none">
+          {enhancedPaths.map((path, index) => (
             <path
-              key={path}
-              className="search-path search-path--measured"
-              d={path}
+              key={`${path.startY}-${path.endY}`}
+              className={`search-path ${path.survives ? 'search-path--survivor' : 'search-path--rejected'}`}
+              d={`M980 ${path.startY} C1092 ${path.startY} 1202 ${path.endY} 1320 ${path.endY}`}
               pathLength="1"
-              style={{ '--path-index': index } as React.CSSProperties}
+              style={pathStyle(index)}
             />
           ))}
         </g>
 
-        <g className="search-paths search-paths--screen" fill="none">
-          {screenSurvivors.map((path, index) => (
+        <g className={`search-paths search-paths--formal ${rank >= stepRank.formal ? 'is-revealed' : 'is-pending'}`} fill="none">
+          {formalPaths.map((path, index) => (
             <path
-              key={path}
-              className="search-path search-path--survivor"
-              d={path}
+              key={`${path.startY}-${path.endY}`}
+              className={`search-path ${path.wins ? 'search-path--formal-winner' : 'search-path--formal-candidate'}`}
+              d={`M1320 ${path.startY} C1434 ${path.startY} 1518 ${path.endY} 1630 ${path.endY}`}
               pathLength="1"
-              style={{ '--path-index': index } as React.CSSProperties}
+              style={pathStyle(index)}
             />
           ))}
-          {screenRejects.map((path) => (
-            <path key={path} className="search-path search-path--rejected" d={path} />
-          ))}
         </g>
 
-        <g className="search-paths search-paths--enhanced" fill="none">
-          {enhancedSurvivors.map((path, index) => (
-            <path
-              key={path}
-              className="search-path search-path--survivor"
-              d={path}
-              pathLength="1"
-              style={{ '--path-index': index } as React.CSSProperties}
-            />
-          ))}
-          {enhancedRejects.map((path) => (
-            <path key={path} className="search-path search-path--rejected" d={path} />
-          ))}
+        <g className={`search-paths search-paths--registry ${rank >= stepRank.registry ? 'is-revealed' : 'is-pending'}`} fill="none">
+          <path className="search-path search-path--winner" d="M1630 454 C1764 454 1850 456 1994 456" pathLength="1" markerEnd="url(#search-winner-arrow)" />
         </g>
 
-        <g className="search-paths search-paths--formal" fill="none">
-          <path
-            className="search-path search-path--formal-candidate"
-            d="M1218 400 C1254 400 1276 402 1310 404"
-          />
-          <path
-            className="search-path search-path--winner"
-            d="M1218 408 C1302 408 1378 407 1462 407"
-            pathLength="1"
-          />
+        <g className={`search-rejections ${rank >= stepRank.reject ? 'is-revealed' : 'is-pending'}`} aria-hidden="true">
+          {candidatePaths.filter((path) => !path.legal).map((path) => (
+            <path key={path.gateY} className="search-rejection-mark" d={`M604 ${path.gateY - 11} L636 ${path.gateY + 11}`} />
+          ))}
+          {screenPaths.filter((path) => !path.survives).map((path) => (
+            <path key={path.endY} className="search-rejection-mark" d={`M964 ${path.endY - 10} L996 ${path.endY + 10}`} />
+          ))}
+          {enhancedPaths.filter((path) => !path.survives).map((path) => (
+            <path key={path.endY} className="search-rejection-mark" d={`M1304 ${path.endY - 10} L1336 ${path.endY + 10}`} />
+          ))}
+          <path className="search-rejection-mark" d="M1614 426 L1646 450" />
         </g>
 
-        <g className="search-rejections" aria-hidden="true">
-          {rejectionMarks.map((y) => (
-            <path key={y} className="search-rejection-mark" d={`M596 ${y - 7} L620 ${y + 7}`} />
-          ))}
-          {screenRejectionMarks.map((y) => (
-            <path key={y} className="search-rejection-mark" d={`M866 ${y - 7} L884 ${y + 7}`} />
-          ))}
-          {enhancedRejectionMarks.map((y, index) => (
-            <path
-              key={`${y}-${index}`}
-              className="search-rejection-mark"
-              d={`M1068 ${y - 7 - index * 5} L1086 ${y + 7 + index * 5}`}
-            />
-          ))}
-          <path className="search-rejection-mark" d="M1300 394 L1318 414" />
-        </g>
-
-        <g className="search-funnel" fill="none" aria-hidden="true">
-          <path className="search-funnel__edge" d="M608 224 C770 244 1048 328 1218 382" />
-          <path className="search-funnel__edge" d="M608 540 C770 520 1048 448 1218 426" />
-          <path className="search-funnel__terminal" d="M1218 382 L1262 404 L1218 426" />
+        <g className="search-stage-gates">
+          {gates.map((gate) => {
+            const isInspected = gate.id === activeGate
+            return (
+              <g
+                key={gate.id}
+                className={`search-gate search-gate--${gate.id} ${isInspected ? 'is-inspected' : ''}`}
+                tabIndex={0}
+                role="button"
+                aria-label={`${gate.label}. ${gate.noteTitle}. ${gate.noteLines.join('. ')}`}
+                onPointerEnter={() => setActiveGate(gate.id)}
+                onPointerLeave={() => setActiveGate(null)}
+                onFocus={() => setActiveGate(gate.id)}
+                onBlur={() => setActiveGate(null)}
+              >
+                <line className="search-gate__line" x1={gate.x} y1="242" x2={gate.x} y2="642" />
+                <line className="search-gate__cap" x1={gate.x - 15} y1="242" x2={gate.x + 15} y2="242" />
+                <line className="search-gate__cap" x1={gate.x - 15} y1="642" x2={gate.x + 15} y2="642" />
+                <circle className="search-gate__focus-target" cx={gate.x} cy="454" r="24" />
+                <text className="search-gate__label" x={gate.x} y="228" textAnchor="middle">{gate.label}</text>
+              </g>
+            )
+          })}
         </g>
 
         <g className="search-evidence-labels">
           {evidence.map((item, index) => {
-            const x = [818, 1008, 1218, 1462][index] ?? 1462
+            const positions = [
+              { x: 980, valueY: 98, unitY: 138 },
+              { x: 1320, valueY: 720, unitY: 760 },
+              { x: 1630, valueY: 98, unitY: 138 },
+              { x: 2040, valueY: 720, unitY: 760 },
+            ]
+            const position = positions[index] ?? positions[positions.length - 1]
+            const requiredRank = index + stepRank.screen
             return (
-              <g key={item.label} className={`search-evidence search-evidence--${item.label.toLowerCase()}`}>
-                <text className="search-evidence__value" x={x} y="104" textAnchor="middle">
-                  {item.value.toLocaleString('en-US')}
-                </text>
-                <text className="search-evidence__unit" x={x} y="128" textAnchor="middle">
-                  {evidenceUnits[index] ?? item.label}
-                </text>
+              <g key={item.label} className={`search-evidence search-evidence--${item.label.toLowerCase()} ${rank >= requiredRank ? 'is-revealed' : 'is-pending'}`}>
+                <text className="search-evidence__value" x={position.x} y={position.valueY} textAnchor="middle">{item.value.toLocaleString('en-US')}</text>
+                <text className="search-evidence__unit" x={position.x} y={position.unitY} textAnchor="middle">{evidenceUnits[index] ?? item.label}</text>
               </g>
             )
           })}
         </g>
 
-        <g className="promotion-gate">
-          <text className="promotion-gate__label" x="1030" y="640">
-            PROMOTION GATE
-          </text>
+        <g className={`promotion-gate ${rank >= stepRank.formal ? 'is-revealed' : 'is-pending'}`}>
+          <text className="promotion-gate__label" x="1424" y="590">PRESET PAIRED PROMOTION GATE</text>
           {thresholds.map((threshold, index) => {
-            const y = 680 + index * 42
-            const gateY = 548 + index * 5
+            const x = 1424 + index * 202
             return (
               <g key={threshold.blocks} className="promotion-threshold">
-                <path
-                  className="promotion-threshold__trace"
-                  d={`M1218 ${gateY} C1172 ${gateY + 28} 1150 ${y} 1098 ${y} H1030`}
-                />
-                <text className="promotion-threshold__blocks" x="1030" y={y - 8}>
-                  {threshold.blocks}
-                </text>
-                <text className="promotion-threshold__ratio" x="1120" y={y - 8}>
-                  {threshold.ratio}
-                </text>
+                <path className="promotion-threshold__trace" d={`M${x} 610 H${x + 166}`} />
+                <text className="promotion-threshold__blocks" x={x} y="640">{threshold.blocks}</text>
+                <text className="promotion-threshold__ratio" x={x + 80} y="640">{threshold.ratio}</text>
               </g>
             )
           })}
+          <text className="promotion-gate__bound" x="1424" y="684">PER-COMPARISON FALSE-PROMOTION BOUND ≤ 0.0464</text>
         </g>
 
-        <g className="search-registry" transform="translate(1462 407)">
-          <circle className="search-registry__orbit search-registry__orbit--outer" r="70" />
-          <circle className="search-registry__orbit search-registry__orbit--inner" r="42" />
-          <path className="search-registry__bracket" d="M-86 -22 H-100 V22 H-86 M86 -22 H100 V22 H86" />
-          <circle className="search-registry__core" r="10" />
-          <text className="search-registry__label" x="0" y="112" textAnchor="middle">
-            REGISTRY
-          </text>
+        <g className="search-registry" transform="translate(2040 456)">
+          <circle className="search-registry__orbit search-registry__orbit--outer" r="68" />
+          <circle className="search-registry__orbit search-registry__orbit--inner" r="40" />
+          <path className="search-registry__bracket" d="M-86 -24 H-104 V24 H-86 M86 -24 H104 V24 H86" />
+          <circle className="search-registry__core" r="11" />
         </g>
+
+        {inspectedGate ? (
+          <g className="search-gate-note" transform={`translate(${inspectedGate.noteX} ${inspectedGate.noteY})`} aria-live="polite">
+            <rect className="search-gate-note__surface" width="326" height="132" rx="4" />
+            <path className="search-gate-note__rule" d="M0 0 H326" />
+            <text className="search-gate-note__title" x="22" y="38">{inspectedGate.noteTitle}</text>
+            {inspectedGate.noteLines.map((line, index) => (
+              <text key={line} className="search-gate-note__line" x="22" y={78 + index * 30}>{line}</text>
+            ))}
+          </g>
+        ) : null}
       </svg>
     </figure>
   )

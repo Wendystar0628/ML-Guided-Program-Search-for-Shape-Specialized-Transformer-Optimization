@@ -1,18 +1,49 @@
 :root {
   color-scheme: light;
-  --paper: #f5f7f6;
+
+  --paper: #f4f6f5;
   --paper-raised: #fbfcfb;
-  --ink: #121a22;
-  --ink-soft: #4b5763;
-  --ink-faint: #87919a;
+  --ink: #111a22;
+  --ink-soft: #4b5863;
+  --ink-faint: #7c8891;
   --blue: #2457d6;
   --blue-deep: #173b91;
   --blue-pale: rgba(36, 87, 214, 0.1);
   --orange: #f06432;
-  --line: rgba(18, 26, 34, 0.15);
-  --line-strong: rgba(18, 26, 34, 0.3);
+  --orange-pale: rgba(240, 100, 50, 0.1);
+  --line: rgba(17, 26, 34, 0.16);
+  --line-strong: rgba(17, 26, 34, 0.34);
+
   --font-sans: "Arial Nova", "Aptos", "Segoe UI", Arial, sans-serif;
   --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
-  --page-x: 7vw;
-  --page-y: 7vh;
+
+  --page-x: 224px;
+  --content-width: 3392px;
+  --grid-gap: 32px;
+  --rail-width: 152px;
+
+  --type-display: 164px;
+  --type-section: 116px;
+  --type-subsection: 52px;
+  --type-lead: 42px;
+  --type-body: 32px;
+  --type-card-title: 34px;
+  --type-data: 40px;
+  --type-label: 28px;
+  --type-micro: 24px;
+  --type-metric: 132px;
+
+  --leading-display: 0.9;
+  --leading-heading: 1.02;
+  --leading-lead: 1.28;
+  --leading-body: 1.45;
+  --leading-label: 1.2;
+
+  --space-1: 16px;
+  --space-2: 24px;
+  --space-3: 40px;
+  --space-4: 64px;
+  --space-5: 96px;
+  --space-6: 144px;
+  --space-7: 208px;
 }

@@ -17,12 +17,20 @@ export type PerformancePoint = {
 }
 
 export const headline = {
-  kicker: 'TIKTOK TECHJAM 2026 · HARDWARE EFFICIENCY · RTX 4080',
+  kicker: 'TIKTOK TECHJAM 2026 · HARDWARE EFFICIENCY',
   title: ['LEARNING-GUIDED', 'PROGRAM SEARCH'],
-  subject: 'SHAPE-SPECIALIZED TRANSFORMERS',
+  subject: 'SHAPE-SPECIALIZED TRANSFORMER EXECUTION ON AN RTX 4080',
+  resultClaim: 'MEASURED PROGRAMS — NOT HAND-PICKED POLICY LABELS',
   geomean: 14.4926,
   residentPassed: 13,
   residentTotal: 13,
+} as const
+
+export const workloadRanges = {
+  batch: '1 — 10,000',
+  sequence: '32 — 100,000',
+  width: '32 — 1,024',
+  heads: '1 — 16',
 } as const
 
 export const workloads: Workload[] = [
@@ -83,7 +91,22 @@ export const equations = {
   geomean: 'G = exp[(1/13) Σ log(sᵢ)] = 14.4926',
 } as const
 
-export const shape14Note = 'S14 · STREAMED · EXCLUDED FROM GEOMEAN'
+export const shape14Note = 'S14 · STREAMED EXECUTION · EXCLUDED FROM GEOMEAN'
+
+export const measurementProtocol = {
+  comparator: 'OFFICIAL ELEMENTWISE TOLERANCE',
+  precision: 'FP32 INPUT / OUTPUT',
+  isolation: ['EXCLUSIVE GPU LEASE', 'FRESH PROCESS PER SHAPE'],
+  timing: 'CUDA EVENT TIMING',
+  residentPreset: '5 CORRECTNESS · 20 WARMUPS · 100 REPEATS · 3 ROUNDS',
+} as const
+
+export const resultBoundary = [
+  'MEASURED ON ONE RTX 4080',
+  '≈ 12 HOURS OF CUMULATIVE SEARCH',
+  'BEST FOUND — NOT A GLOBAL OPTIMUM',
+  'LOCAL ENGINEERING RESULT — NOT AN OFFICIAL SCORE',
+] as const
 
 export const evidenceSources = {
   performance: '../../docs/technical_report/figures/source_data/performance.csv',

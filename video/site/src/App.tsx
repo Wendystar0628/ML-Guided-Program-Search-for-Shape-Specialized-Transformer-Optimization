@@ -1,33 +1,49 @@
-import { EvidenceScene } from './scenes/EvidenceScene'
-import { OutcomeScene } from './scenes/OutcomeScene'
-import { ProgramSearchScene } from './scenes/ProgramSearchScene'
-import { WorkloadScene } from './scenes/WorkloadScene'
+import { FlowProgress } from './components/FlowProgress'
+import { relayLabels } from './data/narrativeData'
+import { ArchitectureSection } from './sections/ArchitectureSection'
+import { EvidenceSection } from './sections/EvidenceSection'
+import { HeroSection } from './sections/HeroSection'
+import { SearchSection } from './sections/SearchSection'
+import { WorkloadSection } from './sections/WorkloadSection'
 import { EvidenceTrace } from './visuals/EvidenceTrace'
-
-const sections = [
-  { id: 'outcome', index: '01', label: 'OUTCOME' },
-  { id: 'workloads', index: '02', label: 'WORKLOADS' },
-  { id: 'search', index: '03', label: 'SEARCH' },
-  { id: 'evidence', index: '04', label: 'EVIDENCE' },
-] as const
 
 export function App() {
   return (
-    <main className="research-exhibit">
+    <main className="story-flow">
       <div className="engineering-grid" aria-hidden="true" />
-      <EvidenceTrace />
-      <nav className="section-rail" aria-label="Exhibit sections">
-        {sections.map((section) => (
-          <a key={section.id} href={'#' + section.id}>
-            <span>{section.index}</span>
-            {section.label}
-          </a>
-        ))}
-      </nav>
-      <OutcomeScene />
-      <WorkloadScene />
-      <ProgramSearchScene />
-      <EvidenceScene />
+      <FlowProgress />
+
+      <HeroSection />
+      <EvidenceTrace
+        variant="outcome-workloads"
+        label={relayLabels.outcomeWorkloads}
+      />
+
+      <div className="narrative-stream">
+        <WorkloadSection />
+        <EvidenceTrace
+          variant="workloads-architecture"
+          label={relayLabels.workloadsArchitecture}
+        />
+
+        <ArchitectureSection />
+        <EvidenceTrace
+          variant="architecture-search"
+          label={relayLabels.architectureSearch}
+        />
+
+        <SearchSection />
+        <EvidenceTrace
+          variant="search-evidence"
+          label={relayLabels.searchEvidence}
+        />
+
+        <EvidenceSection />
+        <EvidenceTrace
+          variant="evidence-closing"
+          label={relayLabels.evidenceClosing}
+        />
+      </div>
     </main>
   )
 }
