@@ -260,7 +260,7 @@
 
 .architecture-band-connector {
   display: grid;
-  min-height: 92px;
+  min-height: 112px;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   gap: var(--space-3);
   align-items: center;
@@ -279,7 +279,7 @@
 .architecture-band-connector__primary {
   grid-column: 2;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   justify-self: center;
   text-align: center;
 }
@@ -290,8 +290,46 @@
   font-style: normal;
 }
 
+.architecture-band-connector__primary > i {
+  position: relative;
+  display: block;
+  width: 72px;
+  height: 62px;
+  flex: 0 0 62px;
+  color: transparent;
+  font-size: 0;
+  filter: drop-shadow(0 8px 10px rgba(245, 99, 48, 0.24));
+}
+
+.architecture-band-connector__primary > i::before {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 12px;
+  height: 36px;
+  border-radius: 2px 2px 0 0;
+  background: var(--orange);
+  box-shadow: 0 0 0 8px rgba(245, 99, 48, 0.1);
+  content: "";
+  transform: translateX(-50%);
+}
+
+.architecture-band-connector__primary > i::after {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-top: 28px solid var(--orange);
+  border-right: 25px solid transparent;
+  border-left: 25px solid transparent;
+  content: "";
+  transform: translateX(-50%);
+}
+
 .architecture-band-connector__primary strong {
   color: var(--blue);
+  font-size: clamp(18px, 1.05vw, 22px);
   font-weight: 700;
 }
 

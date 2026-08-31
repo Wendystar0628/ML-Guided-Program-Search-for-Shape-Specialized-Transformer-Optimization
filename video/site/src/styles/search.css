@@ -30,12 +30,13 @@
 }
 
 .search-system__header h2 {
-  max-width: 13ch;
+  max-width: 22ch;
   margin: 0;
   font-size: clamp(60px, 5vw, 88px);
   font-weight: 560;
   line-height: 0.96;
   letter-spacing: -0.05em;
+  text-wrap: balance;
 }
 
 .search-system__introduction {
