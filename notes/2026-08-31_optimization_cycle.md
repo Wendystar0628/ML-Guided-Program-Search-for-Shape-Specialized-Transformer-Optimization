@@ -16,4 +16,8 @@ Shape 14 部署不应由源码摘要决定是否命中 | 源码摘要变化后�
 
 Resident 新结构种子仍有显著价值 | `structure_seed=1235` 一轮完成 993 个新 Screen Trial，Shape 10/13 分别以 1.051×/1.099× Formal 晋升；Shape 06 补跑后完成覆盖，但通用 challenger 仅为融合 incumbent 的 0.450× | 旧种子局部饱和不等于程序空间饱和；Shape 06 已转为 incumbent 家族内局部问题 | Resident 继续轮换结构种子；Shape 06 不再均匀广搜
 
+Shape 06 局部 TPE 已进入本轮低收益区 | 同一融合家族 challenger 一度从 0.450×改善到 0.912×，下一轮回落到 0.432×且 duplicate proposal 从 3 增到 11；28 个点后仍未接近 2% 门槛 | 已部署 tile 组合保持明显领先 | 暂停 Shape 06 调参，除非加入新的数据流机制
+
 Shape 14 的 launch/microbatch 空间已经穷尽 | 34/34 个高价值点完成；`64×64 / 4 warps / 3 stages / microbatch 2` 以 1.1646×晋升，余下最佳候选 Formal 为 0.9987× | 继续增加相邻 launch 组合的预期价值很低 | 后续只考虑新的算法或跨算子融合 primitive
+
+Resident 新种子收益集中在专用执行机制 | `structure_seed=1236` 的 Shape 07 以 D8 Triton Attention + Native QKV + Direct BSD + Triton FFN 获得 1.281×，Shape 09 以 cuDNN SDPA + Triton 边界获得 1.051×；其余 11 个 Formal 拒绝 | 程序族切换仍有收益，相邻通用调度多数已平台 | 下一轮优先探索尚未获得专用数据流的 Shape，不重复追加已拒绝候选
