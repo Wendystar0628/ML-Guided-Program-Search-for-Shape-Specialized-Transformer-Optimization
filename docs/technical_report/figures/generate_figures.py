@@ -54,7 +54,7 @@ PALE_ORANGE = "#F8E7D9"
 
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parents[2]
-RESULT_ROOT = PROJECT_ROOT / "docs" / "04_最终交付物" / "01_最终性能测试" / "result"
+RESULT_ROOT = PROJECT_ROOT / "result"
 SHAPES_PATH = PROJECT_ROOT / "official" / "test_shapes.json"
 SOURCE_DATA = HERE / "source_data"
 

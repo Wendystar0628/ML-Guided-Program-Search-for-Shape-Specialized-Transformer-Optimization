@@ -20,7 +20,7 @@ On the validated RTX 4080 snapshot, all 14 official workloads pass the project c
 
 ![RTX 4080 performance summary](figures/performance_summary.svg)
 
-The numeric source is the timestamped [final performance artifact](../04_最终交付物/01_最终性能测试/result/20260831T083857.848038Z/final_performance.json). These are local engineering results, not an official competition score.
+The numeric source is the timestamped [final performance artifact](../../result/20260831T083857.848038Z/final_performance.json). These are local engineering results, not an official competition score.
 
 ## Scope of this draft
 

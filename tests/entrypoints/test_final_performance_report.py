@@ -9,13 +9,7 @@ import pytest
 
 
 def _load_report_module() -> ModuleType:
-    script = (
-        Path(__file__).resolve().parents[2]
-        / "docs"
-        / "04_最终交付物"
-        / "01_最终性能测试"
-        / "run_final_performance.py"
-    )
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_final_performance.py"
     spec = importlib.util.spec_from_file_location("final_performance_report", script)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

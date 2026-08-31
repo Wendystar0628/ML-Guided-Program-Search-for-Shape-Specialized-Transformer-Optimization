@@ -68,6 +68,6 @@ The current artifact does not support resident MFU, a cross-hardware performance
 
 ## 4.7 Source
 
-- Machine-readable result: [final_performance.json](../04_最终交付物/01_最终性能测试/result/20260831T083857.848038Z/final_performance.json)
-- Human-readable result: [final_performance.md](../04_最终交付物/01_最终性能测试/result/20260831T083857.848038Z/final_performance.md)
+- Machine-readable result: [final_performance.json](../../result/20260831T083857.848038Z/final_performance.json)
+- Human-readable result: [final_performance.md](../../result/20260831T083857.848038Z/final_performance.md)
 - Figure source data: [`figures/source_data/`](figures/source_data/)

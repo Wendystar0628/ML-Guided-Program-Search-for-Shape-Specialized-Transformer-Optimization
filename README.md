@@ -18,7 +18,7 @@ The current declared snapshot was measured on an NVIDIA GeForce RTX 4080 under a
 Speedup is `baseline median / deployed median`. The 14.49× result is the equal-Shape geometric mean for Shapes 01–13. Shape 14 has no materialized dense `S × S` baseline, so it reports correctness, latency, memory, and a project FLOP estimate but is excluded from the speedup aggregate. These are local engineering results, not an official competition score.
 
 - [Full evaluation and per-Shape table](docs/technical_report/04_evaluation_and_results.md)
-- [Machine-readable final result](docs/04_最终交付物/01_最终性能测试/result/20260831T083857.848038Z/final_performance.json)
+- [Machine-readable final result](result/20260831T083857.848038Z/final_performance.json)
 
 ## Why shape specialization matters
 
@@ -64,10 +64,11 @@ autotune/       search spaces, TPE adapter, staged racing, promotion, outer loop
 benchmarking/   correctness, timing, profiling, hardware probe, GPU isolation
 deployment/     exact environment identity and deployed configuration registry
 official/       immutable benchmark semantics and 14 official Shape definitions
-scripts/        one resident and one Shape-14 end-to-end optimization entrypoint
-observations/   local persistent studies, compact run logs, benchmark summaries
+scripts/        optimization entrypoints and final-performance measurement
+result/         timestamped competition-facing final-performance artifacts
+observations/   local, Git-ignored studies, run logs, and benchmark summaries
 tests/          tests grouped by production responsibility
-docs/           competition rules, engineering guidance, report, and deliverables
+docs/           published English technical report
 cli.py          probe, benchmark, profile, search, and optimize commands
 ```
 
@@ -133,7 +134,7 @@ The primary reproduction target is the correctness and performance of the commit
 First run the low-cost pipeline check:
 
 ```powershell
-.\.venv\Scripts\python.exe "docs\04_最终交付物\01_最终性能测试\run_final_performance.py" --preset smoke
+.\.venv\Scripts\python.exe scripts\run_final_performance.py --preset smoke
 ```
 
 This verifies that the environment, official workloads, deployment resolution, correctness path, and result writer are operational. Smoke output is not the submitted performance result.
@@ -141,18 +142,18 @@ This verifies that the environment, official workloads, deployment resolution, c
 Run the full declared measurement with:
 
 ```powershell
-.\.venv\Scripts\python.exe "docs\04_最终交付物\01_最终性能测试\run_final_performance.py"
+.\.venv\Scripts\python.exe scripts\run_final_performance.py
 ```
 
 The script holds the exclusive GPU lease, measures Shapes serially in fresh processes, and writes a new timestamped artifact without replacing earlier runs:
 
 ```text
-docs/04_最终交付物/01_最终性能测试/result/<UTC completion time>/
+result/<UTC completion time>/
   final_performance.json   machine-readable environment and per-Shape evidence
   final_performance.md     reviewer-facing result table
 ```
 
-A successful reproduction has correctness `PASS` for all 14 official Shapes, reports baseline/deployed latency and speedup for Shapes 01–13, and completes the streamed Shape-14 path with latency and peak memory. The resident geometric mean should be close to the declared **14.49×**, but exact latency and speedup are not expected to be bit-for-bit identical because GPU clocks, temperature, driver state, and background load affect timing. Shape 14 intentionally has no materialized dense baseline and is excluded from the speedup aggregate. The measurement presets and output fields are documented in the [final-performance test directory](docs/04_最终交付物/01_最终性能测试/README.md).
+A successful reproduction has correctness `PASS` for all 14 official Shapes, reports baseline/deployed latency and speedup for Shapes 01–13, and completes the streamed Shape-14 path with latency and peak memory. The resident geometric mean should be close to the declared **14.49×**, but exact latency and speedup are not expected to be bit-for-bit identical because GPU clocks, temperature, driver state, and background load affect timing. Shape 14 intentionally has no materialized dense baseline and is excluded from the speedup aggregate. The measurement presets and output fields are documented in the [result directory](result/README.md).
 
 Rerunning the optimization process is optional and answers a different question: whether another measured program can replace the current deployment. Use `optimize_shapes_01_13.ps1` or `optimize_shape_14.ps1` from the command section above only when reproducing that search-to-deployment workflow; the final-result reproduction itself starts from the committed deployment registry.
 
@@ -176,12 +177,12 @@ See [Environment, AI tools, and limitations](docs/technical_report/05_environmen
 
 ## Limitations and next steps
 
-- Performance has been validated only on the disclosed RTX 4080/Windows stack.
-- The official MFU weights, useful-FLOP definition, bandwidth correction, and final aggregation protocol have not been published; this repository does not claim an official score.
-- Shape 14 has no dense baseline speedup and uses a separate streamed protocol.
-- The final snapshot currently covers FP32 input/output, zero padding, and unit input scale.
-- Search quality is bounded by the currently implemented operator and Kernel vocabulary and by a 36-branch resident structure cap per run.
-- Cross-hardware infrastructure is retained, but another GPU needs fresh measurement and deployment rather than inheriting RTX 4080 results.
+- The evidence covers a competition-defined forward Transformer core, not complete training or serving systems with KV-cache decoding, backward computation, communication, scheduling, and application I/O.
+- The current deployment reflects approximately 12 hours of cumulative search and iterative tuning; the combinatorial program space remains only partially explored, so the selected plans are best-so-far results rather than proven global optima.
+- Performance has been validated only on the disclosed RTX 4080/Windows stack, so portability to other devices and accelerator families is architectural rather than empirically demonstrated.
+- The project has no learned cross-device or cross-workload performance model; a materially different target still requires substantial fresh measurement.
+- Search is an offline process that consumes compilation and exclusive GPU benchmarking time rather than an online adaptation mechanism.
+- Program synthesis is limited to the implemented operator and Kernel vocabulary, and the deployment registry has not yet been evaluated inside a concurrent multi-tenant serving system.
 
 ## Submission links
 
