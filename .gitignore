@@ -49,6 +49,18 @@ agent_state/
 # Local planning notes.
 /notes/
 
+# Keep video production assets local; publish only the website source.
+/video/*
+!/video/site/
+/video/site/*
+!/video/site/src/
+!/video/site/src/**
+!/video/site/index.html
+!/video/site/package.json
+!/video/site/package-lock.json
+!/video/site/tsconfig.json
+!/video/site/vite.config.ts
+
 # Local search studies, run logs, benchmark observations, and device leases.
 /observations/
 
