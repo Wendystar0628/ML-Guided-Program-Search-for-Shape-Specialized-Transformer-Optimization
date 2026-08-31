@@ -24,7 +24,7 @@ def test_benchmark_cli_has_no_combined_shape_group() -> None:
 
 
 def test_search_scope_rejects_resident_and_shape14_together() -> None:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
 
     assert _search_scope(project_root, ("official_01",)) is ImplementationScope.RESIDENT
     assert _search_scope(project_root, ("official_14",)) is ImplementationScope.SHAPE14
@@ -64,7 +64,7 @@ def test_explicit_search_storage_is_partitioned_by_scope(tmp_path: Path) -> None
 
 
 def test_sweep_rejects_a_request_with_the_wrong_scope(monkeypatch) -> None:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     monkeypatch.setattr(search_sweep.torch.cuda, "is_available", lambda: True)
 
     with pytest.raises(ValueError, match="does not match"):

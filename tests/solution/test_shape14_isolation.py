@@ -11,7 +11,7 @@ import torch
 from solution.shape14.executor import execute_streamed
 from solution.transformer import _is_official_shape14
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SHAPE14_KERNEL_MODULE = "solution.shape14.triton_streaming_dh64"
 
 

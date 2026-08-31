@@ -13,7 +13,7 @@ from solution.kernels.attention.triton_s1024_dh32 import (
     triton_shape13_causal_attention_available,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_shape13_triton_attention_availability_is_explicit() -> None:

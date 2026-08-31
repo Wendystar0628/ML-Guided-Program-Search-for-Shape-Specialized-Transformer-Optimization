@@ -10,7 +10,7 @@ import pytest
 
 def _load_report_module() -> ModuleType:
     script = (
-        Path(__file__).resolve().parents[1]
+        Path(__file__).resolve().parents[2]
         / "docs"
         / "04_最终交付物"
         / "01_最终性能测试"

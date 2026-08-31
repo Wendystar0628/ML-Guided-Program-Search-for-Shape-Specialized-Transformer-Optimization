@@ -19,13 +19,18 @@ batch cannot reside in GPU memory at once.
 - `autotune/`: code that generates, searches, evaluates, and repeats candidate
   programs.
 - `benchmarking/`: official-protocol measurement, profiling, and hardware probe.
-- `deployment/`: measured per-device winners consumed by `solution/`.
+- `deployment/`: environment identities and measured exact-device winners
+  consumed by `solution/`.
 - `official/`: upstream benchmark semantics and the 14 workload definitions.
-- `tests/`: control-plane and GPU-path tests.
+- `tests/`: tests grouped by `autotune/`, `benchmarking/`, `entrypoints/`,
+  `official/`, and `solution/` responsibility.
 - `scripts/`: two end-to-end optimization entry points, one for resident Shapes
   01-13 and one for streamed Shape 14.
 - `environments/`: machine-specific dependencies and environment activation.
 - `docs/`: competition rules, engineering notes, and deliverables.
+- `observations/`: persistent search memory, compact run logs, and benchmark
+  summaries.
+- `notes/`: concise chronological observations from optimization cycles.
 
 The performance mainline is organized by responsibility:
 
@@ -37,7 +42,8 @@ solution/
   transformer.py            model that executes the plan
   operators/                PyTorch, SDPA, and compiled operator compositions
   kernels/                  handwritten Triton candidates by subsystem
-  runtimes/                 eager/compile/CUDA Graph/streamed schedules
+  runtimes/                 resident compile and CUDA Graph wrappers
+  shape14/                  streamed planning, execution, and attention kernel
 
 autotune/
   search_space.py           generated structures and parameter domains
@@ -113,6 +119,9 @@ force one cross-platform GPU runtime combination.
 
 The two optimization scripts run the complete search-to-deployment flow in the
 foreground. GPU measurements are serial: Shapes do not compete for the device.
+The resident script targets Shapes 01-05 and 07-13 by default; pass
+`-IncludeShape06` only when a new Shape-06 mechanism justifies its much higher
+measurement cost.
 For Shapes 01-13, the time and trial limits apply to each Shape in each sweep.
 For Shape 14, one script invocation performs one bounded streamed search and at
 most one Formal challenger comparison. Time limits are soft because an

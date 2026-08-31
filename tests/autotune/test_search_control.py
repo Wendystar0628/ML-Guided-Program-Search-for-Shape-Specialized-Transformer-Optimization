@@ -211,7 +211,7 @@ def test_deployment_key_separates_input_variants(tmp_path: Path) -> None:
 
 
 def test_checked_in_deployments_use_complete_shape_keys() -> None:
-    path = Path(__file__).resolve().parents[1] / "deployment" / "deployed_configs.json"
+    path = Path(__file__).resolve().parents[2] / "deployment" / "deployed_configs.json"
     document = json.loads(path.read_text(encoding="utf-8"))
 
     assert document["schema_version"] == 3

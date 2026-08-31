@@ -17,7 +17,7 @@ from benchmarking.device_isolation import (
 )
 from benchmarking.protocols import MeasurementProtocol, RunVariant
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _current_process_id() -> int:

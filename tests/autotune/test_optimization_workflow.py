@@ -247,7 +247,7 @@ def test_budget_limited_sweep_is_success_but_interrupt_is_not() -> None:
 
 
 def test_resident_and_shape14_groups_partition_the_official_workload() -> None:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     all_shapes = load_shapes(project_root)
     resident = load_resident_shapes(project_root)
     streamed = load_streamed_shapes(project_root)
@@ -268,7 +268,7 @@ def test_resident_and_shape14_groups_partition_the_official_workload() -> None:
 
 
 def test_optimization_case_selection_rejects_duplicates_and_wrong_group() -> None:
-    project_root = Path(__file__).resolve().parents[1]
+    project_root = Path(__file__).resolve().parents[2]
     with pytest.raises(ContractError, match="must be unique"):
         _optimization_case_ids(
             project_root,
