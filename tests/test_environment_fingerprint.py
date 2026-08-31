@@ -318,7 +318,7 @@ def test_driver_detection_fails_instead_of_using_an_empty_value(
         environment._driver_version(0, "abc")
 
 
-def test_registry_exact_matches_full_environment_and_iterates_entries(
+def test_registry_matches_runtime_environment_and_revalidates_source_changes(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "deployed.json"
@@ -331,6 +331,15 @@ def test_registry_exact_matches_full_environment_and_iterates_entries(
     publish_deployed_config(hardware=second, shape=shape, config=config, path=path)
 
     assert resolve_deployed_config(hardware=first, shape=shape, path=path) == config
+    changed_source = replace(
+        first,
+        official_definitions_digest="official-b",
+        solution_implementation_digest="solution-b",
+    )
+    assert (
+        resolve_deployed_config(hardware=changed_source, shape=shape, path=path)
+        == config
+    )
     assert (
         resolve_deployed_config(
             hardware=replace(first, torch_version="2.13.0"), shape=shape, path=path
@@ -339,6 +348,16 @@ def test_registry_exact_matches_full_environment_and_iterates_entries(
     )
     assert iter_deployed_configs(hardware=first, path=path) == ((shape, config),)
     assert iter_deployed_configs(hardware=second, path=path) == ((shape, config),)
+
+    publish_deployed_config(
+        hardware=changed_source,
+        shape=shape,
+        config=config,
+        path=path,
+    )
+    bundles = json.loads(path.read_text(encoding="utf-8"))["bundles"]
+    assert len(bundles) == 2
+    assert bundles[0]["hardware"] == changed_source.to_dict()
 
 
 def test_previous_deployment_schema_is_invalidated_on_read_and_publish(

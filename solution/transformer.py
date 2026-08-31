@@ -1132,6 +1132,12 @@ class UserOptimizedTransformer(nn.Module):
             except FileNotFoundError:
                 resolved_config = None
 
+        if resolved_config is not None and not self._plan_builder.evaluate(
+            resolved_config,
+            self._execution_context(value),
+        ).accepted:
+            resolved_config = None
+
         selected = resolved_config or (
             portable_streamed_config()
             if _is_official_shape14(self.config, shape)

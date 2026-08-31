@@ -97,7 +97,8 @@ def _matching_entries(
     for bundle in document["bundles"]:
         if not isinstance(bundle, dict) or not isinstance(bundle.get("hardware"), dict):
             continue
-        if EnvironmentFingerprint.from_dict(bundle["hardware"]) == hardware:
+        persisted = EnvironmentFingerprint.from_dict(bundle["hardware"])
+        if persisted.measurement_identity == hardware.measurement_identity:
             entries = bundle.get("entries", [])
             return tuple(entry for entry in entries if isinstance(entry, dict))
     return ()
@@ -170,13 +171,18 @@ def publish_deployed_config(
         if (
             isinstance(bundle, dict)
             and isinstance(bundle.get("hardware"), dict)
-            and EnvironmentFingerprint.from_dict(bundle["hardware"]) == hardware_key
+            and EnvironmentFingerprint.from_dict(
+                bundle["hardware"]
+            ).measurement_identity
+            == hardware_key.measurement_identity
         ):
             matching_bundle = bundle
             break
     if matching_bundle is None:
         matching_bundle = {"hardware": hardware_key.to_dict(), "entries": []}
         document["bundles"].append(matching_bundle)
+    else:
+        matching_bundle["hardware"] = hardware_key.to_dict()
 
     entries = matching_bundle.setdefault("entries", [])
     replacement = {"shape": shape_key.to_dict(), "config": config.to_dict()}

@@ -458,9 +458,6 @@ class SearchEngine:
             required_configs: tuple[ConfigSpec, ...] = ()
             if request.incumbent is not None:
                 required_configs += (request.incumbent,)
-            required_configs = _unique_configs(
-                [*required_configs, *request.warm_starts]
-            )
             search_space = ProgramSearchSpace(
                 plan_builder=self.plan_builder,
                 context=context,
@@ -799,14 +796,10 @@ class SearchEngine:
         *,
         deadline: float,
     ) -> bool:
-        branches = (
-            tuple(
-                branch
-                for branch in plan.search_space.branches
-                if branch.branch_id in plan.search_space.mandatory_branch_ids
-            )
-            if plan.request.scope is EvaluationScope.STREAMED
-            else plan.search_space.branches
+        branches = tuple(
+            branch
+            for branch in plan.search_space.branches
+            if branch.branch_id in plan.search_space.mandatory_branch_ids
         )
         coverage_complete = True
         for branch in branches:

@@ -569,7 +569,7 @@ def test_invalid_constraint_history_uses_three_infeasible_dimensions() -> None:
     assert _constraints_from_trial(trial) == (1.0, 1.0, 1.0)
 
 
-def test_plan_keeps_unique_warm_start_branches(
+def test_plan_keeps_warm_starts_out_of_the_structure_domain(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -604,10 +604,7 @@ def test_plan_keeps_unique_warm_start_branches(
 
     required = captured["required_configs"]
     assert isinstance(required, tuple)
-    assert tuple(config.config_id for config in required) == (
-        incumbent.config_id,
-        transfer.config_id,
-    )
+    assert tuple(config.config_id for config in required) == (incumbent.config_id,)
 
 
 def test_time_limited_partial_screen_has_no_winner(
@@ -670,7 +667,7 @@ def test_stage_timings_require_finite_non_negative_seconds(value: float) -> None
         SearchStageTimings(total=value)
 
 
-def test_partial_resident_coverage_persists_without_selection(
+def test_resident_optional_branches_do_not_block_promotion(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -706,10 +703,11 @@ def test_partial_resident_coverage_persists_without_selection(
     backend = OptunaBackend(engine.storage, seed=request.seed)
     optional_study = backend.create_study(plan.identity_for(optional.branch_id))
     assert result.new_level1_trials == 1
-    assert result.stop_reason == "insufficient_screen_budget"
-    assert not result.enhanced_measurements
-    assert result.formal_challenger_measurement is None
-    assert not result.deployment_approved
+    assert result.mandatory_coverage_complete
+    assert result.stop_reason == "completed"
+    assert result.enhanced_measurements
+    assert result.formal_challenger_measurement is not None
+    assert result.deployment_approved
     assert engine.storage.attempted_challenger_ids(
         case_id=request.case_id,
         environment=request.environment,

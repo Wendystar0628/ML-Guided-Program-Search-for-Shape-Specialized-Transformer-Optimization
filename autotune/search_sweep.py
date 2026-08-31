@@ -431,10 +431,21 @@ class SearchSweep:
         for case_id in request.case_ids:
             shape = requested_shapes[case_id]
             shape_key = _shape_key(shape, request.variant)
+            context = execution_context(
+                shape,
+                request.variant,
+                device,
+            )
             incumbent = resolve_deployed_config(
                 hardware=hardware_key,
                 shape=shape_key,
             )
+            if incumbent is not None and not plan_builder.evaluate(
+                incumbent,
+                context,
+                capabilities,
+            ).accepted:
+                incumbent = None
             if incumbent is None:
                 incumbent = (
                     portable_streamed_config() if shape.streamed else portable_config()
@@ -454,11 +465,7 @@ class SearchSweep:
             )
             search_request = SearchRequest(
                 case_id=case_id,
-                execution_context=execution_context(
-                    shape,
-                    request.variant,
-                    device,
-                ),
+                execution_context=context,
                 hardware=capabilities,
                 scope=evaluation_scope,
                 environment=environment,
