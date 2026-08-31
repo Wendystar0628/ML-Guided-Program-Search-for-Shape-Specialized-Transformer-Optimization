@@ -1095,9 +1095,14 @@ def _search_structure_supported(
             and structure.attention_output_bridge
             is AttentionOutputBridge.TRITON_BHSD_PROJECTION
         )
+        cudnn_bhsd = bool(
+            structure.attention is AttentionBackend.FP16_CUDNN_SDPA
+            and structure.attention_output_bridge
+            is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+        )
         return bool(
             _context_supports_fused_ffn_boundary(context)
-            and (direct_dh8 or efficient_bhsd)
+            and (direct_dh8 or efficient_bhsd or cudnn_bhsd)
             and structure.precision_plan is PrecisionPlan.FP16_CORE
             and structure.qkv_materialization
             is QKVMaterialization.TRITON_NATIVE_BHSD
@@ -1331,10 +1336,18 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             and execution.head_dim == 8
             and execution.num_heads == 16
         )
+        use_cudnn = bool(
+            not use_dh8
+            and execution.head_dim == 128
+            and context.hardware is not None
+            and context.hardware.cudnn_sdp
+        )
         fused_ffn_boundary = StructureSpec(
             attention=(
                 AttentionBackend.TRITON_DH8
                 if use_dh8
+                else AttentionBackend.FP16_CUDNN_SDPA
+                if use_cudnn
                 else AttentionBackend.FP16_EFFICIENT_SDPA
             ),
             precision_plan=PrecisionPlan.FP16_CORE,

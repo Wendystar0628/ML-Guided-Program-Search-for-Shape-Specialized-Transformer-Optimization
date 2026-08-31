@@ -541,6 +541,24 @@ def test_2048_row_fused_mlp_boundary_is_one_strict_searchable_structure() -> Non
     assert shape11_fused[0].structure.attention is AttentionBackend.TRITON_DH8
     assert shape11_fused[0].default_config() == shape11_config
 
+    shape09_context = replace(context, seq_len=128, num_heads=1)
+    shape09_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=shape09_context,
+            scope="resident",
+            hardware=hardware,
+        ),
+        max_branches=36,
+    )
+    shape09_fused = tuple(
+        branch
+        for branch in shape09_space.branches
+        if branch.structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    )
+    assert len(shape09_fused) == 1
+    assert shape09_fused[0].structure.attention is AttentionBackend.FP16_CUDNN_SDPA
+
     wrong_shape = replace(context, batch_size=32, seq_len=128)
     rejection = PlanBuilder().evaluate(config, wrong_shape, hardware)
     assert not rejection.accepted
