@@ -6,9 +6,15 @@ The official benchmark evaluates the same pre-normalized Transformer semantics o
 
 The Shapes vary batch size from 1 to 10,000, model width from 32 to 1,024, head count from 1 to 16, and sequence length from 32 to 100,000. These changes alter the relative importance of launch overhead, matrix throughput, attention working set, layout conversion, memory traffic, and total device capacity. A single fixed implementation is therefore unlikely to be uniformly best.
 
-![Official workload diversity](figures/workload_landscape.svg)
+![Official workload regime map](figures/workload_landscape.svg)
 
-The sensitivity panels above are descriptive rather than causal ablations: each point uses its independently deployed plan. Their non-monotonic response is exactly the reason the project treats Shape as part of the optimization problem.
+*Figure 1. The 14 official workloads span distinct launch-overhead, matrix-throughput, attention-working-set, and device-capacity regimes, motivating Shape-specialized execution.*
+
+![Measured workload sensitivity](figures/workload_sensitivity.svg)
+
+*Figure 2. Independently deployed programs respond non-monotonically to batch size, width, head count, and sequence length; these points are descriptive Shape evidence rather than causal Kernel ablations.*
+
+The sensitivity panels are descriptive rather than causal ablations: each point uses its independently deployed plan. Their non-monotonic response is exactly the reason the project treats Shape as part of the optimization problem.
 
 ## 1.2 Core insight
 

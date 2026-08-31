@@ -1,0 +1,122 @@
+digraph Shape14Streaming {
+    graph [
+        rankdir=LR,
+        bgcolor="#FFFFFF",
+        pad=0.22,
+        margin=0,
+        nodesep=0.42,
+        ranksep=0.54,
+        splines=ortho,
+        outputorder=edgesfirst,
+        fontname="Arial",
+        fontsize=11
+    ];
+
+    node [
+        shape=box,
+        style="rounded,filled",
+        fixedsize=false,
+        width=1.70,
+        margin="0.14,0.11",
+        fontname="Arial",
+        fontsize=11,
+        fontcolor="#24313A",
+        color="#68747D",
+        fillcolor="#F4F6F8",
+        penwidth=1.25
+    ];
+
+    edge [
+        color="#68747D",
+        penwidth=1.45,
+        arrowsize=0.72
+    ];
+
+    dense_lane [
+        shape=plaintext,
+        width=0,
+        margin=0,
+        label=<<B>Dense path</B><BR/><FONT POINT-SIZE="9">INVALID</FONT>>,
+        fontcolor="#D9772B"
+    ];
+
+    stream_lane [
+        shape=plaintext,
+        width=0,
+        margin=0,
+        label=<<B>Streamed path</B><BR/><FONT POINT-SIZE="9">VALID</FONT>>,
+        fontcolor="#1F8A78"
+    ];
+
+    dense_scores [
+        label="Full score tensor\n[B, H, S, S]",
+        color="#D9772B",
+        fillcolor="#FBEEE4"
+    ];
+
+    dense_softmax [
+        label="Global softmax\n+ probabilities",
+        color="#D9772B",
+        fillcolor="#FBEEE4"
+    ];
+
+    dense_second [
+        label="Second S × S\nmaterialization",
+        color="#D9772B",
+        fillcolor="#FBEEE4"
+    ];
+
+    dense_conclusion [
+        label="Does not fit\n16 GB-class GPU",
+        color="#D9772B",
+        fillcolor="#FFFFFF",
+        penwidth=1.65
+    ];
+
+    stream_batch [
+        label="B=2 microbatch\n16 ordered chunks",
+        color="#1F8A78",
+        fillcolor="#E8F5F2"
+    ];
+
+    stream_tiles [
+        label="64 × 64 Q/KV tiles\nonline max + sum",
+        color="#1F8A78",
+        fillcolor="#E8F5F2"
+    ];
+
+    stream_emit [
+        label="Emit [B, S, D]\ndiscard score tiles",
+        color="#1F8A78",
+        fillcolor="#E8F5F2"
+    ];
+
+    stream_conclusion [
+        label="6.56 GiB peak\nno global S × S",
+        color="#1F8A78",
+        fillcolor="#FFFFFF",
+        penwidth=1.65
+    ];
+
+    { rank=same; dense_lane; stream_lane; }
+    { rank=same; dense_scores; stream_batch; }
+    { rank=same; dense_softmax; stream_tiles; }
+    { rank=same; dense_second; stream_emit; }
+    { rank=same; dense_conclusion; stream_conclusion; }
+
+    dense_lane -> dense_scores [color="#D9772B"];
+    dense_scores -> dense_softmax [color="#D9772B"];
+    dense_softmax -> dense_second [color="#D9772B"];
+    dense_second -> dense_conclusion [color="#D9772B"];
+
+    stream_lane -> stream_batch [color="#1F8A78"];
+    stream_batch -> stream_tiles [color="#1F8A78"];
+    stream_tiles -> stream_emit [color="#1F8A78"];
+    stream_emit -> stream_conclusion [color="#1F8A78"];
+
+    dense_lane -> stream_lane [style=invis, weight=100];
+    dense_scores -> stream_batch [style=invis, weight=100];
+    dense_softmax -> stream_tiles [style=invis, weight=100];
+    dense_second -> stream_emit [style=invis, weight=100];
+    dense_conclusion -> stream_conclusion [style=invis, weight=100];
+}

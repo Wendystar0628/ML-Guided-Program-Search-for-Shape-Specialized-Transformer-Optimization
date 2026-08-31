@@ -28,4 +28,4 @@ This version intentionally does not contain a dedicated result-reproduction sect
 
 ## Figure bundle
 
-The seven report figures are generated from repository data by [`figures/generate_figures.py`](figures/generate_figures.py). They cover the closed-loop architecture, official workload diversity, final performance, useful-work throughput, deployed program structure, Shape-14 capacity, and the observed search funnel. Each figure is available as editable SVG, PDF, and a 600 dpi PNG preview. The compact CSV tables under `figures/source_data/` preserve the plotted values and their evidence boundaries.
+The nine report figures are rendered through the R/ggplot2 and Graphviz pipeline in [`figures/`](figures/). They cover the closed-loop architecture, official workload regimes and measured sensitivity, final performance, useful-work throughput, deployed program structure, Shape-14 streamed execution and capacity, and the observed search funnel. Each figure is available as editable SVG, PDF, and a high-resolution PNG preview. The compact CSV tables under `figures/source_data/` preserve the plotted values and their evidence boundaries.

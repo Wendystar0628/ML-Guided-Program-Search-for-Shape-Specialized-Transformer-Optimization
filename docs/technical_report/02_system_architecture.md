@@ -4,6 +4,8 @@
 
 ![Closed-loop system architecture](figures/architecture_overview.svg)
 
+*Figure 3. Typed program construction, isolated multi-fidelity measurement, sequential promotion, exact-device deployment, and runtime resolution form one continuous closed loop.*
+
 The architecture closes one evidence loop: generated programs are statically validated, executed under GPU isolation, compared with the incumbent, written to an exact-device registry only after Formal approval, and then consumed by the same runtime implementation that was benchmarked.
 
 ## 2.2 Responsibility boundaries
@@ -47,7 +49,9 @@ These are program building blocks, not a list of complete hand-authored policies
 
 ![Shape-specialized deployed programs](figures/deployed_program_matrix.svg)
 
-The deployed RTX 4080 snapshot resolves the 14 official Shapes to 11 exact `ConfigSpec` values and 10 displayed structural signatures. The matrix uses text as the primary encoding and color only for grouping: the deployed unit is a complete generated program spanning schedule, attention, dataflow, projections, FFN, normalization, and precision—not a single manually named policy.
+*Figure 4. The RTX 4080 deployment maps each official Shape to a distinct combination of runtime, attention, output layout, projection, FFN, normalization/fusion, and precision decisions. Cell labels carry the meaning; fill color only groups library/native, optimized/specialized, and Shape-14 streamed mechanisms.*
+
+The deployed RTX 4080 snapshot resolves the 14 official Shapes to 11 exact `ConfigSpec` values and 10 displayed structural signatures. Projection letters are ordered Q/K/V/O (`S`: FP16 shadow, `A`: autocast FP16, `I`: input dtype). The deployed unit is a complete generated program—not a single manually named policy.
 
 ## 2.5 Shape 14 as a separate execution regime
 

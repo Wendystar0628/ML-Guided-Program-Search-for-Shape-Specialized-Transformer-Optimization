@@ -41,7 +41,7 @@ The exact model used in every historical Codex task is not encoded reliably in t
 | Stop That Shit | Kept implementation work bounded and prevented audit, packaging, or speculative infrastructure from displacing the performance mainline |
 | Deep Research | Supported evidence-oriented exploration of candidate algorithms and optimization methods |
 | Browser Control | Operated the authorized web review workflow |
-| Nature Figure | Generated the editable academic architecture, performance, and workload figures in this report |
+| Nature Figure | Guided the scientific-figure contracts, accessible visual design, and export QA for the R/ggplot2 and Graphviz figure bundle |
 
 Only tools and Skills actually used are listed. Candidate generation, correctness, timing, comparison, persistence, and deployment are deterministic program operations; AI assistance was used during development to propose, review, and refine changes.
 

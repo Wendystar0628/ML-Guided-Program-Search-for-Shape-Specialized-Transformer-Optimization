@@ -22,6 +22,8 @@ The declared snapshot was measured locally on an NVIDIA GeForce RTX 4080. Shapes
 
 Speedup is `baseline median / deployed median`; Shape 14 is excluded because a dense `S × S` baseline was not executed. Shape 14 passes a local `B=1` semantic-equivalence check and completes the full logical `B=32` streamed path with an output digest. This is not yet the unpublished final official `B=32` input/output-pair validation. The 6.56 GiB value is maximum allocated memory for one `B=2` inner forward, not allocator-reserved memory or a materialized `B=32` call.
 
+The geometric mean gives every resident Shape equal weight in log-speedup space: `log G` is the arithmetic mean of the per-Shape `log speedup`. This is the standard aggregation for multiplicative benchmark ratios; the full range and per-Shape results remain visible because one aggregate cannot describe workload variability.
+
 These are local engineering results, not an official competition score. See the [human-readable result](result/20260831T083857.848038Z/final_performance.md) and [evaluation protocol](docs/technical_report/04_evaluation_and_results.md) for the complete per-Shape evidence and measurement boundaries.
 
 ## Problem, approach, and impact
@@ -36,6 +38,10 @@ The project addresses this with three connected ideas:
 
 This approach targets a practical gap between generic library defaults and the best program for a real device and workload. It can help developers make consumer or edge GPUs more useful for fixed Transformer workloads while preserving an auditable correctness-and-measurement trail. The current evidence is limited to the disclosed RTX 4080 system; portability is an architectural goal, not a measured claim.
 
+![Shape-specialized deployed-program matrix](docs/technical_report/figures/deployed_program_matrix.svg)
+
+*The deployed program is a measured composition, not a policy label. Each row shows the runtime, attention, output-layout, projection, FFN, normalization/fusion, and precision choices selected for one official Shape; Shape 14 forms a separate streamed regime.*
+
 ## System overview
 
 ![Closed-loop architecture](docs/technical_report/figures/architecture_overview.svg)
@@ -43,6 +49,16 @@ This approach targets a practical gap between generic library defaults and the b
 The main loop is **construct → reject illegal plans → measure → compare → register the approved winner → execute**. Shapes 01–13 use persistent conditional TPE studies; Shape 14 uses a separate finite streamed search. Screen, Enhanced, and Formal stages spend increasing measurement effort only on progressively stronger evidence.
 
 Here, “deployment” means local runtime selection through an environment-matched registry, not production serving infrastructure. A committed winner is selected only when the measured runtime signature and complete workload fingerprint match; another environment falls back to a portable configuration instead of assuming the RTX 4080 result transfers.
+
+### Why the optimizer is principled
+
+The search combines three established ideas rather than relying on blind enumeration:
+
+- **Conditional TPE:** within each structurally compatible branch, TPE separates better and remaining Screen observations, estimates densities `l(x)` and `g(x)`, and favors candidates with a high `l(x)/g(x)` ratio—the expected-improvement ranking derived for TPE. Accuracy, execution-path, and runtime violations are exposed to the constrained sampler instead of being treated as valid wins.
+- **Fixed-budget racing:** inexpensive evidence first covers legal structures; the remaining budget is concentrated on the best measured branches while a small reserve protects under-sampled alternatives. This transfers the best-arm-identification resource-allocation principle without claiming that the project's budget constants are theoretically optimal.
+- **Sequential paired promotion:** Formal blocks alternate incumbent/challenger order. Clear improvements may promote after 6 or 9 blocks; gains near the `1.02×` minimum-effect gate require up to 13. Under the documented independent-block sign-test null, the pre-specified three-look rule has the conservative per-comparison bound `P(false promotion) ≤ 1/64 + 10/512 + 92/8192 = 0.0464 < 0.05`.
+
+The last bound applies to one Formal challenger comparison under its stated assumptions; it is not a project-wide confidence level. The [search method](docs/technical_report/03_search_and_optimization_method.md) gives the derivations, implementation correspondence, and theoretical boundaries.
 
 ## Quick reproduction
 

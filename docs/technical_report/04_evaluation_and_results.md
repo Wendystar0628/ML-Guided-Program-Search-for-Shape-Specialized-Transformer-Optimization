@@ -6,6 +6,8 @@ This section reports the completed local artifact dated `2026-08-31T08:38:57.848
 
 ![RTX 4080 performance summary](figures/performance_summary.svg)
 
+*Figure 6. Shapes 01–13 achieve a 14.49× geometric-mean speedup, while the absolute-latency panel distinguishes relative acceleration from actual execution time.*
+
 ## 4.2 Metrics
 
 For Shapes 01–13, per-Shape speedup is
@@ -20,6 +22,8 @@ The headline aggregate is the equal-Shape geometric mean
 \[
 G = \exp\left(\frac{1}{13}\sum_{i=1}^{13}\log s_i\right)=14.4926.
 \]
+
+Equivalently, \(\log G\) is the arithmetic mean of the per-Shape log speedups. Each resident Shape therefore receives equal weight in multiplicative performance space, and reversing baseline and deployment replaces \(G\) with \(1/G\). This is the standard rationale for geometrically aggregating normalized benchmark ratios; the report retains the per-Shape values and range because an aggregate alone cannot represent workload variability ([Fleming and Wallace, 1986](https://doi.org/10.1145/5666.5673)).
 
 P90 is a latency percentile from the deployed timing samples; it is not an error bar or confidence interval. Peak memory is the project-reported maximum allocated GPU memory. Correctness uses the official elementwise absolute-or-relative tolerance logic. This aggregate is an internal engineering summary, not the unpublished official MFU-weighted competition score.
 
@@ -55,7 +59,9 @@ Shapes 01–13 all pass and produce a **14.49×** geometric mean. The largest me
 
 ![Project-estimated useful throughput](figures/useful_throughput.svg)
 
-The throughput view prevents a high speedup from being mistaken for high absolute device utilization. Shape 08 has the lowest relative speedup but the highest resident project-estimated useful throughput (about 67.0 TFLOP/s); Shape 02 has a large 26.11× speedup yet only about 1.64 estimated TFLOP/s because its absolute workload is small. The attention-share encoding also separates attention-heavy Shapes 13 and 14 from projection/FFN-dominated regimes.
+*Figure 7. Relative speedup and project-estimated useful throughput identify different optimization regimes and should not be interpreted as interchangeable performance measures.*
+
+The throughput view prevents a high speedup from being mistaken for high absolute device utilization. Shape 08 has the lowest relative speedup but the highest resident project-estimated useful throughput (about 67.0 TFLOP/s); Shape 02 has a large 26.11× speedup yet only about 1.64 estimated TFLOP/s because its absolute workload is small. The joint speedup-versus-throughput view makes this distinction explicit without presenting the project FLOP estimate as official utilization or MFU.
 
 ## 4.4 Shape 14
 
@@ -63,7 +69,13 @@ Shape 14 does not materialize the dense `S × S` reference baseline. The full lo
 
 The result artifact records a project estimate of `1,391,250,636,800,000` model FLOPs. Dividing this estimate by the measured latency gives approximately **80.7 project-estimated TFLOP/s**. This is not official MFU: the official useful-FLOP definition, device denominator, Shape weights, and bandwidth correction have not been published.
 
-![Shape 14 streamed-capacity evidence](figures/shape14_streaming.svg)
+![Shape 14 streamed execution](figures/shape14_streaming.svg)
+
+*Figure 8. Ordered `B=2` microbatches compute causal attention online and write into one preallocated logical-batch output without retaining a global `S × S` score tensor.*
+
+![Shape 14 capacity evidence](figures/shape14_capacity.svg)
+
+*Figure 9. The measured 6.56 GiB streamed inner-forward peak fits the validated device, whereas analytical dense-score lower bounds for `B=2` and `B=32` exceed its capacity by orders of magnitude.*
 
 For scale, a single FP32 dense attention-score tensor at `B=2` would require at least 1,192 GiB; at the full logical `B=32`, it would require at least 19,073 GiB. The 1,192 GiB lower bound is about 182 times the measured 6.56 GiB inner-forward peak, before accounting for QKV, outputs, FFN state, and temporary buffers. This is capacity evidence for online/streamed attention, not a dense-baseline latency comparison.
 
