@@ -1,0 +1,60 @@
+name: Deploy video site to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "video/site/**"
+      - ".github/workflows/deploy-video-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: video/site/package-lock.json
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v6
+
+      - name: Install dependencies
+        working-directory: video/site
+        run: npm ci
+
+      - name: Build site
+        working-directory: video/site
+        run: npm run build -- --base=/ML-Guided-Program-Search-for-Shape-Specialized-Transformer-Optimization/
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: video/site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
