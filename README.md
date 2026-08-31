@@ -6,6 +6,8 @@ This project generates complete Transformer execution programs, verifies them ag
 
 [Verified results](#verified-results) · [Quick reproduction](#quick-reproduction) · [System overview](#system-overview) · [Technical report](docs/technical_report/README.md) · [Machine-readable result](result/20260831T083857.848038Z/final_performance.json)
 
+> **Interactive project walkthrough:** [Open the GitHub Pages demo](https://wendystar0628.github.io/ML-Guided-Program-Search-for-Shape-Specialized-Transformer-Optimization/) for a concise visual tour of the project outcome, workload geometry, system architecture, learning-guided search, and measured results.
+
 ## Verified results
 
 The declared snapshot was measured locally on an NVIDIA GeForce RTX 4080. Shapes 01–13 pass the supplied full comparator and achieve a **14.49× equal-Shape geometric-mean speedup over the official PyTorch baseline**.
