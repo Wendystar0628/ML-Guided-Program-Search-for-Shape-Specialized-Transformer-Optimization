@@ -33,3 +33,5 @@ Shape 12 融合 FFN 边界获得可重复部署收益 | 新积木在一个 Trito
 融合 FFN 在更大行数和 Dh8 Attention 下仍成立 | Shape 11 用保持现有 Dh8 路径的单因素见证点开始搜索，36 个 Trial 后融合程序族与同族 launch 共同把 Formal 从 0.297984 ms 降到 0.268288 ms，1.1107×晋升 | 2048 与 8192 行两个尺度均有稳定收益，融合积木具备继续迁移依据 | 只扩展到同为 D=F=128 的形态；每次先做一个低成本目标，不做全量重跑
 
 融合积木促成跨程序族执行图替换 | Shape 01 的 36 个 Trial 将 compiled-forward/torch 边界 incumbent 替换为 CUDA Graph、Native QKV 与融合 FFN，Formal 从 0.236544 ms 降到 0.217088 ms，1.0948×晋升 | 8192 行收益不依赖 Dh8 Attention，说明核心收益来自融合数据流 | 继续按 token-row 尺度逐个开放，不对 Shape06 或 Shape14 做无依据迁移
+
+同尺度融合收益开始接近晋升边界 | Shape 10 的 36 个 Trial 用融合边界把 Formal 从 0.203776 ms 降到 0.198656 ms，13 个配对的中位加速为 1.0259×并晋升 | 相同 8192 行在不同 Head 数下收益从约 2.6% 到 11.1%，完整 Forward 的非 FFN 占比决定上限 | 保留已证部署；后续迁移必须保持原 Attention 家族并继续逐 Shape 证伪

@@ -490,8 +490,8 @@
               "precision_plan": "fp16_core",
               "qkv_materialization": "triton_native_bhsd",
               "attention_output_bridge": "triton_bhsd_projection",
-              "ffn": "triton_linear_exact_gelu",
-              "residual_norm": "triton_mixed",
+              "ffn": "triton_fused_mlp_boundary",
+              "residual_norm": "triton_linear_mixed",
               "initial_norm": "triton_fp16"
             },
             "schedule": {
@@ -503,29 +503,17 @@
                 "block_k": 64,
                 "num_warps": 4
               },
-              "attention_output_projection_launch": {
-                "block_m": 128,
-                "block_n": 32,
-                "block_k": 32,
-                "num_warps": 4,
-                "num_stages": 2
-              },
+              "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 2,
-                "num_warps": 2
+                "block_rows": 16,
+                "num_warps": 4
               },
               "initial_norm_launch": {
                 "block_rows": 2,
                 "num_warps": 2
               },
               "ffn_launch": null,
-              "ffn_input_launch": {
-                "block_m": 32,
-                "block_n": 32,
-                "block_k": 128,
-                "num_warps": 4,
-                "num_stages": 2
-              },
+              "ffn_input_launch": null,
               "compile_mode": null,
               "batch_tile_size": null,
               "microbatch_size": null,
