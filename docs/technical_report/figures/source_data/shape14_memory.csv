@@ -1,0 +1,5 @@
+label,gib,evidence_kind
+Measured streamed B2 peak,6.5635223388671875,measured
+RTX 4080 device capacity,15.99169921875,capacity
+Dense B2 score tensor,1192.0928955078125,analytical lower bound
+Dense B32 score tensor,19073.486328125,analytical context

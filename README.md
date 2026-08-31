@@ -167,11 +167,11 @@ The English report is split into five focused documents plus an index:
 4. [Evaluation and results](docs/technical_report/04_evaluation_and_results.md)
 5. [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md)
 
-The report's architecture, performance, and workload figures are generated from repository data as editable SVG/PDF assets. Its AI disclosure includes the human-guidance method and two representative, evidence-linked interaction histories. The repository-level reproduction procedure is defined above and linked to the dedicated final-performance test entrypoint.
+The report's seven architecture, workload, performance, program-structure, capacity, and search-evidence figures are generated from repository data as editable SVG/PDF assets. Its AI disclosure includes the human-guidance method and two representative, evidence-linked interaction histories. The repository-level reproduction procedure is defined above and linked to the dedicated final-performance test entrypoint.
 
 ## AI tool disclosure
 
-OpenAI Codex was the primary implementation, refactoring, testing, and multi-agent coordination environment. A separate ChatGPT GPT-5.6 sol Pro workflow provided deep repository and methodology reviews, and Deep Research supported broader method exploration. Actually used Skills include Stop That Shit, Deep Research, Browser Control, and Nature Figure. The project does not claim to implement an autonomous LLM Agent runtime; search, correctness, measurement, promotion, and deployment are deterministic program operations.
+OpenAI Codex was the primary implementation, refactoring, testing, and multi-agent coordination environment. A separate ChatGPT GPT-5.6 sol Pro workflow provided deep repository and methodology reviews, and Deep Research supported broader method exploration. Actually used Skills include Stop That Shit, Deep Research, Browser Control, and Nature Figure. Search, correctness, measurement, promotion, and deployment are deterministic program operations.
 
 See [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md) for the bounded disclosure, decision-ownership model, and representative interactions used in this draft.
 

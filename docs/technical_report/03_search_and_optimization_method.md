@@ -50,6 +50,10 @@ The method is accurately described as **fixed-budget survivor TPE**. It is not a
 
 For resident Shapes, the fastest 20% of eligible Screen candidates, capped at eight, advance to Enhanced. Shape 14 advances only its best Screen candidate because one full logical-batch evaluation dominates wall time. The fastest feasible Enhanced candidate is locked before Formal measurement, preventing post-hoc challenger selection from the Formal samples.
 
+![Observed multi-fidelity search flow](figures/search_evidence.svg)
+
+Across four consecutive resident cycles, 3,933 Screen stage entries narrowed to 381 Enhanced entries, 50 Formal comparisons, and six deployment updates. One complete cycle shows that Screen measurement dominates wall time for most Shapes, which is exactly where branch-local TPE and survivor allocation must spend their budget carefully. These are stage-entry counts rather than globally unique programs, and Enhanced evidence may be reused only when its evidence identity still matches. Because historical studies span code versions and evidence identities, the figure intentionally reports the auditable funnel and stage cost rather than claiming a single project-wide convergence curve.
+
 ## 3.6 Sequential paired promotion
 
 Formal comparison alternates incumbent/challenger ordering in paired blocks. Each block produces the ratio

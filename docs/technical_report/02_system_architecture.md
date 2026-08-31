@@ -45,6 +45,10 @@ Shapes 01–13 use resident execution and may combine:
 
 These are program building blocks, not a list of complete hand-authored policies. Only combinations whose preconditions are accepted by `PlanBuilder` become runnable candidates.
 
+![Shape-specialized deployed programs](figures/deployed_program_matrix.svg)
+
+The deployed RTX 4080 snapshot resolves the 14 official Shapes to 11 exact `ConfigSpec` values and 10 displayed structural signatures. The matrix uses text as the primary encoding and color only for grouping: the deployed unit is a complete generated program spanning schedule, attention, dataflow, projections, FFN, normalization, and precision—not a single manually named policy.
+
 ## 2.5 Shape 14 as a separate execution regime
 
 Shape 14 has `B=32`, `S=100000`, `D=1024`, 16 heads, and two layers. Materializing a dense attention score tensor would be impractical on the validated 16 GB-class GPU. The project therefore separates its lifecycle:

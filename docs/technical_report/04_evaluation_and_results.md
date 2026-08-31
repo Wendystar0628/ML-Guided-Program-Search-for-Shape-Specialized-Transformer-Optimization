@@ -23,6 +23,15 @@ G = \exp\left(\frac{1}{13}\sum_{i=1}^{13}\log s_i\right)=14.4926.
 
 P90 is a latency percentile from the deployed timing samples; it is not an error bar or confidence interval. Peak memory is the project-reported maximum allocated GPU memory. Correctness uses the official elementwise absolute-or-relative tolerance logic. This aggregate is an internal engineering summary, not the unpublished official MFU-weighted competition score.
 
+To complement relative speedup with useful-work scale, the report also uses the project's dominant-matrix-operation estimate
+
+\[
+\widehat{F}=L\left(2BS^2D+8BSD^2+4BSDF\right),\qquad
+\widehat{T}=\frac{\widehat{F}}{10^9t_{ms}}.
+\]
+
+This estimate covers the principal attention, projection, and FFN matrix multiplications. It excludes elementwise work and is not executed FLOPs, hardware-counter throughput, roofline efficiency, or official MFU.
+
 ## 4.3 Per-Shape results
 
 | Shape | Baseline median (ms) | Deployed median (ms) | Deployed P90 (ms) | Speedup | Peak memory (GiB) | Correctness |
@@ -44,11 +53,19 @@ P90 is a latency percentile from the deployed timing samples; it is not an error
 
 Shapes 01–13 all pass and produce a **14.49×** geometric mean. The largest measured speedups are Shape 13 (36.09×), Shape 11 (32.73×), and Shape 02 (26.11×). Shape 08 is the lowest at 3.41×, making it a more important optimization target than Shapes already dominated by launch-overhead removal or a highly favorable specialized path.
 
+![Project-estimated useful throughput](figures/useful_throughput.svg)
+
+The throughput view prevents a high speedup from being mistaken for high absolute device utilization. Shape 08 has the lowest relative speedup but the highest resident project-estimated useful throughput (about 67.0 TFLOP/s); Shape 02 has a large 26.11× speedup yet only about 1.64 estimated TFLOP/s because its absolute workload is small. The attention-share encoding also separates attention-heavy Shapes 13 and 14 from projection/FFN-dominated regimes.
+
 ## 4.4 Shape 14
 
-Shape 14 does not materialize the dense `S × S` reference baseline. The deployed streamed path completes the full logical batch using distinct microbatches in 17.244 s at 6.56 GiB peak allocated memory and passes correctness. It is excluded from the speedup geometric mean.
+Shape 14 does not materialize the dense `S × S` reference baseline. The full logical-batch latency loop executes 16 ordered, distinct `B=2` streamed forwards and retains only a compact summary between chunks. The measured 17.244 s covers that complete logical-batch loop and passes correctness. The reported 6.56 GiB is the maximum allocated memory of one `B=2` inner streamed forward; it excludes allocator-reserved memory and is not a measurement of one materialized `B=32` call. Shape 14 is excluded from the speedup geometric mean.
 
 The result artifact records a project estimate of `1,391,250,636,800,000` model FLOPs. Dividing this estimate by the measured latency gives approximately **80.7 project-estimated TFLOP/s**. This is not official MFU: the official useful-FLOP definition, device denominator, Shape weights, and bandwidth correction have not been published.
+
+![Shape 14 streamed-capacity evidence](figures/shape14_streaming.svg)
+
+For scale, a single FP32 dense attention-score tensor at `B=2` would require at least 1,192 GiB; at the full logical `B=32`, it would require at least 19,073 GiB. The 1,192 GiB lower bound is about 182 times the measured 6.56 GiB inner-forward peak, before accounting for QKV, outputs, FFN state, and temporary buffers. This is capacity evidence for online/streamed attention, not a dense-baseline latency comparison.
 
 ## 4.5 Measurement protocol interpretation
 

@@ -1,0 +1,15 @@
+case_id,shape_label,config_id,schedule,attention,layout_bridge,projections,ffn,norms,precision
+official_01,01 · B64 / S128 / D128 / H4,cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230,CUDA graph,Efficient SDPA,Native → Triton O,SSSS,Fused boundary,T16 / Lin-mixed,FP16 core
+official_02,02 · B1 / S128 / D128 / H4,cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476,CUDA graph,Efficient SDPA,Native → Triton O,SSSS,Linear + GELU,T16 / T-mixed,FP16 core
+official_03,03 · B4 / S128 / D128 / H4,cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4,CUDA graph,Causal SDPA,Native → Torch O,SSSS,Linear + GELU,Torch / T-mixed,FP16 core
+official_04,04 · B16 / S128 / D128 / H4,cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230,CUDA graph,Efficient SDPA,Native → Triton O,SSSS,Fused boundary,T16 / Lin-mixed,FP16 core
+official_05,05 · B128 / S128 / D128 / H4,cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730,Compiled,Causal SDPA,View → Torch O,SSAS,Torch,Torch / Torch,FP16 core
+official_06,06 · B10000 / S128 / D128 / H4,cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b,Tile graph 128,Efficient SDPA,Native → Triton O,SSSS,Linear + GELU,T16 / Lin-mixed,FP16 core
+official_07,07 · B64 / S128 / D32 / H4,cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4,CUDA graph,Triton Dh8,Native → direct BSD,SSSS,Linear + GELU,Fused QKV / Lin-mixed,FP16 core
+official_08,08 · B64 / S128 / D1024 / H4,cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730,Compiled,Causal SDPA,View → Torch O,SSAS,Torch,Torch / Torch,FP16 core
+official_09,09 · B64 / S128 / D128 / H1,cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610,CUDA graph,cuDNN SDPA,Native → Triton O,SSSS,Fused boundary,T16 / Lin-mixed,FP16 core
+official_10,10 · B64 / S128 / D128 / H2,cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230,CUDA graph,Efficient SDPA,Native → Triton O,SSSS,Fused boundary,T16 / Lin-mixed,FP16 core
+official_11,11 · B64 / S128 / D128 / H16,cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33,CUDA graph,Triton Dh8,Native → direct BSD,SSSS,Fused boundary,T16 / Lin-mixed,FP16 core
+official_12,12 · B64 / S32 / D128 / H4,cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251,CUDA graph,Efficient SDPA,Native → Triton O,SSSS,Fused boundary,T16 / Lin-mixed,FP16 core
+official_13,13 · B64 / S1024 / D128 / H4,cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a,Eager,Triton S1024,Native → direct BSD,SAAA,Compiled,T16 / T-mixed,FP16 core
+official_14,14 · B32 / S100000 / D1024 / H16,cfg-cc77d6b483e1f07e137d89773db64dd8a3367f901dbae918aa7cebffd405ab60,Streamed mb2,Triton stream Dh64,View → direct BSD,SSSI,Torch,Torch / Torch,Attn + FFN-in FP16

@@ -43,7 +43,7 @@ The exact model used in every historical Codex task is not encoded reliably in t
 | Browser Control | Operated the authorized web review workflow |
 | Nature Figure | Generated the editable academic architecture, performance, and workload figures in this report |
 
-Only tools and Skills actually used are listed. The repository does **not** claim to contain an autonomous LLM Agent runtime. Candidate generation, correctness, timing, comparison, persistence, and deployment are deterministic program operations; AI assistance was used during development to propose, review, and refine changes.
+Only tools and Skills actually used are listed. Candidate generation, correctness, timing, comparison, persistence, and deployment are deterministic program operations; AI assistance was used during development to propose, review, and refine changes.
 
 ## 5.5 Human guidance and decision ownership
 
@@ -56,7 +56,7 @@ The collaboration followed a human-directed engineering loop. The human particip
 | Execution | Authorize the experiment scope and persistent GPU work | Implement changes, run correctness and timing programs, monitor bounded searches, and summarize evidence |
 | Decision | Retain ownership of project priorities and final claims | Recommend keep, reject, or revise from measured evidence rather than model confidence |
 
-Candidate correctness, timing, paired comparison, and registry updates were performed by deterministic project code. AI suggestions did not become deployments by assertion: they had to enter the same generated program space and pass the same GPU evidence path as any other challenger. The practical loop was therefore **human hypothesis and constraints → AI research, adaptation, and implementation → deterministic correctness and GPU measurement → AI synthesis of the evidence → human continuation or redirection**. This boundary is also why the project is not described as an autonomous LLM Agent runtime.
+Candidate correctness, timing, paired comparison, and registry updates were performed by deterministic project code. AI suggestions did not become deployments by assertion: they had to enter the same generated program space and pass the same GPU evidence path as any other challenger. The practical loop was therefore **human hypothesis and constraints → AI research, adaptation, and implementation → deterministic correctness and GPU measurement → AI synthesis of the evidence → human continuation or redirection**.
 
 ## 5.6 Representative interaction histories
 

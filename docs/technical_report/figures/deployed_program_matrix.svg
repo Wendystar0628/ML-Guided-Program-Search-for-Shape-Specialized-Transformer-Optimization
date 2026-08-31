@@ -1,0 +1,1031 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="407.52pt" height="360.576pt" viewBox="0 0 407.52 360.576" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-08-31T20:51:48.974751</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.1, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 360.576
+L 407.52 360.576
+L 407.52 0
+L 0 0
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 3.68352 60.461568
+L 90.46368 60.461568
+L 90.46368 42.619392
+L 3.68352 42.619392
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 92.07072 60.461568
+L 134.65728 60.461568
+L 134.65728 42.619392
+L 92.07072 42.619392
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 136.26432 60.461568
+L 194.92128 60.461568
+L 194.92128 42.619392
+L 136.26432 42.619392
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 196.52832 60.461568
+L 275.27328 60.461568
+L 275.27328 42.619392
+L 196.52832 42.619392
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 276.88032 60.461568
+L 355.62528 60.461568
+L 355.62528 42.619392
+L 276.88032 42.619392
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 357.23232 60.461568
+L 403.83648 60.461568
+L 403.83648 42.619392
+L 357.23232 42.619392
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 3.68352 79.723008
+L 90.46368 79.723008
+L 90.46368 61.880832
+L 3.68352 61.880832
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 92.07072 79.723008
+L 134.65728 79.723008
+L 134.65728 61.880832
+L 92.07072 61.880832
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 136.26432 79.723008
+L 194.92128 79.723008
+L 194.92128 61.880832
+L 136.26432 61.880832
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 196.52832 79.723008
+L 275.27328 79.723008
+L 275.27328 61.880832
+L 196.52832 61.880832
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 276.88032 79.723008
+L 355.62528 79.723008
+L 355.62528 61.880832
+L 276.88032 61.880832
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_13">
+    <path d="M 357.23232 79.723008
+L 403.83648 79.723008
+L 403.83648 61.880832
+L 357.23232 61.880832
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_14">
+    <path d="M 3.68352 98.984448
+L 90.46368 98.984448
+L 90.46368 81.142272
+L 3.68352 81.142272
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_15">
+    <path d="M 92.07072 98.984448
+L 134.65728 98.984448
+L 134.65728 81.142272
+L 92.07072 81.142272
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_16">
+    <path d="M 136.26432 98.984448
+L 194.92128 98.984448
+L 194.92128 81.142272
+L 136.26432 81.142272
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_17">
+    <path d="M 196.52832 98.984448
+L 275.27328 98.984448
+L 275.27328 81.142272
+L 196.52832 81.142272
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_18">
+    <path d="M 276.88032 98.984448
+L 355.62528 98.984448
+L 355.62528 81.142272
+L 276.88032 81.142272
+z
+" clip-path="url(#pc90167138c)" style="fill: #e9eef2; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_19">
+    <path d="M 357.23232 98.984448
+L 403.83648 98.984448
+L 403.83648 81.142272
+L 357.23232 81.142272
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_20">
+    <path d="M 3.68352 118.245888
+L 90.46368 118.245888
+L 90.46368 100.403712
+L 3.68352 100.403712
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_21">
+    <path d="M 92.07072 118.245888
+L 134.65728 118.245888
+L 134.65728 100.403712
+L 92.07072 100.403712
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_22">
+    <path d="M 136.26432 118.245888
+L 194.92128 118.245888
+L 194.92128 100.403712
+L 136.26432 100.403712
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_23">
+    <path d="M 196.52832 118.245888
+L 275.27328 118.245888
+L 275.27328 100.403712
+L 196.52832 100.403712
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_24">
+    <path d="M 276.88032 118.245888
+L 355.62528 118.245888
+L 355.62528 100.403712
+L 276.88032 100.403712
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_25">
+    <path d="M 357.23232 118.245888
+L 403.83648 118.245888
+L 403.83648 100.403712
+L 357.23232 100.403712
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_26">
+    <path d="M 3.68352 137.507328
+L 90.46368 137.507328
+L 90.46368 119.665152
+L 3.68352 119.665152
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_27">
+    <path d="M 92.07072 137.507328
+L 134.65728 137.507328
+L 134.65728 119.665152
+L 92.07072 119.665152
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_28">
+    <path d="M 136.26432 137.507328
+L 194.92128 137.507328
+L 194.92128 119.665152
+L 136.26432 119.665152
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_29">
+    <path d="M 196.52832 137.507328
+L 275.27328 137.507328
+L 275.27328 119.665152
+L 196.52832 119.665152
+z
+" clip-path="url(#pc90167138c)" style="fill: #e9eef2; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_30">
+    <path d="M 276.88032 137.507328
+L 355.62528 137.507328
+L 355.62528 119.665152
+L 276.88032 119.665152
+z
+" clip-path="url(#pc90167138c)" style="fill: #e9eef2; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_31">
+    <path d="M 357.23232 137.507328
+L 403.83648 137.507328
+L 403.83648 119.665152
+L 357.23232 119.665152
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_32">
+    <path d="M 3.68352 156.768768
+L 90.46368 156.768768
+L 90.46368 138.926592
+L 3.68352 138.926592
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_33">
+    <path d="M 92.07072 156.768768
+L 134.65728 156.768768
+L 134.65728 138.926592
+L 92.07072 138.926592
+z
+" clip-path="url(#pc90167138c)" style="fill: #f8e7d9; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_34">
+    <path d="M 136.26432 156.768768
+L 194.92128 156.768768
+L 194.92128 138.926592
+L 136.26432 138.926592
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_35">
+    <path d="M 196.52832 156.768768
+L 275.27328 156.768768
+L 275.27328 138.926592
+L 196.52832 138.926592
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_36">
+    <path d="M 276.88032 156.768768
+L 355.62528 156.768768
+L 355.62528 138.926592
+L 276.88032 138.926592
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_37">
+    <path d="M 357.23232 156.768768
+L 403.83648 156.768768
+L 403.83648 138.926592
+L 357.23232 138.926592
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_38">
+    <path d="M 3.68352 176.030208
+L 90.46368 176.030208
+L 90.46368 158.188032
+L 3.68352 158.188032
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_39">
+    <path d="M 92.07072 176.030208
+L 134.65728 176.030208
+L 134.65728 158.188032
+L 92.07072 158.188032
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_40">
+    <path d="M 136.26432 176.030208
+L 194.92128 176.030208
+L 194.92128 158.188032
+L 136.26432 158.188032
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_41">
+    <path d="M 196.52832 176.030208
+L 275.27328 176.030208
+L 275.27328 158.188032
+L 196.52832 158.188032
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_42">
+    <path d="M 276.88032 176.030208
+L 355.62528 176.030208
+L 355.62528 158.188032
+L 276.88032 158.188032
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_43">
+    <path d="M 357.23232 176.030208
+L 403.83648 176.030208
+L 403.83648 158.188032
+L 357.23232 158.188032
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_44">
+    <path d="M 3.68352 195.291648
+L 90.46368 195.291648
+L 90.46368 177.449472
+L 3.68352 177.449472
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_45">
+    <path d="M 92.07072 195.291648
+L 134.65728 195.291648
+L 134.65728 177.449472
+L 92.07072 177.449472
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_46">
+    <path d="M 136.26432 195.291648
+L 194.92128 195.291648
+L 194.92128 177.449472
+L 136.26432 177.449472
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_47">
+    <path d="M 196.52832 195.291648
+L 275.27328 195.291648
+L 275.27328 177.449472
+L 196.52832 177.449472
+z
+" clip-path="url(#pc90167138c)" style="fill: #e9eef2; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_48">
+    <path d="M 276.88032 195.291648
+L 355.62528 195.291648
+L 355.62528 177.449472
+L 276.88032 177.449472
+z
+" clip-path="url(#pc90167138c)" style="fill: #e9eef2; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_49">
+    <path d="M 357.23232 195.291648
+L 403.83648 195.291648
+L 403.83648 177.449472
+L 357.23232 177.449472
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_50">
+    <path d="M 3.68352 214.553088
+L 90.46368 214.553088
+L 90.46368 196.710912
+L 3.68352 196.710912
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_51">
+    <path d="M 92.07072 214.553088
+L 134.65728 214.553088
+L 134.65728 196.710912
+L 92.07072 196.710912
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_52">
+    <path d="M 136.26432 214.553088
+L 194.92128 214.553088
+L 194.92128 196.710912
+L 136.26432 196.710912
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_53">
+    <path d="M 196.52832 214.553088
+L 275.27328 214.553088
+L 275.27328 196.710912
+L 196.52832 196.710912
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_54">
+    <path d="M 276.88032 214.553088
+L 355.62528 214.553088
+L 355.62528 196.710912
+L 276.88032 196.710912
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_55">
+    <path d="M 357.23232 214.553088
+L 403.83648 214.553088
+L 403.83648 196.710912
+L 357.23232 196.710912
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_56">
+    <path d="M 3.68352 233.814528
+L 90.46368 233.814528
+L 90.46368 215.972352
+L 3.68352 215.972352
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_57">
+    <path d="M 92.07072 233.814528
+L 134.65728 233.814528
+L 134.65728 215.972352
+L 92.07072 215.972352
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_58">
+    <path d="M 136.26432 233.814528
+L 194.92128 233.814528
+L 194.92128 215.972352
+L 136.26432 215.972352
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_59">
+    <path d="M 196.52832 233.814528
+L 275.27328 233.814528
+L 275.27328 215.972352
+L 196.52832 215.972352
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_60">
+    <path d="M 276.88032 233.814528
+L 355.62528 233.814528
+L 355.62528 215.972352
+L 276.88032 215.972352
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_61">
+    <path d="M 357.23232 233.814528
+L 403.83648 233.814528
+L 403.83648 215.972352
+L 357.23232 215.972352
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_62">
+    <path d="M 3.68352 253.075968
+L 90.46368 253.075968
+L 90.46368 235.233792
+L 3.68352 235.233792
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_63">
+    <path d="M 92.07072 253.075968
+L 134.65728 253.075968
+L 134.65728 235.233792
+L 92.07072 235.233792
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_64">
+    <path d="M 136.26432 253.075968
+L 194.92128 253.075968
+L 194.92128 235.233792
+L 136.26432 235.233792
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_65">
+    <path d="M 196.52832 253.075968
+L 275.27328 253.075968
+L 275.27328 235.233792
+L 196.52832 235.233792
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_66">
+    <path d="M 276.88032 253.075968
+L 355.62528 253.075968
+L 355.62528 235.233792
+L 276.88032 235.233792
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_67">
+    <path d="M 357.23232 253.075968
+L 403.83648 253.075968
+L 403.83648 235.233792
+L 357.23232 235.233792
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_68">
+    <path d="M 3.68352 272.337408
+L 90.46368 272.337408
+L 90.46368 254.495232
+L 3.68352 254.495232
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_69">
+    <path d="M 92.07072 272.337408
+L 134.65728 272.337408
+L 134.65728 254.495232
+L 92.07072 254.495232
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_70">
+    <path d="M 136.26432 272.337408
+L 194.92128 272.337408
+L 194.92128 254.495232
+L 136.26432 254.495232
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_71">
+    <path d="M 196.52832 272.337408
+L 275.27328 272.337408
+L 275.27328 254.495232
+L 196.52832 254.495232
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_72">
+    <path d="M 276.88032 272.337408
+L 355.62528 272.337408
+L 355.62528 254.495232
+L 276.88032 254.495232
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_73">
+    <path d="M 357.23232 272.337408
+L 403.83648 272.337408
+L 403.83648 254.495232
+L 357.23232 254.495232
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_74">
+    <path d="M 3.68352 291.598848
+L 90.46368 291.598848
+L 90.46368 273.756672
+L 3.68352 273.756672
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_75">
+    <path d="M 92.07072 291.598848
+L 134.65728 291.598848
+L 134.65728 273.756672
+L 92.07072 273.756672
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_76">
+    <path d="M 136.26432 291.598848
+L 194.92128 291.598848
+L 194.92128 273.756672
+L 136.26432 273.756672
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_77">
+    <path d="M 196.52832 291.598848
+L 275.27328 291.598848
+L 275.27328 273.756672
+L 196.52832 273.756672
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_78">
+    <path d="M 276.88032 291.598848
+L 355.62528 291.598848
+L 355.62528 273.756672
+L 276.88032 273.756672
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_79">
+    <path d="M 357.23232 291.598848
+L 403.83648 291.598848
+L 403.83648 273.756672
+L 357.23232 273.756672
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_80">
+    <path d="M 3.68352 310.860288
+L 90.46368 310.860288
+L 90.46368 293.018112
+L 3.68352 293.018112
+z
+" clip-path="url(#pc90167138c)" style="fill: #f7f9fa; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_81">
+    <path d="M 92.07072 310.860288
+L 134.65728 310.860288
+L 134.65728 293.018112
+L 92.07072 293.018112
+z
+" clip-path="url(#pc90167138c)" style="fill: #f8e7d9; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_82">
+    <path d="M 136.26432 310.860288
+L 194.92128 310.860288
+L 194.92128 293.018112
+L 136.26432 293.018112
+z
+" clip-path="url(#pc90167138c)" style="fill: #f8e7d9; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_83">
+    <path d="M 196.52832 310.860288
+L 275.27328 310.860288
+L 275.27328 293.018112
+L 196.52832 293.018112
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddf1ed; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_84">
+    <path d="M 276.88032 310.860288
+L 355.62528 310.860288
+L 355.62528 293.018112
+L 276.88032 293.018112
+z
+" clip-path="url(#pc90167138c)" style="fill: #e9eef2; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_85">
+    <path d="M 357.23232 310.860288
+L 403.83648 310.860288
+L 403.83648 293.018112
+L 357.23232 293.018112
+z
+" clip-path="url(#pc90167138c)" style="fill: #ddeaf5; stroke: #ffffff; stroke-width: 0.45; stroke-linejoin: miter"/>
+   </g>
+   <g id="line2d_1">
+    <path d="M 2.88 37.651968
+L 404.64 37.651968
+" clip-path="url(#pc90167138c)" style="fill: none; stroke: #6b7780; stroke-width: 0.8; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_2">
+    <path d="M 2.88 290.889216
+L 404.64 290.889216
+" clip-path="url(#pc90167138c)" style="fill: none; stroke: #e07a2d; stroke-width: 1.2; stroke-linecap: square"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 6.2px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="47.0736" y="31.734575" transform="rotate(-0 47.0736 31.734575)">Official Shape</text>
+   </g>
+   <g id="text_2">
+    <text style="font-weight: 700; font-size: 6.2px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="31.734575" transform="rotate(-0 113.364 31.734575)">Schedule</text>
+   </g>
+   <g id="text_3">
+    <text style="font-weight: 700; font-size: 6.2px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="31.734575" transform="rotate(-0 165.5928 31.734575)">Attention</text>
+   </g>
+   <g id="text_4">
+    <text style="font-weight: 700; font-size: 6.2px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="235.9008" y="31.734454" transform="rotate(-0 235.9008 31.734454)">Dataflow + projections¹</text>
+   </g>
+   <g id="text_5">
+    <text style="font-weight: 700; font-size: 6.2px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="316.2528" y="31.734575" transform="rotate(-0 316.2528 31.734575)">FFN + initial/residual norm</text>
+   </g>
+   <g id="text_6">
+    <text style="font-weight: 700; font-size: 6.2px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="31.734575" transform="rotate(-0 380.5344 31.734575)">Precision</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="53.455195" transform="rotate(-0 5.29056 53.455195)">01 · B64 / S128 / D128 / H4</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="52.924793" transform="rotate(-0 113.364 52.924793)">CUDA graph</text>
+   </g>
+   <g id="text_9">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="53.455195" transform="rotate(-0 165.5928 53.455195)">Efficient SDPA</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 50.820921)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 55.560739)">Proj SSSS</text>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(296.922163 50.256245)">Fused boundary</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 56.091141)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="53.430535" transform="rotate(-0 380.5344 53.430535)">FP16 core</text>
+   </g>
+   <g id="text_13">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="72.716635" transform="rotate(-0 5.29056 72.716635)">02 · B1 / S128 / D128 / H4</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="72.186233" transform="rotate(-0 113.364 72.186233)">CUDA graph</text>
+   </g>
+   <g id="text_15">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="72.716635" transform="rotate(-0 165.5928 72.716635)">Efficient SDPA</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 70.082361)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 74.822179)">Proj SSSS</text>
+   </g>
+   <g id="text_17">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(298.48453 70.080689)">Linear + GELU</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(299.950765 75.352581)">T16 / T-mixed</text>
+   </g>
+   <g id="text_18">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="72.691975" transform="rotate(-0 380.5344 72.691975)">FP16 core</text>
+   </g>
+   <g id="text_19">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="91.976821" transform="rotate(-0 5.29056 91.976821)">03 · B4 / S128 / D128 / H4</text>
+   </g>
+   <g id="text_20">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="91.447673" transform="rotate(-0 113.364 91.447673)">CUDA graph</text>
+   </g>
+   <g id="text_21">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="91.978075" transform="rotate(-0 165.5928 91.978075)">Causal SDPA</text>
+   </g>
+   <g id="text_22">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.841445 89.343801)">Native → Torch O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 94.083619)">Proj SSSS</text>
+   </g>
+   <g id="text_23">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(298.48453 89.342129)">Linear + GELU</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(298.018913 94.614021)">Torch / T-mixed</text>
+   </g>
+   <g id="text_24">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="91.953415" transform="rotate(-0 380.5344 91.953415)">FP16 core</text>
+   </g>
+   <g id="text_25">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="111.239515" transform="rotate(-0 5.29056 111.239515)">04 · B16 / S128 / D128 / H4</text>
+   </g>
+   <g id="text_26">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="110.709112" transform="rotate(-0 113.364 110.709112)">CUDA graph</text>
+   </g>
+   <g id="text_27">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="111.239515" transform="rotate(-0 165.5928 111.239515)">Efficient SDPA</text>
+   </g>
+   <g id="text_28">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 108.605241)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 113.345059)">Proj SSSS</text>
+   </g>
+   <g id="text_29">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(296.922163 108.040565)">Fused boundary</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 113.875461)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_30">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="111.214855" transform="rotate(-0 380.5344 111.214855)">FP16 core</text>
+   </g>
+   <g id="text_31">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="130.500955" transform="rotate(-0 5.29056 130.500955)">05 · B128 / S128 / D128 / H4</text>
+   </g>
+   <g id="text_32">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="130.0019" transform="rotate(-0 113.364 130.0019)">Compiled</text>
+   </g>
+   <g id="text_33">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="130.500955" transform="rotate(-0 165.5928 130.500955)">Causal SDPA</text>
+   </g>
+   <g id="text_34">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(216.67382 127.866681)">View → Torch O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 132.606499)">Proj SSAS</text>
+   </g>
+   <g id="text_35">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(309.712007 127.833661)">Torch</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(300.990253 133.136901)">Torch / Torch</text>
+   </g>
+   <g id="text_36">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="130.476295" transform="rotate(-0 380.5344 130.476295)">FP16 core</text>
+   </g>
+   <g id="text_37">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="149.762395" transform="rotate(-0 5.29056 149.762395)">06 · B10000 / S128 / D128 / H4</text>
+   </g>
+   <g id="text_38">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="149.207332" transform="rotate(-0 113.364 149.207332)">Tile graph 128</text>
+   </g>
+   <g id="text_39">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="149.762395" transform="rotate(-0 165.5928 149.762395)">Efficient SDPA</text>
+   </g>
+   <g id="text_40">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 147.128121)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 151.867939)">Proj SSSS</text>
+   </g>
+   <g id="text_41">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(298.48453 147.126449)">Linear + GELU</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 152.398341)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_42">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="149.737735" transform="rotate(-0 380.5344 149.737735)">FP16 core</text>
+   </g>
+   <g id="text_43">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="169.022581" transform="rotate(-0 5.29056 169.022581)">07 · B64 / S128 / D32 / H4</text>
+   </g>
+   <g id="text_44">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="168.493433" transform="rotate(-0 113.364 168.493433)">CUDA graph</text>
+   </g>
+   <g id="text_45">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="168.999175" transform="rotate(-0 165.5928 168.999175)">Triton Dh8</text>
+   </g>
+   <g id="text_46">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(211.37314 166.387889)">Native → direct BSD</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 171.129379)">Proj SSSS</text>
+   </g>
+   <g id="text_47">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(298.48453 166.387889)">Linear + GELU</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(288.601659 171.545257)">Fused QKV / Lin-mixed</text>
+   </g>
+   <g id="text_48">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="168.999175" transform="rotate(-0 380.5344 168.999175)">FP16 core</text>
+   </g>
+   <g id="text_49">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="188.285275" transform="rotate(-0 5.29056 188.285275)">08 · B64 / S128 / D1024 / H4</text>
+   </g>
+   <g id="text_50">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="187.78622" transform="rotate(-0 113.364 187.78622)">Compiled</text>
+   </g>
+   <g id="text_51">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="188.285275" transform="rotate(-0 165.5928 188.285275)">Causal SDPA</text>
+   </g>
+   <g id="text_52">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(216.67382 185.651001)">View → Torch O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 190.390819)">Proj SSAS</text>
+   </g>
+   <g id="text_53">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(309.712007 185.617981)">Torch</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(300.990253 190.921221)">Torch / Torch</text>
+   </g>
+   <g id="text_54">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="188.260615" transform="rotate(-0 380.5344 188.260615)">FP16 core</text>
+   </g>
+   <g id="text_55">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="207.546715" transform="rotate(-0 5.29056 207.546715)">09 · B64 / S128 / D128 / H1</text>
+   </g>
+   <g id="text_56">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="207.016312" transform="rotate(-0 113.364 207.016312)">CUDA graph</text>
+   </g>
+   <g id="text_57">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="207.546715" transform="rotate(-0 165.5928 207.546715)">cuDNN SDPA</text>
+   </g>
+   <g id="text_58">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 204.912441)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 209.652259)">Proj SSSS</text>
+   </g>
+   <g id="text_59">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(296.922163 204.347765)">Fused boundary</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 210.182661)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_60">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="207.522055" transform="rotate(-0 380.5344 207.522055)">FP16 core</text>
+   </g>
+   <g id="text_61">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="226.808155" transform="rotate(-0 5.29056 226.808155)">10 · B64 / S128 / D128 / H2</text>
+   </g>
+   <g id="text_62">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="226.277752" transform="rotate(-0 113.364 226.277752)">CUDA graph</text>
+   </g>
+   <g id="text_63">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="226.808155" transform="rotate(-0 165.5928 226.808155)">Efficient SDPA</text>
+   </g>
+   <g id="text_64">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 224.173881)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 228.913699)">Proj SSSS</text>
+   </g>
+   <g id="text_65">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(296.922163 223.609205)">Fused boundary</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 229.444101)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_66">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="226.783495" transform="rotate(-0 380.5344 226.783495)">FP16 core</text>
+   </g>
+   <g id="text_67">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="246.069595" transform="rotate(-0 5.29056 246.069595)">11 · B64 / S128 / D128 / H16</text>
+   </g>
+   <g id="text_68">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="245.539192" transform="rotate(-0 113.364 245.539192)">CUDA graph</text>
+   </g>
+   <g id="text_69">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="246.044935" transform="rotate(-0 165.5928 246.044935)">Triton Dh8</text>
+   </g>
+   <g id="text_70">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(211.37314 243.433649)">Native → direct BSD</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 248.175139)">Proj SSSS</text>
+   </g>
+   <g id="text_71">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(296.922163 242.870645)">Fused boundary</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 248.705541)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_72">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="246.044935" transform="rotate(-0 380.5344 246.044935)">FP16 core</text>
+   </g>
+   <g id="text_73">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="265.329781" transform="rotate(-0 5.29056 265.329781)">12 · B64 / S32 / D128 / H4</text>
+   </g>
+   <g id="text_74">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="264.800633" transform="rotate(-0 113.364 264.800633)">CUDA graph</text>
+   </g>
+   <g id="text_75">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="265.331035" transform="rotate(-0 165.5928 265.331035)">Efficient SDPA</text>
+   </g>
+   <g id="text_76">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(214.644163 262.696761)">Native → Triton O</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 267.436579)">Proj SSSS</text>
+   </g>
+   <g id="text_77">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(296.922163 262.132085)">Fused boundary</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(297.819124 267.966981)">T16 / Lin-mixed</text>
+   </g>
+   <g id="text_78">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="265.306375" transform="rotate(-0 380.5344 265.306375)">FP16 core</text>
+   </g>
+   <g id="text_79">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="284.591221" transform="rotate(-0 5.29056 284.591221)">13 · B64 / S1024 / D128 / H4</text>
+   </g>
+   <g id="text_80">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="284.029471" transform="rotate(-0 113.364 284.029471)">Eager</text>
+   </g>
+   <g id="text_81">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="284.592475" transform="rotate(-0 165.5928 284.592475)">Triton S1024</text>
+   </g>
+   <g id="text_82">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(211.37314 281.956529)">Native → direct BSD</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(223.263515 286.698019)">Proj SAAA</text>
+   </g>
+   <g id="text_83">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(304.953851 281.457474)">Compiled</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(299.950765 287.228421)">T16 / T-mixed</text>
+   </g>
+   <g id="text_84">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="284.567815" transform="rotate(-0 380.5344 284.567815)">FP16 core</text>
+   </g>
+   <g id="text_85">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="5.29056" y="303.852661" transform="rotate(-0 5.29056 303.852661)">14 · B32 / S100000 / D1024 / H16</text>
+   </g>
+   <g id="text_86">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="113.364" y="303.853915" transform="rotate(-0 113.364 303.853915)">Streamed mb2</text>
+   </g>
+   <g id="text_87">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="165.5928" y="303.829255" transform="rotate(-0 165.5928 303.829255)">Triton stream Dh64</text>
+   </g>
+   <g id="text_88">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(213.205515 301.217969)">View → direct BSD</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(224.304675 305.959459)">Proj SSSI</text>
+   </g>
+   <g id="text_89">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(309.712007 301.186621)">Torch</text>
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; fill: #263238" transform="translate(300.990253 306.489861)">Torch / Torch</text>
+   </g>
+   <g id="text_90">
+    <text style="font-size: 5.35px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: middle; fill: #263238" x="380.5344" y="303.829255" transform="rotate(-0 380.5344 303.829255)">Attn + FFN-in FP16</text>
+   </g>
+   <g id="text_91">
+    <text style="font-size: 6.3px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="2.88" y="323.98848" transform="rotate(-0 2.88 323.98848)">14 Shapes resolve to 11 exact ConfigSpecs and 10 displayed structural signatures.</text>
+   </g>
+   <g id="text_92">
+    <text style="font-size: 6px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #6b7780" x="2.88" y="338.18112" transform="rotate(-0 2.88 338.18112)">¹ Projection order: QKV / attention-out / FFN-in / FFN-out; S = FP16 shadow, A = autocast FP16, I = input dtype.</text>
+   </g>
+   <g id="text_93">
+    <text style="font-size: 6px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: end; fill: #e07a2d" x="404.64" y="348.8256" transform="rotate(-0 404.64 348.8256)">Orange separator = independent Shape-14 streamed regime</text>
+   </g>
+   <g id="text_94">
+    <text style="font-weight: 700; font-size: 10px; font-family: 'Arial', 'DejaVu Sans', 'Liberation Sans', sans-serif; text-anchor: start; fill: #263238" x="2.88" y="26.126993" transform="rotate(-0 2.88 26.126993)">Shape-specialized deployed programs on RTX 4080</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pc90167138c">
+   <rect x="2.88" y="2.88" width="401.76" height="354.816"/>
+  </clipPath>
+ </defs>
+</svg>
