@@ -490,7 +490,58 @@ def test_2048_row_fused_mlp_boundary_is_one_strict_searchable_structure() -> Non
         for branch in shape04_space.branches
     ) == 1
 
-    wrong_shape = replace(context, seq_len=128)
+    shape11_context = replace(context, seq_len=128, num_heads=16)
+    shape11_hardware = replace(hardware, triton_dh8_attention=True)
+    shape11_config = replace(
+        config,
+        program=replace(
+            config.program,
+            attention=AttentionBackend.TRITON_DH8,
+            attention_output_bridge=AttentionOutputBridge.ATTENTION_DIRECT_BSD,
+        ),
+        schedule=replace(
+            config.schedule,
+            attention_launch=TritonAttentionParams(
+                block_m=128,
+                block_n=64,
+                num_warps=4,
+                num_stages=1,
+            ),
+            qkv_launch=TritonQKVParams(
+                block_m=128,
+                block_n=64,
+                block_k=64,
+                num_warps=8,
+            ),
+            initial_norm_launch=TritonNormParams(block_rows=8, num_warps=1),
+            reuse_unchanged_input=True,
+        ),
+    )
+    shape11_plan = PlanBuilder().build(
+        shape11_config,
+        shape11_context,
+        shape11_hardware,
+    )
+    assert shape11_plan.ffn_backend is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    shape11_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=shape11_context,
+            scope="resident",
+            hardware=shape11_hardware,
+        ),
+        max_branches=36,
+    )
+    shape11_fused = tuple(
+        branch
+        for branch in shape11_space.branches
+        if branch.structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    )
+    assert len(shape11_fused) == 1
+    assert shape11_fused[0].structure.attention is AttentionBackend.TRITON_DH8
+    assert shape11_fused[0].default_config() == shape11_config
+
+    wrong_shape = replace(context, batch_size=32, seq_len=128)
     rejection = PlanBuilder().evaluate(config, wrong_shape, hardware)
     assert not rejection.accepted
     assert any(

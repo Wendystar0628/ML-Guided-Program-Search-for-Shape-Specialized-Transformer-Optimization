@@ -16,7 +16,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "c3f5e0dd18f63deb2364cf5767853b9119d38a1c193d157756815e4ab8f1f564"
+        "solution_implementation_digest": "6a11e4833685afcb081365e5d107fe9e9f139ada520a8b0ad62679ccaa9086f4"
       },
       "entries": [
         {
@@ -546,8 +546,8 @@
               "precision_plan": "fp16_core",
               "qkv_materialization": "triton_native_bhsd",
               "attention_output_bridge": "attention_direct_bsd",
-              "ffn": "torch",
-              "residual_norm": "triton_mixed",
+              "ffn": "triton_fused_mlp_boundary",
+              "residual_norm": "triton_linear_mixed",
               "initial_norm": "triton_fp16"
             },
             "schedule": {
@@ -555,19 +555,19 @@
               "attention_launch": {
                 "block_m": 128,
                 "block_n": 64,
-                "num_warps": 4,
-                "num_stages": 1
+                "num_warps": 8,
+                "num_stages": 3
               },
               "qkv_launch": {
-                "block_m": 128,
-                "block_n": 64,
+                "block_m": 64,
+                "block_n": 32,
                 "block_k": 64,
-                "num_warps": 8
+                "num_warps": 2
               },
               "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 8,
-                "num_warps": 2
+                "block_rows": 16,
+                "num_warps": 4
               },
               "initial_norm_launch": {
                 "block_rows": 8,

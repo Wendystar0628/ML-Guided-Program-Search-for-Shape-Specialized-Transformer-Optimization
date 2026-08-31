@@ -788,14 +788,14 @@ class PlanBuilder:
                     "Triton fused MLP residual-norm boundary is unavailable",
                 )
             if (
-                context.batch_size * context.seq_len != 2048
+                context.batch_size * context.seq_len not in {2048, 8192}
                 or context.d_model != 128
                 or context.ffn_dim != 128
             ):
                 reject(
                     "unsupported_shape",
                     "program.ffn",
-                    "fused MLP boundary requires 2048 rows with D=F=128",
+                    "fused MLP boundary requires 2048 or 8192 rows with D=F=128",
                 )
             if config.program.residual_norm is not ResidualNormBackend.TRITON_LINEAR_MIXED:
                 reject(

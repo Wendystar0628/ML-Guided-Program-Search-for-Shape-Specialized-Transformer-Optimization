@@ -423,7 +423,7 @@ def _context_supports_fused_ffn_boundary(context: SearchContext) -> bool:
     execution = context.execution_context
     return bool(
         not execution.has_valid_token_mask
-        and execution.batch_size * execution.seq_len == 2048
+        and execution.batch_size * execution.seq_len in {2048, 8192}
         and execution.d_model == 128
         and execution.ffn_dim == 128
         and getattr(context.hardware, "triton_fused_ffn_residual_norm", False)
@@ -796,6 +796,14 @@ def _domains_for_structure(
         AttentionBackend.TRITON_DH8,
     }:
         block_m, block_n, warps, stages = _attention_defaults(structure.attention)
+        if (
+            structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+            and structure.attention is AttentionBackend.TRITON_DH8
+            and context.execution_context.num_heads == 16
+        ):
+            # Preserve Shape 11's proven attention schedule when the experiment
+            # changes only the FFN boundary.
+            block_m, block_n, warps, stages = 128, 64, 4, 1
         tile_choices = _attention_tile_choices(context.execution_context.seq_len)
         default_tile = f"{block_m}x{block_n}"
         if default_tile not in tile_choices:
@@ -825,7 +833,18 @@ def _domains_for_structure(
             input_width=model_width,
             supported_block_k=(16, 32, 64),
         )
-        default_tile = "32x32x32" if model_width == 32 else "64x64x32"
+        shape11_fused_witness = bool(
+            structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+            and structure.attention is AttentionBackend.TRITON_DH8
+            and context.execution_context.num_heads == 16
+        )
+        default_tile = (
+            "128x64x64"
+            if shape11_fused_witness
+            else "32x32x32"
+            if model_width == 32
+            else "64x64x32"
+        )
         domains.extend(
             (
                 ParameterDomain(
@@ -833,7 +852,11 @@ def _domains_for_structure(
                     tile_choices,
                     default_tile,
                 ),
-                ParameterDomain("qkv_num_warps", (2, 4, 8), 4),
+                ParameterDomain(
+                    "qkv_num_warps",
+                    (2, 4, 8),
+                    8 if shape11_fused_witness else 4,
+                ),
             )
         )
     if (
@@ -943,17 +966,32 @@ def _domains_for_structure(
             )
         )
     if structure.initial_norm is InitialNormBackend.TRITON_FP16:
+        shape11_fused_witness = bool(
+            structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+            and structure.attention is AttentionBackend.TRITON_DH8
+            and context.execution_context.num_heads == 16
+        )
         domains.extend(
             (
                 ParameterDomain(
                     "initial_block_rows",
                     initial_norm_rows,
-                    2 if 2 in initial_norm_rows else initial_norm_rows[0],
+                    (
+                        8
+                        if shape11_fused_witness
+                        else 2
+                        if 2 in initial_norm_rows
+                        else initial_norm_rows[0]
+                    ),
                 ),
                 ParameterDomain(
                     "initial_num_warps",
                     initial_norm_warps,
-                    4 if model_width == 1024 else 2,
+                    1
+                    if shape11_fused_witness
+                    else 4
+                    if model_width == 1024
+                    else 2,
                 ),
             )
         )
@@ -1010,7 +1048,11 @@ def _domains_for_structure(
             ParameterDomain(
                 "reuse_unchanged_input",
                 (False, True),
-                False,
+                bool(
+                    structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+                    and structure.attention is AttentionBackend.TRITON_DH8
+                    and context.execution_context.num_heads == 16
+                ),
             )
         )
     return tuple(domains)
@@ -1043,14 +1085,22 @@ def _search_structure_supported(
     context: SearchContext,
 ) -> bool:
     if structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY:
+        direct_dh8 = bool(
+            structure.attention is AttentionBackend.TRITON_DH8
+            and structure.attention_output_bridge
+            is AttentionOutputBridge.ATTENTION_DIRECT_BSD
+        )
+        efficient_bhsd = bool(
+            structure.attention is AttentionBackend.FP16_EFFICIENT_SDPA
+            and structure.attention_output_bridge
+            is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+        )
         return bool(
             _context_supports_fused_ffn_boundary(context)
-            and structure.attention is AttentionBackend.FP16_EFFICIENT_SDPA
+            and (direct_dh8 or efficient_bhsd)
             and structure.precision_plan is PrecisionPlan.FP16_CORE
             and structure.qkv_materialization
             is QKVMaterialization.TRITON_NATIVE_BHSD
-            and structure.attention_output_bridge
-            is AttentionOutputBridge.TRITON_BHSD_PROJECTION
             and structure.residual_norm
             is ResidualNormBackend.TRITON_LINEAR_MIXED
             and structure.initial_norm is InitialNormBackend.TRITON_FP16
@@ -1275,11 +1325,25 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
                 continue
             values.append(structure)
     if _context_supports_fused_ffn_boundary(context):
+        use_dh8 = bool(
+            execution.batch_size == 64
+            and execution.seq_len == 128
+            and execution.head_dim == 8
+            and execution.num_heads == 16
+        )
         fused_ffn_boundary = StructureSpec(
-            attention=AttentionBackend.FP16_EFFICIENT_SDPA,
+            attention=(
+                AttentionBackend.TRITON_DH8
+                if use_dh8
+                else AttentionBackend.FP16_EFFICIENT_SDPA
+            ),
             precision_plan=PrecisionPlan.FP16_CORE,
             qkv_materialization=QKVMaterialization.TRITON_NATIVE_BHSD,
-            attention_output_bridge=AttentionOutputBridge.TRITON_BHSD_PROJECTION,
+            attention_output_bridge=(
+                AttentionOutputBridge.ATTENTION_DIRECT_BSD
+                if use_dh8
+                else AttentionOutputBridge.TRITON_BHSD_PROJECTION
+            ),
             ffn=FFNBackend.TRITON_FUSED_MLP_BOUNDARY,
             residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
             initial_norm=InitialNormBackend.TRITON_FP16,
