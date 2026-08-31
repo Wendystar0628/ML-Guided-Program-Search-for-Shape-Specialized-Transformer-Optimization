@@ -559,7 +559,7 @@ def test_2048_row_fused_mlp_boundary_is_one_strict_searchable_structure() -> Non
     assert len(shape09_fused) == 1
     assert shape09_fused[0].structure.attention is AttentionBackend.FP16_CUDNN_SDPA
 
-    wrong_shape = replace(context, batch_size=32, seq_len=128)
+    wrong_shape = replace(context, d_model=64, ffn_dim=64)
     rejection = PlanBuilder().evaluate(config, wrong_shape, hardware)
     assert not rejection.accepted
     assert any(

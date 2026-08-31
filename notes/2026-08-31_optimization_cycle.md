@@ -37,3 +37,5 @@ Shape 12 融合 FFN 边界获得可重复部署收益 | 新积木在一个 Trito
 同尺度融合收益开始接近晋升边界 | Shape 10 的 36 个 Trial 用融合边界把 Formal 从 0.203776 ms 降到 0.198656 ms，13 个配对的中位加速为 1.0259×并晋升 | 相同 8192 行在不同 Head 数下收益从约 2.6% 到 11.1%，完整 Forward 的非 FFN 占比决定上限 | 保留已证部署；后续迁移必须保持原 Attention 家族并继续逐 Shape 证伪
 
 新边界积木应与各 Shape 的最强 Attention 家族组合 | Shape 09 保留 cuDNN SDPA，只替换 FFN 边界后，Formal 从 0.235520 ms 降到 0.222208 ms，9 个配对中位加速 1.0557×并晋升 | 强制统一 Efficient SDPA 会混入 Attention 退化；结构合成应保留独立成熟库优势 | 搜索器按 HeadDim 与硬件能力生成 cuDNN、Efficient 或 Dh8 的单一融合结构
+
+小行数形态不适合当前融合 FFN 边界 | Shape 03 的融合候选由 Screen 约 0.079 ms 退化到 Enhanced 约 0.165 ms；最终由已有精确 GELU/调度结构以 1.025×晋升。Shape 02 的最佳 challenger Formal 仅为 incumbent 的 0.854× | 128/512 行时单层仅 8/32 个 CTA，融合后占用率损失高于中间张量流量收益 | 执行层保留通用 D=F=128 合同，搜索层只在实测有效的 2048/8192 行开放；小行数等待持久化或启动专用方法
