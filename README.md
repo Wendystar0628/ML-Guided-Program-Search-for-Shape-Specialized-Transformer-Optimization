@@ -126,6 +126,36 @@ The resident script defaults to Shapes 01–05 and 07–13 because Shape 06 is m
 
 [`cli.py`](cli.py) is the development and search interface. [`torch_transformer_benchmark.py`](torch_transformer_benchmark.py) is the separate bridge to the immutable official benchmark implementation.
 
+## Reproducing the declared result
+
+The primary reproduction target is the correctness and performance of the committed per-Shape deployment against the official PyTorch baseline. It does **not** require rerunning autotuning. Use a clean checkout, prepare the validated environment above, run from the repository root, and close video playback, model servers, or other applications that may use the target GPU. The selected programs are read from [`deployment/deployed_configs.json`](deployment/deployed_configs.json).
+
+First run the low-cost pipeline check:
+
+```powershell
+.\.venv\Scripts\python.exe "docs\04_最终交付物\01_最终性能测试\run_final_performance.py" --preset smoke
+```
+
+This verifies that the environment, official workloads, deployment resolution, correctness path, and result writer are operational. Smoke output is not the submitted performance result.
+
+Run the full declared measurement with:
+
+```powershell
+.\.venv\Scripts\python.exe "docs\04_最终交付物\01_最终性能测试\run_final_performance.py"
+```
+
+The script holds the exclusive GPU lease, measures Shapes serially in fresh processes, and writes a new timestamped artifact without replacing earlier runs:
+
+```text
+docs/04_最终交付物/01_最终性能测试/result/<UTC completion time>/
+  final_performance.json   machine-readable environment and per-Shape evidence
+  final_performance.md     reviewer-facing result table
+```
+
+A successful reproduction has correctness `PASS` for all 14 official Shapes, reports baseline/deployed latency and speedup for Shapes 01–13, and completes the streamed Shape-14 path with latency and peak memory. The resident geometric mean should be close to the declared **14.49×**, but exact latency and speedup are not expected to be bit-for-bit identical because GPU clocks, temperature, driver state, and background load affect timing. Shape 14 intentionally has no materialized dense baseline and is excluded from the speedup aggregate. The measurement presets and output fields are documented in the [final-performance test directory](docs/04_最终交付物/01_最终性能测试/README.md).
+
+Rerunning the optimization process is optional and answers a different question: whether another measured program can replace the current deployment. Use `optimize_shapes_01_13.ps1` or `optimize_shape_14.ps1` from the command section above only when reproducing that search-to-deployment workflow; the final-result reproduction itself starts from the committed deployment registry.
+
 ## Technical report
 
 The English report is split into five focused documents plus an index:
@@ -136,7 +166,7 @@ The English report is split into five focused documents plus an index:
 4. [Evaluation and results](docs/technical_report/04_evaluation_and_results.md)
 5. [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md)
 
-The report's architecture, performance, and workload figures are generated from repository data as editable SVG/PDF assets. Its AI disclosure now includes the human-guidance method and two representative, evidence-linked interaction histories. A dedicated result-reproduction section is intentionally deferred to a later owner-guided submission revision.
+The report's architecture, performance, and workload figures are generated from repository data as editable SVG/PDF assets. Its AI disclosure includes the human-guidance method and two representative, evidence-linked interaction histories. The repository-level reproduction procedure is defined above and linked to the dedicated final-performance test entrypoint.
 
 ## AI tool disclosure
 
