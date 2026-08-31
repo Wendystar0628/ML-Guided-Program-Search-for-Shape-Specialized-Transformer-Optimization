@@ -1,8 +1,11 @@
-# 文档
+# Documentation
 
-- `01_赛题规则/`：官方规则的整理、翻译与说明会摘要。
-- `02_工程指南/`：仍然适用于当前代码的工程与持续优化方法。
-- `04_最终交付物/`：面向比赛提交的最终报告、性能结果和演示材料。
+- `01_赛题规则/`: official rules, translations, and briefing notes.
+- `02_工程指南/`: engineering guidance that still applies to the current code.
+- [`technical_report/`](technical_report/README.md): English technical report,
+  academic figures, and compact figure source data.
+- `04_最终交付物/`: competition-facing final performance test and other delivery
+  materials.
 
-当前性能架构、运行入口和目录说明只维护在仓库根目录
-[`README.md`](../README.md)；不再维护单独的开发路线或 Agent 设计文档。
+The repository-level architecture, setup, command overview, latest result, and
+submission links are maintained in the root [`README.md`](../README.md).
