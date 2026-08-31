@@ -1,15 +1,10 @@
 # Learning-Guided Program Search for Shape-Specialized Transformers
 
-This project synthesizes legal Transformer execution programs, measures them on the
-target GPU, and automatically deploys the fastest correct program for each workload
-Shape. Instead of extending a hand-written list of named policies, it searches typed
-compositions of mature PyTorch operators, custom Triton kernels, layouts, precision
-choices, fusions, runtimes, and launch schedules.
+This project synthesizes legal Transformer execution programs, measures them on the target GPU, and automatically deploys the fastest correct program for each workload Shape. Instead of extending a hand-written list of named policies, it searches typed compositions of mature PyTorch operators, custom Triton kernels, layouts, precision choices, fusions, runtimes, and launch schedules.
 
 ## Latest verified result
 
-The current declared snapshot was measured on an NVIDIA GeForce RTX 4080 under an
-exclusive GPU lease. All 14 official workloads pass correctness.
+The current declared snapshot was measured on an NVIDIA GeForce RTX 4080 under an exclusive GPU lease. All 14 official workloads pass correctness.
 
 | Result | Value |
 | --- | ---: |
@@ -20,43 +15,26 @@ exclusive GPU lease. All 14 official workloads pass correctness.
 
 ![RTX 4080 performance summary](docs/technical_report/figures/performance_summary.svg)
 
-Speedup is `baseline median / deployed median`. The 14.49× result is the equal-Shape
-geometric mean for Shapes 01–13. Shape 14 has no materialized dense `S × S` baseline,
-so it reports correctness, latency, memory, and a project FLOP estimate but is excluded
-from the speedup aggregate. These are local engineering results, not an official
-competition score.
+Speedup is `baseline median / deployed median`. The 14.49× result is the equal-Shape geometric mean for Shapes 01–13. Shape 14 has no materialized dense `S × S` baseline, so it reports correctness, latency, memory, and a project FLOP estimate but is excluded from the speedup aggregate. These are local engineering results, not an official competition score.
 
 - [Full evaluation and per-Shape table](docs/technical_report/04_evaluation_and_results.md)
 - [Machine-readable final result](docs/04_最终交付物/01_最终性能测试/result/20260831T083857.848038Z/final_performance.json)
 
 ## Why shape specialization matters
 
-The official suite changes batch size from 1 to 10,000, model width from 32 to
-1,024, head count from 1 to 16, and sequence length from 32 to 100,000. The dominant
-cost therefore shifts among launch overhead, matrix throughput, layout conversion,
-attention working set, memory traffic, and device capacity. One universal execution
-path is not uniformly optimal.
+The official suite changes batch size from 1 to 10,000, model width from 32 to 1,024, head count from 1 to 16, and sequence length from 32 to 100,000. The dominant cost therefore shifts among launch overhead, matrix throughput, layout conversion, attention working set, memory traffic, and device capacity. One universal execution path is not uniformly optimal.
 
 ![Official workload landscape](docs/technical_report/figures/workload_landscape.svg)
 
 ## Key contributions
 
-- **Typed program synthesis:** `ConfigSpec` represents the whole candidate program;
-  `PlanBuilder` emits one immutable `ExecutionPlan` or rejects it without silent
-  substitution.
-- **Learning-guided conditional search:** resident workloads use persistent,
-  constraint-aware, branch-local TPE with fixed-budget survivor racing.
-- **Multi-fidelity evidence:** Screen measurements guide search, Enhanced measurements
-  identify one challenger, and Formal measurement compares it with the incumbent.
-- **Statistically guarded deployment:** an interleaved group-sequential paired rule
-  promotes only repeatable improvements of at least 2%, with early decisions for
-  large effects.
-- **Exact-device routing:** the deployed registry is keyed by the measured runtime
-  environment and full workload fingerprint.
-- **Dedicated Shape-14 regime:** a finite no-replacement search feeds a streamed
-  microbatch runtime that avoids a dense 100,000-token attention matrix.
-- **Clean GPU measurement:** jobs hold a single-device lease and run Shapes serially
-  in fresh processes.
+- **Typed program synthesis:** `ConfigSpec` represents the whole candidate program; `PlanBuilder` emits one immutable `ExecutionPlan` or rejects it without silent substitution.
+- **Learning-guided conditional search:** resident workloads use persistent, constraint-aware, branch-local TPE with fixed-budget survivor racing.
+- **Multi-fidelity evidence:** Screen measurements guide search, Enhanced measurements identify one challenger, and Formal measurement compares it with the incumbent.
+- **Statistically guarded deployment:** an interleaved group-sequential paired rule promotes only repeatable improvements of at least 2%, with early decisions for large effects.
+- **Exact-device routing:** the deployed registry is keyed by the measured runtime environment and full workload fingerprint.
+- **Dedicated Shape-14 regime:** a finite no-replacement search feeds a streamed microbatch runtime that avoids a dense 100,000-token attention matrix.
+- **Clean GPU measurement:** jobs hold a single-device lease and run Shapes serially in fresh processes.
 
 ## System architecture
 
@@ -76,10 +54,7 @@ exact-device deployment registry
 resident runtime (Shapes 01–13) or streamed runtime (Shape 14)
 ```
 
-Search persistence and deployment have different roles. Scoped SQLite studies retain
-detailed reusable evidence; compact JSONL logs retain the decision timeline;
-`deployment/deployed_configs.json` contains only current measured winners used by the
-runtime.
+Search persistence and deployment have different roles. Scoped SQLite studies retain detailed reusable evidence; compact JSONL logs retain the decision timeline; `deployment/deployed_configs.json` contains only current measured winners used by the runtime.
 
 ## Repository structure
 
@@ -96,8 +71,7 @@ docs/           competition rules, engineering guidance, report, and deliverable
 cli.py          probe, benchmark, profile, search, and optimize commands
 ```
 
-The detailed responsibility map is in the
-[system architecture report](docs/technical_report/02_system_architecture.md).
+The detailed responsibility map is in the [system architecture report](docs/technical_report/02_system_architecture.md).
 
 ## Validated environment
 
@@ -119,14 +93,11 @@ python -m venv .venv
 python -m pip install -r environments\windows-rtx4080.txt
 ```
 
-Another platform should install a CUDA-enabled PyTorch build and compatible Triton
-distribution for that platform before installing `requirements.txt`. The Windows
-Triton port is not presented as a universal dependency.
+Another platform should install a CUDA-enabled PyTorch build and compatible Triton distribution for that platform before installing `requirements.txt`. The Windows Triton port is not presented as a universal dependency.
 
 ## Running the project
 
-GPU commands share one process-level device lease. Resident Shapes and Shape 14 have
-separate optimization lifecycles and separate persistent search stores.
+GPU commands share one process-level device lease. Resident Shapes and Shape 14 have separate optimization lifecycles and separate persistent search stores.
 
 ```powershell
 # Inspect the target GPU and runtime
@@ -151,14 +122,9 @@ separate optimization lifecycles and separate persistent search stores.
   --device cuda:0
 ```
 
-The resident script defaults to Shapes 01–05 and 07–13 because Shape 06 is much more
-expensive to measure. Pass `-IncludeShape06` when a new large-batch mechanism warrants
-that cost. Re-running either script resumes compatible studies rather than starting
-from zero.
+The resident script defaults to Shapes 01–05 and 07–13 because Shape 06 is much more expensive to measure. Pass `-IncludeShape06` when a new large-batch mechanism warrants that cost. Re-running either script resumes compatible studies rather than starting from zero.
 
-[`cli.py`](cli.py) is the development and search interface.
-[`torch_transformer_benchmark.py`](torch_transformer_benchmark.py) is the separate
-bridge to the immutable official benchmark implementation.
+[`cli.py`](cli.py) is the development and search interface. [`torch_transformer_benchmark.py`](torch_transformer_benchmark.py) is the separate bridge to the immutable official benchmark implementation.
 
 ## Technical report
 
@@ -170,37 +136,22 @@ The English report is split into five focused documents plus an index:
 4. [Evaluation and results](docs/technical_report/04_evaluation_and_results.md)
 5. [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md)
 
-The report's architecture, performance, and workload figures are generated from
-repository data as editable SVG/PDF assets. Human-guidance methodology,
-representative interaction excerpts, and a dedicated result-reproduction section are
-intentionally deferred to a later owner-guided submission revision.
+The report's architecture, performance, and workload figures are generated from repository data as editable SVG/PDF assets. Its AI disclosure now includes the human-guidance method and two representative, evidence-linked interaction histories. A dedicated result-reproduction section is intentionally deferred to a later owner-guided submission revision.
 
 ## AI tool disclosure
 
-OpenAI Codex was the primary implementation, refactoring, testing, and multi-agent
-coordination environment. A separate ChatGPT GPT-5.6 sol Pro workflow provided deep
-repository and methodology reviews, and Deep Research supported broader method
-exploration. Actually used Skills include Stop That Shit, Deep Research, Browser
-Control, and Nature Figure. The project does not claim to implement an autonomous LLM
-Agent runtime; search, correctness, measurement, promotion, and deployment are
-deterministic program operations.
+OpenAI Codex was the primary implementation, refactoring, testing, and multi-agent coordination environment. A separate ChatGPT GPT-5.6 sol Pro workflow provided deep repository and methodology reviews, and Deep Research supported broader method exploration. Actually used Skills include Stop That Shit, Deep Research, Browser Control, and Nature Figure. The project does not claim to implement an autonomous LLM Agent runtime; search, correctness, measurement, promotion, and deployment are deterministic program operations.
 
-See [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md)
-for the bounded disclosure used in this draft.
+See [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md) for the bounded disclosure, decision-ownership model, and representative interactions used in this draft.
 
 ## Limitations and next steps
 
 - Performance has been validated only on the disclosed RTX 4080/Windows stack.
-- The official MFU weights, useful-FLOP definition, bandwidth correction, and final
-  aggregation protocol have not been published; this repository does not claim an
-  official score.
+- The official MFU weights, useful-FLOP definition, bandwidth correction, and final aggregation protocol have not been published; this repository does not claim an official score.
 - Shape 14 has no dense baseline speedup and uses a separate streamed protocol.
-- The final snapshot currently covers FP32 input/output, zero padding, and unit input
-  scale.
-- Search quality is bounded by the currently implemented operator and Kernel
-  vocabulary and by a 36-branch resident structure cap per run.
-- Cross-hardware infrastructure is retained, but another GPU needs fresh measurement
-  and deployment rather than inheriting RTX 4080 results.
+- The final snapshot currently covers FP32 input/output, zero padding, and unit input scale.
+- Search quality is bounded by the currently implemented operator and Kernel vocabulary and by a 36-branch resident structure cap per run.
+- Cross-hardware infrastructure is retained, but another GPU needs fresh measurement and deployment rather than inheriting RTX 4080 results.
 
 ## Submission links
 

@@ -6,9 +6,7 @@
 .\.venv\Scripts\python.exe docs\technical_report\figures\generate_figures.py
 ```
 
-The script reads the latest completed final-performance JSON and
-`official/test_shapes.json`, writes compact CSV source tables, and exports every
-figure as editable SVG, PDF, and a 600 dpi PNG preview.
+The script reads the latest completed final-performance JSON and `official/test_shapes.json`, writes compact CSV source tables, and exports every figure as editable SVG, PDF, and a 600 dpi PNG preview.
 
 ## Figure contracts
 
@@ -20,15 +18,10 @@ figure as editable SVG, PDF, and a 600 dpi PNG preview.
 
 ## Rendered QA notes
 
-- Final width is 182.9 mm (double-column scale); all configured text is at least
-  5.6 pt and remains editable in SVG/PDF.
-- Blue denotes resident/search behavior, teal denotes measured winners or execution,
-  orange denotes promotion and the streamed Shape-14 regime, and gray is neutral.
+- Final width is 182.9 mm (double-column scale); all configured text is at least 5.6 pt and remains editable in SVG/PDF.
+- Blue denotes resident/search behavior, teal denotes measured winners or execution, orange denotes promotion and the streamed Shape-14 regime, and gray is neutral.
 - Log axes are guarded against non-positive source values.
 - P90 markers are labeled as percentiles, not uncertainty intervals.
 - Shape 14 is absent from speedup panels because no dense baseline is measured.
-- Sensitivity panels compare independently deployed programs and are not presented as
-  causal Kernel ablations.
-- PNG is retained only as a high-resolution preview. TIFF is intentionally omitted
-  because the primary deliverables are editable vector figures and no raster-only
-  journal submission target has been specified.
+- Sensitivity panels compare independently deployed programs and are not presented as causal Kernel ablations.
+- PNG is retained only as a high-resolution preview. TIFF is intentionally omitted because the primary deliverables are editable vector figures and no raster-only journal submission target has been specified.
