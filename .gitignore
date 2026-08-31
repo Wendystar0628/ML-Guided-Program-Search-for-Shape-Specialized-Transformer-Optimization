@@ -56,6 +56,7 @@ agent_state/
 /docs/*
 !/docs/technical_report/
 !/docs/technical_report/**
+/docs/technical_report/**/__pycache__/
 
 # Editor and operating-system files
 .idea/
