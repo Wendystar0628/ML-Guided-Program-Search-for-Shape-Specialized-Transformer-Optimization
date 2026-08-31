@@ -35,6 +35,7 @@ from solution.config import (
     ScheduleConfig,
     TritonAttentionParams,
     TritonNormParams,
+    TritonQKVParams,
 )
 from solution.plan import ExecutionContext
 from solution.plan_builder import HardwareCapabilities, PlanBuilder
@@ -399,6 +400,86 @@ def test_linear_boundary_fusion_is_a_strict_searchable_structure(width: int) -> 
         "residual_num_warps",
     }
     assert "attention_output_gemm_tile" not in branch.parameter_names
+
+
+def test_shape12_fused_mlp_boundary_is_one_strict_searchable_structure() -> None:
+    context = replace(
+        _official07_context(),
+        seq_len=32,
+        d_model=128,
+        ffn_dim=128,
+    )
+    hardware = replace(
+        _cudnn_hardware(),
+        mem_efficient_sdp=True,
+        triton_qkv_native_bhsd=True,
+        triton_initial_norm=True,
+        triton_linear_residual_norm=True,
+        triton_fused_ffn_residual_norm=True,
+    )
+    config = ConfigSpec(
+        program=ProgramConfig(
+            attention=AttentionBackend.FP16_EFFICIENT_SDPA,
+            qkv_projection=ProjectionBackend.FP16_SHADOW,
+            attention_output_projection=ProjectionBackend.FP16_SHADOW,
+            ffn_input_projection=ProjectionBackend.FP16_SHADOW,
+            ffn_output_projection=ProjectionBackend.FP16_SHADOW,
+            precision_plan=PrecisionPlan.FP16_CORE,
+            qkv_materialization=QKVMaterialization.TRITON_NATIVE_BHSD,
+            attention_output_bridge=AttentionOutputBridge.TRITON_BHSD_PROJECTION,
+            ffn=FFNBackend.TRITON_FUSED_MLP_BOUNDARY,
+            residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
+            initial_norm=InitialNormBackend.TRITON_FP16,
+        ),
+        schedule=ScheduleConfig(
+            runtime=RuntimeBackend.CUDA_GRAPH,
+            qkv_launch=TritonQKVParams(
+                block_m=64,
+                block_n=64,
+                block_k=32,
+                num_warps=4,
+            ),
+            residual_norm_launch=TritonNormParams(
+                block_rows=16,
+                num_warps=4,
+            ),
+            initial_norm_launch=TritonNormParams(
+                block_rows=2,
+                num_warps=2,
+            ),
+        ),
+    )
+
+    plan = PlanBuilder().build(config, context, hardware)
+    assert plan.ffn_backend is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    assert plan.ffn_input_launch is None
+    assert plan.use_linear_boundary_fusion
+
+    search_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=context,
+            scope="resident",
+            hardware=hardware,
+        ),
+        max_branches=36,
+    )
+    fused = tuple(
+        branch
+        for branch in search_space.branches
+        if branch.structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    )
+    assert len(fused) == 1
+    assert set(fused[0].domains[0].choices) == {"all_shadow"}
+    assert fused[0].branch_id in search_space.mandatory_branch_ids
+
+    wrong_shape = replace(context, seq_len=128)
+    rejection = PlanBuilder().evaluate(config, wrong_shape, hardware)
+    assert not rejection.accepted
+    assert any(
+        violation.field == "program.ffn" and violation.code == "unsupported_shape"
+        for violation in rejection.violations
+    )
 
 
 @pytest.mark.parametrize("precision_plan", tuple(PrecisionPlan))

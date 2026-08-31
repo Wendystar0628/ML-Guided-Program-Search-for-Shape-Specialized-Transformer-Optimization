@@ -34,7 +34,9 @@ from .kernels.attention import (
     prevalidated_triton_shape13_causal_attention_bsd,
 )
 from .kernels.boundary import (
+    TRITON_FFN_RESIDUAL_NORM_BACKEND,
     TRITON_LINEAR_RESIDUAL_NORM_BACKEND,
+    triton_ffn_residual_norm,
     triton_linear_residual_norm,
 )
 from .kernels.ffn import (
@@ -813,6 +815,56 @@ class _TransformerBlock(nn.Module):
             return self.ffn_out.forward_backend(
                 hidden_value,
                 plan.ffn_output_projection_backend,
+            )
+
+        if plan.ffn_backend is FFNBackend.TRITON_FUSED_MLP_BOUNDARY:
+            if boundary_residual is None or boundary_norm is None:
+                raise RuntimeError("fused MLP boundary requires residual and norm")
+            if not plan.use_linear_boundary_fusion:
+                raise RuntimeError("fused MLP boundary requires linear boundary fusion")
+            launch = plan.residual_norm_launch
+            if launch is None:
+                raise RuntimeError("fused MLP boundary is missing launch parameters")
+            input_weight, input_bias = self.ffn_in.fp16_shadow_parameters()
+            output_weight, output_bias = self.ffn_out.fp16_shadow_parameters()
+            if input_bias is None or output_bias is None:
+                raise RuntimeError("fused MLP boundary requires both projection biases")
+            residual, normalized_output, actual_marker = (
+                triton_ffn_residual_norm(
+                    normalized,
+                    input_weight,
+                    input_bias,
+                    output_weight,
+                    output_bias,
+                    boundary_residual,
+                    boundary_norm,
+                    final_boundary=final_boundary,
+                    block_rows=launch.block_rows,
+                    num_warps=launch.num_warps,
+                    num_stages=1,
+                )
+            )
+            if observation is not None:
+                observation.ffn_input_projection_backends.append(
+                    plan.ffn_input_projection_backend.value
+                )
+                observation.ffn_input_projection_compute_dtypes.append("float16")
+                observation.ffn_activation_output_dtypes.append("float16")
+                observation.ffn_output_projection_backends.append(
+                    plan.ffn_output_projection_backend.value
+                )
+                observation.ffn_output_projection_compute_dtypes.append("float16")
+                observation.ffn_launches.append(None)
+                observation.ffn_input_launches.append(None)
+                observation.ffn_backends.append(plan.ffn_backend.value)
+            return _FusedBoundaryResult(
+                residual,
+                normalized_output,
+                _strict_backend_marker(
+                    actual_marker,
+                    expected_marker=TRITON_FFN_RESIDUAL_NORM_BACKEND,
+                    planned_backend=plan.residual_norm_backend.value,
+                ),
             )
 
         projected: torch.Tensor | None = None

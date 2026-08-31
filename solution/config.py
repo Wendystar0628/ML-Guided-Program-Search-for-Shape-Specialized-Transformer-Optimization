@@ -67,6 +67,7 @@ class FFNBackend(StrEnum):
     COMPILED = "compiled"
     TRITON_EXACT_GELU = "triton_exact_gelu"
     TRITON_LINEAR_EXACT_GELU = "triton_linear_exact_gelu"
+    TRITON_FUSED_MLP_BOUNDARY = "triton_fused_mlp_boundary"
 
 
 class ResidualNormBackend(StrEnum):

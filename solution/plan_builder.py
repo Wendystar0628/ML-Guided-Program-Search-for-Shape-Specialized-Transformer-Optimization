@@ -23,7 +23,10 @@ from .kernels.attention import (
     triton_dh8_causal_attention_available,
     triton_shape13_causal_attention_available,
 )
-from .kernels.boundary import triton_linear_residual_norm_available
+from .kernels.boundary import (
+    triton_ffn_residual_norm_available,
+    triton_linear_residual_norm_available,
+)
 from .kernels.ffn import (
     triton_exact_gelu_available,
     triton_linear_exact_gelu_available,
@@ -142,6 +145,7 @@ class HardwareCapabilities:
     triton_d32_residual_norm: bool = False
     triton_masked_norm: bool = False
     triton_linear_residual_norm: bool = False
+    triton_fused_ffn_residual_norm: bool = False
 
     @classmethod
     def detect(cls, device: torch.device) -> HardwareCapabilities:
@@ -190,6 +194,9 @@ class HardwareCapabilities:
             triton_d32_residual_norm=(triton_d32_residual_layer_norm_available()),
             triton_masked_norm=triton_masked_layer_norm_available(),
             triton_linear_residual_norm=(triton_linear_residual_norm_available()),
+            triton_fused_ffn_residual_norm=(
+                triton_ffn_residual_norm_available()
+            ),
         )
 
 
@@ -773,6 +780,53 @@ class PlanBuilder:
                     "torch.compile is unavailable",
                 )
             return
+        if backend is FFNBackend.TRITON_FUSED_MLP_BOUNDARY:
+            if not hardware.triton_fused_ffn_residual_norm:
+                reject(
+                    "backend_unavailable",
+                    "program.ffn",
+                    "Triton fused MLP residual-norm boundary is unavailable",
+                )
+            if (
+                context.batch_size != 64
+                or context.seq_len != 32
+                or context.d_model != 128
+                or context.ffn_dim != 128
+            ):
+                reject(
+                    "unsupported_shape",
+                    "program.ffn",
+                    "fused MLP boundary is specialized for Shape 12",
+                )
+            if config.program.residual_norm is not ResidualNormBackend.TRITON_LINEAR_MIXED:
+                reject(
+                    "backend_incompatible",
+                    "program.residual_norm",
+                    "fused MLP boundary requires the fused Linear residual-norm path",
+                )
+            if config.program.precision_plan is not PrecisionPlan.FP16_CORE:
+                reject(
+                    "precision_incompatible",
+                    "program.precision_plan",
+                    "fused MLP boundary requires the full FP16 core plan",
+                )
+            if (
+                config.program.ffn_input_projection is not ProjectionBackend.FP16_SHADOW
+                or config.program.ffn_output_projection is not ProjectionBackend.FP16_SHADOW
+            ):
+                reject(
+                    "backend_incompatible",
+                    "program.ffn_input_projection",
+                    "fused MLP boundary requires FP16 shadow weights",
+                )
+            launch = config.schedule.residual_norm_launch
+            if launch is None or launch.block_rows != 16 or launch.num_warps != 4:
+                reject(
+                    "unsupported_launch_value",
+                    "schedule.residual_norm_launch",
+                    "fused MLP boundary uses block_rows=16 and num_warps=4",
+                )
+            return
         if backend is FFNBackend.TRITON_LINEAR_EXACT_GELU:
             if not hardware.triton_linear_exact_gelu:
                 reject(
@@ -1142,6 +1196,7 @@ class PlanBuilder:
         elif config.program.ffn in {
             FFNBackend.TRITON_EXACT_GELU,
             FFNBackend.TRITON_LINEAR_EXACT_GELU,
+            FFNBackend.TRITON_FUSED_MLP_BOUNDARY,
         }:
             ffn_activation_output_dtype = "float16"
         else:

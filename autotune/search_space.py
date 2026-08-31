@@ -419,6 +419,18 @@ def _context_supports_fused_ffn(context: SearchContext) -> bool:
     )
 
 
+def _context_supports_fused_ffn_boundary(context: SearchContext) -> bool:
+    execution = context.execution_context
+    return bool(
+        not execution.has_valid_token_mask
+        and execution.batch_size == 64
+        and execution.seq_len == 32
+        and execution.d_model == 128
+        and execution.ffn_dim == 128
+        and getattr(context.hardware, "triton_fused_ffn_residual_norm", False)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class BranchSpace:
     """A StructureSpec and the finite parameters that remain active inside it."""
@@ -756,11 +768,19 @@ def _domains_for_structure(
             is ResidualNormBackend.TRITON_LINEAR_MIXED
         ),
         require_ffn_input_shadow=(
-            structure.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU
+            structure.ffn
+            in {
+                FFNBackend.TRITON_LINEAR_EXACT_GELU,
+                FFNBackend.TRITON_FUSED_MLP_BOUNDARY,
+            }
             and structure.precision_plan is not PrecisionPlan.FP16_FFN_OUTPUT
         ),
         require_ffn_output_shadow=(
-            structure.ffn is FFNBackend.TRITON_LINEAR_EXACT_GELU
+            structure.ffn
+            in {
+                FFNBackend.TRITON_LINEAR_EXACT_GELU,
+                FFNBackend.TRITON_FUSED_MLP_BOUNDARY,
+            }
             or structure.residual_norm
             is ResidualNormBackend.TRITON_LINEAR_MIXED
         ),
@@ -886,8 +906,12 @@ def _domains_for_structure(
         ResidualNormBackend.TRITON_LINEAR_MIXED,
     }:
         if structure.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED:
-            norm_rows = (16, 32, 64) if model_width == 32 else (16, 32)
-            norm_warps = (2, 4) if model_width == 32 else (4, 8)
+            if structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY:
+                norm_rows = (16,)
+                norm_warps = (4,)
+            else:
+                norm_rows = (16, 32, 64) if model_width == 32 else (16, 32)
+                norm_warps = (2, 4) if model_width == 32 else (4, 8)
         domains.extend(
             (
                 ParameterDomain(
@@ -1019,6 +1043,20 @@ def _search_structure_supported(
     structure: StructureSpec,
     context: SearchContext,
 ) -> bool:
+    if structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY:
+        return bool(
+            _context_supports_fused_ffn_boundary(context)
+            and structure.attention is AttentionBackend.FP16_EFFICIENT_SDPA
+            and structure.precision_plan is PrecisionPlan.FP16_CORE
+            and structure.qkv_materialization
+            is QKVMaterialization.TRITON_NATIVE_BHSD
+            and structure.attention_output_bridge
+            is AttentionOutputBridge.TRITON_BHSD_PROJECTION
+            and structure.residual_norm
+            is ResidualNormBackend.TRITON_LINEAR_MIXED
+            and structure.initial_norm is InitialNormBackend.TRITON_FP16
+            and structure.runtime is RuntimeBackend.CUDA_GRAPH
+        )
     if structure.residual_norm is ResidualNormBackend.TRITON_LINEAR_MIXED:
         execution = context.execution_context
         return bool(
@@ -1104,7 +1142,11 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             for value in qkv_materializations
             if value is not QKVMaterialization.TRITON_NATIVE_BHSD
         )
-    ffns = tuple(FFNBackend)
+    ffns = tuple(
+        value
+        for value in FFNBackend
+        if value is not FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    )
     if not _context_supports_fused_ffn(context):
         ffns = tuple(
             value for value in ffns if value is not FFNBackend.TRITON_LINEAR_EXACT_GELU
@@ -1233,6 +1275,19 @@ def _structure_specs(context: SearchContext) -> tuple[StructureSpec, ...]:
             if attention is AttentionBackend.REFERENCE_STREAMING:
                 continue
             values.append(structure)
+    if _context_supports_fused_ffn_boundary(context):
+        fused_ffn_boundary = StructureSpec(
+            attention=AttentionBackend.FP16_EFFICIENT_SDPA,
+            precision_plan=PrecisionPlan.FP16_CORE,
+            qkv_materialization=QKVMaterialization.TRITON_NATIVE_BHSD,
+            attention_output_bridge=AttentionOutputBridge.TRITON_BHSD_PROJECTION,
+            ffn=FFNBackend.TRITON_FUSED_MLP_BOUNDARY,
+            residual_norm=ResidualNormBackend.TRITON_LINEAR_MIXED,
+            initial_norm=InitialNormBackend.TRITON_FP16,
+            runtime=RuntimeBackend.CUDA_GRAPH,
+        )
+        if _search_structure_supported(fused_ffn_boundary, context):
+            values.append(fused_ffn_boundary)
     return tuple(values)
 
 
