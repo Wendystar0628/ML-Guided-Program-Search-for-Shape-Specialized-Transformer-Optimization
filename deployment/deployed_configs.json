@@ -16,7 +16,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "95307cca0c284578f2da2164ea84966d569fd5c946d1332f9c555f9cc4acfb06"
+        "solution_implementation_digest": "5fac2b49a7286230b542728d98cff87737f4cfdb3e32af9b7a39520a5e8a6f7a"
       },
       "entries": [
         {
@@ -471,11 +471,11 @@
               "qkv_launch": {
                 "block_m": 64,
                 "block_n": 64,
-                "block_k": 32,
+                "block_k": 64,
                 "num_warps": 4
               },
               "attention_output_projection_launch": {
-                "block_m": 32,
+                "block_m": 128,
                 "block_n": 32,
                 "block_k": 32,
                 "num_warps": 4,
@@ -491,16 +491,16 @@
               },
               "ffn_launch": null,
               "ffn_input_launch": {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 32,
+                "block_m": 32,
+                "block_n": 32,
+                "block_k": 128,
                 "num_warps": 4,
                 "num_stages": 2
               },
               "compile_mode": null,
               "batch_tile_size": null,
               "microbatch_size": null,
-              "reuse_unchanged_input": false
+              "reuse_unchanged_input": true
             }
           }
         },
@@ -642,32 +642,43 @@
             "schema_version": 4,
             "program": {
               "attention": "triton_shape13",
-              "qkv_projection": "autocast_fp16",
+              "qkv_projection": "fp16_shadow",
               "attention_output_projection": "autocast_fp16",
               "ffn_input_projection": "autocast_fp16",
-              "ffn_output_projection": "input_dtype",
-              "precision_plan": "fp16_attention_and_ffn_input",
-              "qkv_materialization": "view",
+              "ffn_output_projection": "autocast_fp16",
+              "precision_plan": "fp16_core",
+              "qkv_materialization": "triton_native_bhsd",
               "attention_output_bridge": "attention_direct_bsd",
-              "ffn": "torch",
-              "residual_norm": "torch",
-              "initial_norm": "torch"
+              "ffn": "compiled",
+              "residual_norm": "triton_mixed",
+              "initial_norm": "triton_fp16"
             },
             "schedule": {
-              "runtime": "compiled_forward",
+              "runtime": "eager",
               "attention_launch": {
                 "block_m": 64,
                 "block_n": 64,
                 "num_warps": 4,
                 "num_stages": 2
               },
-              "qkv_launch": null,
+              "qkv_launch": {
+                "block_m": 64,
+                "block_n": 64,
+                "block_k": 32,
+                "num_warps": 4
+              },
               "attention_output_projection_launch": null,
-              "residual_norm_launch": null,
-              "initial_norm_launch": null,
+              "residual_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
+              "initial_norm_launch": {
+                "block_rows": 2,
+                "num_warps": 2
+              },
               "ffn_launch": null,
               "ffn_input_launch": null,
-              "compile_mode": "max-autotune",
+              "compile_mode": null,
               "batch_tile_size": null,
               "microbatch_size": null,
               "reuse_unchanged_input": false
@@ -752,7 +763,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "95c09b1b555b8b03493d5a8e2651bc5eebf0c5db86758b7c0b9df4ad4eec2097"
+        "solution_implementation_digest": "60f2313df8fea7069867b70959a33b432c306803d429570753c4a8b6476dc5ff"
       },
       "entries": [
         {
@@ -786,10 +797,10 @@
             "schedule": {
               "runtime": "streamed",
               "attention_launch": {
-                "block_m": 32,
+                "block_m": 64,
                 "block_n": 64,
                 "num_warps": 4,
-                "num_stages": 2
+                "num_stages": 3
               },
               "qkv_launch": null,
               "attention_output_projection_launch": null,
@@ -799,7 +810,7 @@
               "ffn_input_launch": null,
               "compile_mode": null,
               "batch_tile_size": null,
-              "microbatch_size": 1,
+              "microbatch_size": 2,
               "reuse_unchanged_input": false
             }
           }

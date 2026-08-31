@@ -13,3 +13,7 @@ Shape 14 的 Reference 不适合作为性能候选 | 旧流程首轮把 730.9 �
 Shape 14 microbatch=4 不适合 RTX 4080 | 最小协议正确性通过，但归一化延迟约 976 秒、峰值显存约 14.0 GB；相对当前 B1 约 20 秒差距近 49× | 收益方向明确为负且资源裕量过低 | 不加入搜索域，保持 microbatch 1/2
 
 Shape 14 部署不应由源码摘要决定是否命中 | 源码摘要变化后已有 Triton 部署未命中，Formal 回退到约 1013.7 秒的 Reference，整轮 36.8 分钟仍未结束；改为按硬件/运行时身份命中并由 PlanBuilder 重验后，完整闭环 995.6 秒，候选 0.9998×被拒绝 | 源码摘要适合隔离测量证据，不适合作为部署路由键 | 部署按 measurement identity 复用，当前实现下重新测量和验证
+
+Resident 新结构种子仍有显著价值 | `structure_seed=1235` 一轮完成 993 个新 Screen Trial，Shape 10/13 分别以 1.051×/1.099× Formal 晋升；Shape 06 补跑后完成覆盖，但通用 challenger 仅为融合 incumbent 的 0.450× | 旧种子局部饱和不等于程序空间饱和；Shape 06 已转为 incumbent 家族内局部问题 | Resident 继续轮换结构种子；Shape 06 不再均匀广搜
+
+Shape 14 的 launch/microbatch 空间已经穷尽 | 34/34 个高价值点完成；`64×64 / 4 warps / 3 stages / microbatch 2` 以 1.1646×晋升，余下最佳候选 Formal 为 0.9987× | 继续增加相邻 launch 组合的预期价值很低 | 后续只考虑新的算法或跨算子融合 primitive
