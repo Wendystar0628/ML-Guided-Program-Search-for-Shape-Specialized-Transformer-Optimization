@@ -109,6 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="repeat full search sweeps until search progress stops",
     )
     optimize.add_argument("--group", choices=("resident", "shape14"), required=True)
+    optimize.add_argument("--case-id", action="append")
     optimize.add_argument(
         "--no-deployment-patience",
         type=_positive_int,
@@ -329,7 +330,11 @@ def _run_log_request(
     return value
 
 
-def _optimization_case_ids(project_root: Path, group: str) -> tuple[str, ...]:
+def _optimization_case_ids(
+    project_root: Path,
+    group: str,
+    requested: tuple[str, ...] = (),
+) -> tuple[str, ...]:
     if group == "resident":
         shapes = load_resident_shapes(project_root)
     elif group == "shape14":
@@ -338,7 +343,17 @@ def _optimization_case_ids(project_root: Path, group: str) -> tuple[str, ...]:
         raise ContractError(f"unknown shape group: {group}")
     if not shapes:
         raise ContractError(f"shape group is empty: {group}")
-    return tuple(shape.case_id for shape in shapes)
+    available = tuple(shape.case_id for shape in shapes)
+    if not requested:
+        return available
+    if len(set(requested)) != len(requested):
+        raise ContractError("optimization case ids must be unique")
+    unknown = tuple(case_id for case_id in requested if case_id not in available)
+    if unknown:
+        raise ContractError(
+            f"case ids do not belong to {group}: {', '.join(unknown)}"
+        )
+    return requested
 
 
 def _optimize(args: argparse.Namespace, project_root: Path) -> int:
@@ -354,7 +369,11 @@ def _optimize(args: argparse.Namespace, project_root: Path) -> int:
     storage_root = _search_storage_root(project_root, scope, args.storage)
     request = SearchSweepRequest(
         project_root=project_root,
-        case_ids=_optimization_case_ids(project_root, args.group),
+        case_ids=_optimization_case_ids(
+            project_root,
+            args.group,
+            tuple(args.case_id or ()),
+        ),
         scope=scope,
         device=args.device,
         storage_root=storage_root,

@@ -8,6 +8,7 @@ import pytest
 from autotune.optimization_loop import OptimizationLoop, OptimizationLoopPolicy
 from autotune.search_sweep import SearchSweepRequest, SearchSweepResult
 from benchmarking.protocols import (
+    ContractError,
     load_resident_shapes,
     load_shapes,
     load_streamed_shapes,
@@ -77,6 +78,18 @@ def test_cli_exposes_only_deployment_patience() -> None:
     )
     assert seeded.seed == 100
     assert seeded.structure_seed == 777
+    selected = parser.parse_args(
+        [
+            "optimize",
+            "--group",
+            "resident",
+            "--case-id",
+            "official_01",
+            "--case-id",
+            "official_07",
+        ]
+    )
+    assert selected.case_id == ["official_01", "official_07"]
     with pytest.raises(SystemExit):
         parser.parse_args(
             [
@@ -247,3 +260,20 @@ def test_resident_and_shape14_groups_partition_the_official_workload() -> None:
         f"official_{index:02d}" for index in range(1, 14)
     )
     assert _optimization_case_ids(project_root, "shape14") == ("official_14",)
+    assert _optimization_case_ids(
+        project_root,
+        "resident",
+        ("official_01", "official_07"),
+    ) == ("official_01", "official_07")
+
+
+def test_optimization_case_selection_rejects_duplicates_and_wrong_group() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    with pytest.raises(ContractError, match="must be unique"):
+        _optimization_case_ids(
+            project_root,
+            "resident",
+            ("official_01", "official_01"),
+        )
+    with pytest.raises(ContractError, match="do not belong"):
+        _optimization_case_ids(project_root, "resident", ("official_14",))

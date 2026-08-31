@@ -21,3 +21,5 @@ Shape 06 局部 TPE 已进入本轮低收益区 | 同一融合家族 challenger 
 Shape 14 的 launch/microbatch 空间已经穷尽 | 34/34 个高价值点完成；`64×64 / 4 warps / 3 stages / microbatch 2` 以 1.1646×晋升，余下最佳候选 Formal 为 0.9987× | 继续增加相邻 launch 组合的预期价值很低 | 后续只考虑新的算法或跨算子融合 primitive
 
 Resident 新种子收益集中在专用执行机制 | `structure_seed=1236` 的 Shape 07 以 D8 Triton Attention + Native QKV + Direct BSD + Triton FFN 获得 1.281×，Shape 09 以 cuDNN SDPA + Triton 边界获得 1.051×；其余 11 个 Formal 拒绝 | 程序族切换仍有收益，相邻通用调度多数已平台 | 下一轮优先探索尚未获得专用数据流的 Shape，不重复追加已拒绝候选
+
+Resident 连续结构种子仍能产生增量赢家，但 Shape 06 已不适合例行轮换 | `structure_seed=1237` 中 Shape 02/07 分别约以 1.03×/1.067×晋升；Shape 06 用 218 秒只生成 5 个 Trial，最好候选仅 0.871× | Shape 06 的单位 GPU 时间信息价值显著低于其余 Shape | 例行脚本默认串行搜索 01–05、07–13；只有出现新 Shape 06 数据流机制时才通过 `-IncludeShape06` 显式纳入

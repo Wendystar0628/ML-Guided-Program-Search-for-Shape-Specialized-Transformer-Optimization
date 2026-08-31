@@ -96,32 +96,32 @@
               "attention_launch": null,
               "qkv_launch": {
                 "block_m": 128,
-                "block_n": 32,
-                "block_k": 64,
-                "num_warps": 8
-              },
-              "attention_output_projection_launch": {
-                "block_m": 64,
                 "block_n": 16,
                 "block_k": 64,
-                "num_warps": 4,
+                "num_warps": 2
+              },
+              "attention_output_projection_launch": {
+                "block_m": 16,
+                "block_n": 16,
+                "block_k": 32,
+                "num_warps": 8,
                 "num_stages": 4
               },
               "residual_norm_launch": {
-                "block_rows": 1,
+                "block_rows": 8,
                 "num_warps": 8
               },
               "initial_norm_launch": {
                 "block_rows": 4,
-                "num_warps": 1
+                "num_warps": 8
               },
               "ffn_launch": null,
               "ffn_input_launch": {
                 "block_m": 16,
-                "block_n": 32,
+                "block_n": 16,
                 "block_k": 32,
                 "num_warps": 2,
-                "num_stages": 3
+                "num_stages": 2
               },
               "compile_mode": null,
               "batch_tile_size": null,
@@ -330,35 +330,35 @@
             "schedule": {
               "runtime": "cuda_graph",
               "attention_launch": {
-                "block_m": 32,
+                "block_m": 64,
                 "block_n": 32,
-                "num_warps": 4,
-                "num_stages": 2
+                "num_warps": 2,
+                "num_stages": 3
               },
               "qkv_launch": {
-                "block_m": 32,
-                "block_n": 32,
+                "block_m": 64,
+                "block_n": 16,
                 "block_k": 32,
-                "num_warps": 4
+                "num_warps": 8
               },
               "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 32,
+                "block_rows": 16,
                 "num_warps": 4
               },
               "initial_norm_launch": null,
               "ffn_launch": null,
               "ffn_input_launch": {
                 "block_m": 32,
-                "block_n": 32,
+                "block_n": 16,
                 "block_k": 32,
-                "num_warps": 4,
-                "num_stages": 2
+                "num_warps": 8,
+                "num_stages": 4
               },
               "compile_mode": null,
               "batch_tile_size": null,
               "microbatch_size": null,
-              "reuse_unchanged_input": false
+              "reuse_unchanged_input": true
             }
           }
         },
