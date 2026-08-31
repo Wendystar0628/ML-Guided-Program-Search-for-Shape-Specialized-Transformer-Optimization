@@ -1,165 +1,123 @@
 # Learning-Guided Program Search for Shape-Specialized Transformers
 
-This project synthesizes legal Transformer execution programs, measures them on the target GPU, and automatically deploys the fastest correct program for each workload Shape. Instead of extending a hand-written list of named policies, it searches typed compositions of mature PyTorch operators, custom Triton kernels, layouts, precision choices, fusions, runtimes, and launch schedules.
+**TikTok TechJam 2026 · Hardware Efficiency**
 
-## Latest verified result
+This project generates complete Transformer execution programs, verifies them against the supplied semantics, measures them on the target GPU, and selects a measured winner for each official workload Shape. The key difference is that it searches compositions of operators, Triton kernels, layouts, precision choices, fusions, runtimes, and schedules rather than extending a hand-written list of policy names.
 
-The current declared snapshot was measured on an NVIDIA GeForce RTX 4080 under an exclusive GPU lease. All 14 official workloads pass correctness.
+[Verified results](#verified-results) · [Quick reproduction](#quick-reproduction) · [System overview](#system-overview) · [Technical report](docs/technical_report/README.md) · [Machine-readable result](result/20260831T083857.848038Z/final_performance.json)
 
-| Result | Value |
+## Verified results
+
+The declared snapshot was measured locally on an NVIDIA GeForce RTX 4080. Shapes 01–13 pass the supplied full comparator and achieve a **14.49× equal-Shape geometric-mean speedup over the official PyTorch baseline**.
+
+| Evidence | Result |
 | --- | ---: |
+| Resident correctness | **13/13 PASS** with the supplied comparator |
 | Shapes 01–13 geometric-mean speedup | **14.49×** |
-| Fastest resident result | Shape 13, **36.09×** |
-| Shape 14 streamed latency | **17.24 s** |
-| Shape 14 peak allocated memory | **6.56 GiB** |
+| Resident speedup range | **3.41×–36.09×** |
+| Shape 14 full logical `B=32` streamed latency | **17.24 s** (one final sample) |
+| Shape 14 streamed inner-forward peak allocation | **6.56 GiB** at `B=2` |
 
 ![RTX 4080 performance summary](docs/technical_report/figures/performance_summary.svg)
 
-Speedup is `baseline median / deployed median`. The 14.49× result is the equal-Shape geometric mean for Shapes 01–13. Shape 14 has no materialized dense `S × S` baseline, so it reports correctness, latency, memory, and a project FLOP estimate but is excluded from the speedup aggregate. These are local engineering results, not an official competition score.
+Speedup is `baseline median / deployed median`; Shape 14 is excluded because a dense `S × S` baseline was not executed. Shape 14 passes a local `B=1` semantic-equivalence check and completes the full logical `B=32` streamed path with an output digest. This is not yet the unpublished final official `B=32` input/output-pair validation. The 6.56 GiB value is maximum allocated memory for one `B=2` inner forward, not allocator-reserved memory or a materialized `B=32` call.
 
-- [Full evaluation and per-Shape table](docs/technical_report/04_evaluation_and_results.md)
-- [Machine-readable final result](result/20260831T083857.848038Z/final_performance.json)
+These are local engineering results, not an official competition score. See the [human-readable result](result/20260831T083857.848038Z/final_performance.md) and [evaluation protocol](docs/technical_report/04_evaluation_and_results.md) for the complete per-Shape evidence and measurement boundaries.
 
-## Why shape specialization matters
+## Problem, approach, and impact
 
-The official suite changes batch size from 1 to 10,000, model width from 32 to 1,024, head count from 1 to 16, and sequence length from 32 to 100,000. The dominant cost therefore shifts among launch overhead, matrix throughput, layout conversion, attention working set, memory traffic, and device capacity. One universal execution path is not uniformly optimal.
+The 14 official workloads vary batch size from 1 to 10,000, model width from 32 to 1,024, head count from 1 to 16, and sequence length from 32 to 100,000. Their bottlenecks shift among launch overhead, matrix throughput, layout conversion, attention working set, memory traffic, and device capacity. A single universal execution path is therefore not uniformly optimal.
 
-![Official workload landscape](docs/technical_report/figures/workload_landscape.svg)
+The project addresses this with three connected ideas:
 
-## Key contributions
+1. **Search executable programs, not policy labels.** A typed configuration describes the complete execution choice; invalid combinations are rejected before GPU work.
+2. **Learn from staged hardware evidence.** Cheap Screen measurements guide persistent conditional search, stronger candidates receive Enhanced measurement, and only a formally compared improvement can replace the current local winner.
+3. **Treat the extreme long-sequence case separately.** Shape 14 uses bounded streamed execution and online attention so no global 100,000-token score matrix is stored.
 
-- **Typed program synthesis:** `ConfigSpec` represents the whole candidate program; `PlanBuilder` emits one immutable `ExecutionPlan` or rejects it without silent substitution.
-- **Learning-guided conditional search:** resident workloads use persistent, constraint-aware, branch-local TPE with fixed-budget survivor racing.
-- **Multi-fidelity evidence:** Screen measurements guide search, Enhanced measurements identify one challenger, and Formal measurement compares it with the incumbent.
-- **Statistically guarded deployment:** an interleaved group-sequential paired rule promotes only repeatable improvements of at least 2%, with early decisions for large effects.
-- **Exact-device routing:** the deployed registry is keyed by the measured runtime environment and full workload fingerprint.
-- **Dedicated Shape-14 regime:** a finite no-replacement search feeds a streamed microbatch runtime that avoids a dense 100,000-token attention matrix.
-- **Clean GPU measurement:** jobs hold a single-device lease and run Shapes serially in fresh processes.
+This approach targets a practical gap between generic library defaults and the best program for a real device and workload. It can help developers make consumer or edge GPUs more useful for fixed Transformer workloads while preserving an auditable correctness-and-measurement trail. The current evidence is limited to the disclosed RTX 4080 system; portability is an architectural goal, not a measured claim.
 
-## System architecture
+## System overview
 
 ![Closed-loop architecture](docs/technical_report/figures/architecture_overview.svg)
 
-The end-to-end path is:
+The main loop is **construct → reject illegal plans → measure → compare → register the approved winner → execute**. Shapes 01–13 use persistent conditional TPE studies; Shape 14 uses a separate finite streamed search. Screen, Enhanced, and Formal stages spend increasing measurement effort only on progressively stronger evidence.
 
-```text
-official Shape + run variant + detected GPU
-                ↓
-conditional program space → ConfigSpec → PlanBuilder → ExecutionPlan
-                ↓
-Screen → Enhanced → locked challenger → paired Formal comparison
-                ↓
-exact-device deployment registry
-                ↓
-resident runtime (Shapes 01–13) or streamed runtime (Shape 14)
-```
+Here, “deployment” means local runtime selection through an environment-matched registry, not production serving infrastructure. A committed winner is selected only when the measured runtime signature and complete workload fingerprint match; another environment falls back to a portable configuration instead of assuming the RTX 4080 result transfers.
 
-Search persistence and deployment have different roles. Scoped SQLite studies retain detailed reusable evidence; compact JSONL logs retain the decision timeline; `deployment/deployed_configs.json` contains only current measured winners used by the runtime.
+## Quick reproduction
 
-## Repository structure
+Reproducing the declared result does **not** require rerunning autotuning.
 
-```text
-solution/       typed programs, plan compiler, operators, Triton kernels, runtimes
-autotune/       search spaces, TPE adapter, staged racing, promotion, outer loop
-benchmarking/   correctness, timing, profiling, hardware probe, GPU isolation
-deployment/     exact environment identity and deployed configuration registry
-official/       immutable benchmark semantics and 14 official Shape definitions
-scripts/        optimization entrypoints and final-performance measurement
-result/         timestamped competition-facing final-performance artifacts
-observations/   local, Git-ignored studies, run logs, and benchmark summaries
-tests/          tests grouped by production responsibility
-docs/           published English technical report
-cli.py          probe, benchmark, profile, search, and optimize commands
-```
-
-The detailed responsibility map is in the [system architecture report](docs/technical_report/02_system_architecture.md).
-
-## Validated environment
-
-The published result uses:
-
-- Windows 11 Pro, Intel Core i7-14700KF, and 63.8 GiB system memory;
-- NVIDIA GeForce RTX 4080, compute capability 8.9, 16 GB-class VRAM;
-- NVIDIA driver 610.88;
-- Python 3.12.5;
-- PyTorch 2.12.1+cu132 and CUDA runtime 13.2;
-- `triton-windows` 3.7.1.post27;
-- Optuna 4.9.0 and Ninja 1.13.0.
-
-For the validated native-Windows environment:
+The validated path requires Windows 11 PowerShell, Python 3.12, an NVIDIA RTX 4080-class CUDA device, CUDA Toolkit 13.2 in its default location, and Visual Studio C++ Build Tools. The repository has no project-wide ahead-of-time build step: PyTorch, Triton, and compiled paths build lazily on first use, and compilation/first-run work is excluded from timed samples.
 
 ```powershell
-python -m venv .venv
+git clone https://github.com/Wendystar0628/Learning-Guided-Program-Search-for-Shape-Specialized-Transformers.git
+cd Learning-Guided-Program-Search-for-Shape-Specialized-Transformers
+
+py -3.12 -m venv .venv
 .\environments\activate_windows_rtx4080.ps1
 python -m pip install -r environments\windows-rtx4080.txt
 ```
 
-Another platform should install a CUDA-enabled PyTorch build and compatible Triton distribution for that platform before installing `requirements.txt`. The Windows Triton port is not presented as a universal dependency.
-
-## Running the project
-
-GPU commands share one process-level device lease. Resident Shapes and Shape 14 have separate optimization lifecycles and separate persistent search stores.
+Run the unit tests and low-cost pipeline check first:
 
 ```powershell
-# Inspect the target GPU and runtime
-.\.venv\Scripts\python.exe cli.py probe --device cuda:0
-
-# Run bounded resident search-to-deployment optimization
-.\scripts\optimize_shapes_01_13.ps1
-
-# Run bounded Shape-14 finite search-to-deployment optimization
-.\scripts\optimize_shape_14.ps1
-
-# Benchmark Shapes 01–13 in official order and fresh processes
-.\.venv\Scripts\python.exe cli.py benchmark --preset formal --device cuda:0
-
-# Benchmark Shape 14 separately
-.\.venv\Scripts\python.exe cli.py benchmark --group shape14 --preset smoke --device cuda:0
-
-# Profile one explicit generated configuration
-.\.venv\Scripts\python.exe cli.py profile `
-  --case-id official_01 `
-  --config path\to\config.json `
-  --device cuda:0
-```
-
-The resident script defaults to Shapes 01–05 and 07–13 because Shape 06 is much more expensive to measure. Pass `-IncludeShape06` when a new large-batch mechanism warrants that cost. Re-running either script resumes compatible studies rather than starting from zero.
-
-[`cli.py`](cli.py) is the development and search interface. [`torch_transformer_benchmark.py`](torch_transformer_benchmark.py) is the separate bridge to the immutable official benchmark implementation.
-
-## Reproducing the declared result
-
-The primary reproduction target is the correctness and performance of the committed per-Shape deployment against the official PyTorch baseline. It does **not** require rerunning autotuning. Use a clean checkout, prepare the validated environment above, run from the repository root, and close video playback, model servers, or other applications that may use the target GPU. The selected programs are read from [`deployment/deployed_configs.json`](deployment/deployed_configs.json).
-
-First run the low-cost pipeline check:
-
-```powershell
+python -m pytest -q
 .\.venv\Scripts\python.exe scripts\run_final_performance.py --preset smoke
 ```
 
-This verifies that the environment, official workloads, deployment resolution, correctness path, and result writer are operational. Smoke output is not the submitted performance result.
-
-Run the full declared measurement with:
+Then reproduce the declared measurement:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_final_performance.py
+.\.venv\Scripts\python.exe scripts\run_final_performance.py --preset final
 ```
 
-The script holds the exclusive GPU lease, measures Shapes serially in fresh processes, and writes a new timestamped artifact without replacing earlier runs:
+The runner executes resident Shapes and Shape 14 as serial tasks. Each task acquires the same project-local GPU lease, and each Shape runs in a fresh process. The lease coordinates this project only, so close video playback, model servers, and other GPU workloads manually. Results are appended under:
 
 ```text
 result/<UTC completion time>/
-  final_performance.json   machine-readable environment and per-Shape evidence
-  final_performance.md     reviewer-facing result table
+  final_performance.json
+  final_performance.md
 ```
 
-A successful reproduction has correctness `PASS` for all 14 official Shapes, reports baseline/deployed latency and speedup for Shapes 01–13, and completes the streamed Shape-14 path with latency and peak memory. The resident geometric mean should be close to the declared **14.49×**, but exact latency and speedup are not expected to be bit-for-bit identical because GPU clocks, temperature, driver state, and background load affect timing. Shape 14 intentionally has no materialized dense baseline and is excluded from the speedup aggregate. The measurement presets and output fields are documented in the [result directory](result/README.md).
+On a matching measured environment, expect Shapes 01–13 to remain near the declared 14.49× geometric mean; exact latency varies with clocks, temperature, driver state, and background load. A different GPU/software signature intentionally uses a portable fallback and is not expected to reproduce the RTX 4080 number. The [result guide](result/README.md) explains presets and output fields.
 
-Rerunning the optimization process is optional and answers a different question: whether another measured program can replace the current deployment. Use `optimize_shapes_01_13.ps1` or `optimize_shape_14.ps1` from the command section above only when reproducing that search-to-deployment workflow; the final-result reproduction itself starts from the committed deployment registry.
+## Optional optimization workflow
 
-## Technical report
+Use these commands only to search for new local winners; they are not part of result reproduction.
 
-The English report is split into five focused documents plus an index:
+```powershell
+# Bounded search-to-registry loop for Shapes 01–05 and 07–13
+.\scripts\optimize_shapes_01_13.ps1
+
+# Add the expensive large-batch Shape 06 when testing a new mechanism
+.\scripts\optimize_shapes_01_13.ps1 -IncludeShape06
+
+# Independent bounded Shape-14 search
+.\scripts\optimize_shape_14.ps1
+```
+
+Compatible studies resume from local persistent evidence. See the [search method](docs/technical_report/03_search_and_optimization_method.md) and `python cli.py --help` for the search, benchmark, profile, and probe interfaces.
+
+## Repository guide
+
+```text
+solution/       typed programs, plan compiler, operators, kernels, runtimes
+autotune/       conditional search, staged evidence, promotion, outer loop
+benchmarking/   correctness, timing, profiling, hardware and GPU isolation
+deployment/     measured-environment identity and current local winners
+official/       supplied benchmark semantics and 14 official Shapes
+scripts/        optimization and final-result entrypoints
+result/         timestamped competition-facing performance artifacts
+tests/          tests grouped by production responsibility
+docs/           English technical report and official-material translations
+```
+
+`observations/` is generated locally for studies and diagnostic history and is intentionally excluded from GitHub.
+
+## Technical report and disclosure
+
+The English technical report separates the judge-facing argument from implementation detail:
 
 1. [Problem framing and contributions](docs/technical_report/01_problem_and_contributions.md)
 2. [System architecture](docs/technical_report/02_system_architecture.md)
@@ -167,28 +125,30 @@ The English report is split into five focused documents plus an index:
 4. [Evaluation and results](docs/technical_report/04_evaluation_and_results.md)
 5. [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md)
 
-The report's seven architecture, workload, performance, program-structure, capacity, and search-evidence figures are generated from repository data as editable SVG/PDF assets. Its AI disclosure includes the human-guidance method and two representative, evidence-linked interaction histories. The repository-level reproduction procedure is defined above and linked to the dedicated final-performance test entrypoint.
+| Item | Used in this project |
+| --- | --- |
+| Core runtime and search libraries | PyTorch, Triton, Optuna, Ninja |
+| Supplied assets | Official PyTorch benchmark semantics and 14 workload Shapes |
+| External dataset or hosted runtime API | None; inputs are generated by the supplied benchmark path |
+| AI tools and models | OpenAI Codex; ChatGPT GPT-5.6 sol Pro; Deep Research |
+| Actually used Skills | Stop That Shit, Deep Research, Browser Control, Nature Figure |
 
-## AI tool disclosure
+The human participant set the problem framing, architecture directions, constraints, priorities, and acceptance decisions. AI tools expanded those directions into implementable alternatives, inspected evidence, implemented changes, and reported measured feedback. The detailed decision-ownership model and two representative interaction histories are documented in the [AI collaboration disclosure](docs/technical_report/05_environment_ai_tools_and_limitations.md).
 
-OpenAI Codex was the primary implementation, refactoring, testing, and multi-agent coordination environment. A separate ChatGPT GPT-5.6 sol Pro workflow provided deep repository and methodology reviews, and Deep Research supported broader method exploration. Actually used Skills include Stop That Shit, Deep Research, Browser Control, and Nature Figure. Search, correctness, measurement, promotion, and deployment are deterministic program operations.
+## Scope and next steps
 
-See [Environment, AI tools, and limitations](docs/technical_report/05_environment_ai_tools_and_limitations.md) for the bounded disclosure, decision-ownership model, and representative interactions used in this draft.
+Current limitations are intentionally explicit:
 
-## Limitations and next steps
+- the measured evidence covers one RTX 4080/Windows system and a competition-defined forward Transformer core, not training, KV-cache decoding, distributed execution, or production serving;
+- roughly 12 hours of cumulative search explored only part of the combinatorial program space, so the committed plans are best-so-far results rather than proven global optima;
+- search is an offline process constrained by the implemented operator and Kernel vocabulary, and the project has not learned a transferable cross-device performance model.
 
-- The evidence covers a competition-defined forward Transformer core, not complete training or serving systems with KV-cache decoding, backward computation, communication, scheduling, and application I/O.
-- The current deployment reflects approximately 12 hours of cumulative search and iterative tuning; the combinatorial program space remains only partially explored, so the selected plans are best-so-far results rather than proven global optima.
-- Performance has been validated only on the disclosed RTX 4080/Windows stack, so portability to other devices and accelerator families is architectural rather than empirically demonstrated.
-- The project has no learned cross-device or cross-workload performance model; a materially different target still requires substantial fresh measurement.
-- Search is an offline process that consumes compilation and exclusive GPU benchmarking time rather than an online adaptation mechanism.
-- Program synthesis is limited to the implemented operator and Kernel vocabulary, and the deployment registry has not yet been evaluated inside a concurrent multi-tenant serving system.
+With more time, the highest-value next steps are to validate Shape 14 against the final official full-batch I/O artifact, add genuinely new executable Kernel families where profiling shows remaining headroom, and collect multi-device evidence for a transferable cost model. Full boundaries and longer-term work are in the [limitations section](docs/technical_report/05_environment_ai_tools_and_limitations.md#57-limitations).
 
-## Submission links
+## Competition deliverables
 
-- Devpost project page: **[To be added before submission]**
-- Public demo video: **[YouTube URL to be added before submission]**
-
-## Team contributions
-
-**[Team contribution statement to be completed before submission.]**
+- Source code, setup, compilation, and run instructions: this repository and README.
+- Written technical report: [`docs/technical_report/`](docs/technical_report/README.md).
+- Timestamped final evidence: [`result/`](result/README.md).
+- AI tools, models, Skills, human guidance, and representative interactions: [technical report §5](docs/technical_report/05_environment_ai_tools_and_limitations.md).
+- Devpost project page and public three-minute demo: to be linked after publication.
