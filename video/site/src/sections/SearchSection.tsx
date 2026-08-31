@@ -1,160 +1,64 @@
-import { useRef } from 'react'
 import { equations, promotionThresholds, searchEvidence } from '../data/projectData'
-import { useNarrativeStep } from '../hooks/useNarrativeStep'
-import type { SearchStep } from '../motion/motionTypes'
 import { ProgramSearchFigure } from '../visuals/ProgramSearchFigure'
 
-const stageAnnotations: ReadonlyArray<{
-  step: SearchStep
-  eyebrow: string
-  detail: string
-  left: string
-  top: string
-  sensorTop: string
-}> = [
-  {
-    step: 'reject',
-    eyebrow: 'REJECT',
-    detail: 'Invalid plans stop before GPU work.',
-    left: '22%',
-    top: '47%',
-    sensorTop: '14%',
-  },
-  {
-    step: 'screen',
-    eyebrow: 'SCREEN',
-    detail: 'Only Screen observations train the constraint-aware TPE.',
-    left: '38%',
-    top: '8%',
-    sensorTop: '30%',
-  },
-  {
-    step: 'enhanced',
-    eyebrow: 'ENHANCED',
-    detail: 'Remeasure the feasible frontier.',
-    left: '54%',
-    top: '74%',
-    sensorTop: '46%',
-  },
-  {
-    step: 'formal',
-    eyebrow: 'FORMAL',
-    detail: 'Lock one challenger against the incumbent.',
-    left: '68%',
-    top: '9%',
-    sensorTop: '62%',
-  },
-  {
-    step: 'registry',
-    eyebrow: 'REGISTRY',
-    detail: 'Commit the applicable Formal result as a complete ConfigSpec.',
-    left: '82%',
-    top: '57%',
-    sensorTop: '78%',
-  },
-]
+const searchBudget = [
+  { label: 'STRUCTURE BRANCHES', value: '≤ 36', note: 'conditional parameter domains' },
+  { label: 'STARTUP PER BRANCH', value: 'min(10, |Xbranch|)', note: 'branch-local initialization' },
+  { label: 'EXPLORATION RESERVE', value: '≈ 10%', note: 'allocated to least-sampled branches' },
+] as const
 
 export function SearchSection() {
-  const sectionRef = useRef<HTMLElement>(null)
-  const activeStep = useNarrativeStep<SearchStep>(sectionRef, 'sample')
-
   return (
     <section
-      ref={sectionRef}
       id="search"
-      className="narrative-section search-corridor"
-      data-state={activeStep}
+      className="narrative-section search-system"
       aria-labelledby="search-heading"
     >
-      <header className="search-corridor__origin" data-step="sample">
-        <p className="search-corridor__handoff">EXECUTIONPLAN → SCREEN OBSERVATIONS</p>
-        <h2 id="search-heading">SEARCH THE WHOLE PROGRAM</h2>
-        <p className="search-corridor__lead">
-          Each compatible structure owns a persistent, constraint-aware TPE study. Learning ranks
-          the next executable program; GPU evidence decides whether it survives.
-        </p>
-      </header>
+      <div className="search-system__inner">
+        <header className="search-system__header">
+          <p>CONFIGSPEC SEARCH · STATIC CHECKS · GPU MEASUREMENT</p>
+          <h2 id="search-heading">Conditional program and schedule search</h2>
+          <div className="search-system__introduction">
+            <div className="search-system__brief">
+              <span>SEARCH OBJECT</span>
+              <p>
+                Each program structure defines a conditional parameter domain. The optimizer
+                samples one complete ConfigSpec, applies static legality checks, then measures
+                legal candidates at increasing fidelity.
+              </p>
+            </div>
+            <div className="search-system__domain">
+              <span>CONFIGURATION DOMAIN</span>
+              <strong>ProgramConfig + active ScheduleConfig</strong>
+            </div>
+          </div>
+        </header>
 
-      <div className="search-corridor__method" aria-label="Conditional search method">
-        <div className="search-method__equations">
-          <span>CONDITIONAL TPE</span>
-          <strong>ℓ(x) / g(x)</strong>
-          <small>Only active schedule parameters enter each branch.</small>
-        </div>
-        <dl className="search-method__budget">
-          <div>
-            <dt>STRUCTURE BRANCHES</dt>
-            <dd>≤ 36</dd>
-          </div>
-          <div>
-            <dt>STARTUP</dt>
-            <dd>min(10, |Xbranch|)</dd>
-          </div>
-          <div>
-            <dt>EXPLORATION RESERVE</dt>
-            <dd>≈ 10%</dd>
-          </div>
+        <dl className="search-system__budget" aria-label="Conditional search budget">
+          {searchBudget.map((item) => (
+            <div key={item.label}>
+              <dt>{item.label}</dt>
+              <dd>{item.value}</dd>
+              <small>{item.note}</small>
+            </div>
+          ))}
         </dl>
-      </div>
 
-      <div className="search-corridor__visual">
         <ProgramSearchFigure
-          activeStep={activeStep}
+          activeStep="registry"
           evidence={searchEvidence}
           thresholds={promotionThresholds}
           tpeEquation={equations.tpe}
         />
 
-        <div className="search-corridor__annotations" aria-label="Search stage explanations">
-          {stageAnnotations.map((annotation) => (
-            <div key={annotation.step}>
-              <span
-                className="search-corridor__step-sensor"
-                data-step={annotation.step}
-                aria-hidden="true"
-                style={{
-                  position: 'absolute',
-                  top: annotation.sensorTop,
-                  left: 0,
-                  width: 1,
-                  height: 1,
-                }}
-              />
-              <div
-                className={`search-corridor__annotation search-corridor__annotation--${annotation.step}`}
-                style={{ left: annotation.left, top: annotation.top }}
-              >
-                <span>{annotation.eyebrow}</span>
-                <p>{annotation.detail}</p>
-              </div>
-            </div>
-          ))}
-        </div>
+        <footer className="search-system__output">
+          <strong>6 registry updates</strong>
+          <p>
+            Registry key: measured-stack identity × Shape variant. Stored value: approved
+            ConfigSpec. Runtime resolution passes that ConfigSpec through PlanBuilder again.
+          </p>
+        </footer>
       </div>
-
-      <div className="search-corridor__formal-contract">
-        <p className="search-formal__claim">ONLY PAIRED FORMAL EVIDENCE CAN REPLACE AN INCUMBENT</p>
-        <div className="search-formal__thresholds" aria-label="Formal promotion thresholds">
-          {promotionThresholds.map((threshold) => (
-            <span key={threshold.blocks}>
-              <strong>{threshold.blocks}</strong>
-              {threshold.ratio}
-            </span>
-          ))}
-        </div>
-        <p className="search-formal__bound">
-          A first deployment requires a feasible Formal result. Paired blocks alternate incumbent
-          and challenger order · per-comparison false-promotion bound ≤ 0.0464 under the stated null.
-        </p>
-      </div>
-
-      <footer className="search-corridor__output">
-        <span>6 DEPLOYMENT UPDATES</span>
-        <p>
-          The registry stores an approved ConfigSpec for the measured stack identity × Shape
-          variant; runtime resolution sends that ConfigSpec through PlanBuilder again.
-        </p>
-      </footer>
     </section>
   )
 }

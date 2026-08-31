@@ -17,10 +17,14 @@ export type PerformancePoint = {
 }
 
 export const headline = {
-  kicker: 'TIKTOK TECHJAM 2026 · HARDWARE EFFICIENCY',
-  title: ['LEARNING-GUIDED', 'PROGRAM SEARCH'],
-  subject: 'SHAPE-SPECIALIZED TRANSFORMER EXECUTION ON AN RTX 4080',
-  resultClaim: 'MEASURED PROGRAMS — NOT HAND-PICKED POLICY LABELS',
+  kicker: 'TIKTOK TECHJAM 2026 · TRACK 3 · HARDWARE EFFICIENCY',
+  title: [
+    'Shape-specialized Transformer execution',
+    'via learning-guided program search',
+  ],
+  subject:
+    'A measurement-driven study of complete execution programs across 13 resident Transformer workloads.',
+  resultClaim: 'Program selection is grounded in measured GPU evidence.',
   geomean: 14.4926,
   residentPassed: 13,
   residentTotal: 13,

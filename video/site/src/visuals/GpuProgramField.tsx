@@ -20,8 +20,6 @@ type TraceProps = {
 
 type GpuProgramFieldProps = {
   progress: number
-  inspectedCandidate: number | null
-  onInspectCandidate: (candidate: number | null) => void
 }
 
 const candidateY = [-2.55, -1.7, -0.9, 0, 0.9, 1.7, 2.55] as const
@@ -70,27 +68,25 @@ function ProgramTrace({
 }
 
 function CameraRig({ progress }: { progress: number }) {
-  const { camera, invalidate } = useThree()
+  const { camera, invalidate, size } = useThree()
 
   useEffect(() => {
     if (!(camera instanceof THREE.OrthographicCamera)) return
 
     const focus = rangeProgress(progress, PROGRAM_FIELD_RANGES.winner)
-    camera.position.x = 0.34 * focus
-    camera.position.y = -0.12 * focus
-    camera.zoom = 94 * (0.96 + focus * 0.08)
+    const fitZoom = Math.min(size.width / 13.2, size.height / 7.4)
+
+    camera.position.x = 0.12 * focus
+    camera.position.y = -0.05 * focus
+    camera.zoom = fitZoom * (0.98 + focus * 0.025)
     camera.updateProjectionMatrix()
     invalidate()
-  }, [camera, invalidate, progress])
+  }, [camera, invalidate, progress, size.height, size.width])
 
   return null
 }
 
-function CandidateInputs({
-  progress,
-  inspectedCandidate,
-  onInspectCandidate,
-}: GpuProgramFieldProps) {
+function CandidateInputs({ progress }: GpuProgramFieldProps) {
   const convergence = rangeProgress(progress, PROGRAM_FIELD_RANGES.converge)
   const measurement = rangeProgress(progress, PROGRAM_FIELD_RANGES.measure)
 
@@ -114,60 +110,36 @@ function CandidateInputs({
     <group>
       {candidatePaths.map((points, index) => {
         const selected = index === 3
-        const inspected = inspectedCandidate === index
-        const anotherInspected = inspectedCandidate !== null && !inspected
         const baseOpacity = selected ? 1 : 0.48
-        const opacity = anotherInspected
-          ? 0.13
-          : inspected
-            ? 1
-            : baseOpacity * (1 - measurement * (selected ? 0.05 : 0.48))
-        const radius = inspected ? 0.092 : selected ? 0.068 : 0.042
+        const opacity = baseOpacity * (1 - measurement * (selected ? 0.05 : 0.48))
+        const radius = selected ? 0.068 : 0.042
         const y = candidateY[index]
 
         return (
-          <group
-            key={y}
-            position={[0, 0, inspected ? 0.2 : 0]}
-            onPointerOver={(event) => {
-              event.stopPropagation()
-              onInspectCandidate(index)
-            }}
-            onPointerOut={(event) => {
-              event.stopPropagation()
-              onInspectCandidate(null)
-            }}
-          >
+          <group key={y}>
             <ProgramTrace
               points={points}
-              color={inspected ? '#164CD6' : '#2457D6'}
+              color="#2457D6"
               opacity={opacity}
               radius={radius}
-              emissiveIntensity={inspected ? 0.3 : selected ? 0.08 : 0}
+              emissiveIntensity={selected ? 0.08 : 0}
             />
 
             <mesh position={[-5.56, y, -0.12]}>
               <boxGeometry args={[0.3, 0.2, 0.18]} />
               <meshStandardMaterial
-                color={inspected || selected ? '#2457D6' : '#9AA9C9'}
+                color={selected ? '#2457D6' : '#9AA9C9'}
                 emissive="#2457D6"
-                emissiveIntensity={inspected ? 0.26 : 0}
+                emissiveIntensity={selected ? 0.12 : 0}
                 roughness={0.82}
                 metalness={0.04}
-                transparent
-                opacity={anotherInspected ? 0.22 : 1}
               />
             </mesh>
 
             {[-5.18, -4.82, -4.46].map((x, nodeIndex) => (
               <mesh key={x} position={[x, y + (nodeIndex - 1) * 0.06, -0.06]}>
                 <boxGeometry args={[0.16, 0.1, 0.1]} />
-                <meshStandardMaterial
-                  color={inspected ? '#F5F8FF' : '#B7C5E4'}
-                  roughness={0.78}
-                  transparent
-                  opacity={anotherInspected ? 0.18 : 0.9}
-                />
+                <meshStandardMaterial color="#B7C5E4" roughness={0.78} />
               </mesh>
             ))}
           </group>
@@ -318,7 +290,6 @@ export function GpuProgramField(props: GpuProgramFieldProps) {
       gl={{ antialias: true, alpha: true, powerPreference: 'high-performance' }}
       role="img"
       aria-label="Complete program candidates converge through GPU measurement into one measured winner."
-      onPointerMissed={() => props.onInspectCandidate(null)}
     >
       <ProgramFieldScene {...props} />
     </Canvas>

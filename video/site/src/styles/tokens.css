@@ -3,6 +3,7 @@
 
   --paper: #f4f6f5;
   --paper-raised: #fbfcfb;
+  --paper-blue: #edf2ff;
   --ink: #111a22;
   --ink-soft: #4b5863;
   --ink-faint: #7c8891;
@@ -17,33 +18,34 @@
   --font-sans: "Arial Nova", "Aptos", "Segoe UI", Arial, sans-serif;
   --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
 
-  --page-x: 224px;
-  --content-width: 3392px;
-  --grid-gap: 32px;
-  --rail-width: 152px;
+  --shell-max: 1920px;
+  --reading-max: 1120px;
+  --page-gutter: clamp(24px, 4.5vw, 96px);
+  --section-space: clamp(72px, 7vw, 144px);
+  --grid-gap: clamp(20px, 2.4vw, 48px);
+  --nav-height: 78px;
 
-  --type-display: 164px;
-  --type-section: 116px;
-  --type-subsection: 52px;
-  --type-lead: 42px;
-  --type-body: 32px;
-  --type-card-title: 34px;
-  --type-data: 40px;
-  --type-label: 28px;
-  --type-micro: 24px;
-  --type-metric: 132px;
+  --type-display: clamp(64px, 6.4vw, 132px);
+  --type-section: clamp(48px, 4.7vw, 92px);
+  --type-subsection: clamp(30px, 2.5vw, 52px);
+  --type-lead: clamp(26px, 2vw, 42px);
+  --type-body: clamp(20px, 1.35vw, 29px);
+  --type-card-title: clamp(23px, 1.55vw, 34px);
+  --type-data: clamp(28px, 2vw, 42px);
+  --type-label: clamp(17px, 1.08vw, 23px);
+  --type-micro: clamp(15px, 0.9vw, 20px);
+  --type-metric: clamp(72px, 6vw, 124px);
 
-  --leading-display: 0.9;
-  --leading-heading: 1.02;
-  --leading-lead: 1.28;
-  --leading-body: 1.45;
-  --leading-label: 1.2;
+  --leading-display: 0.92;
+  --leading-heading: 1.04;
+  --leading-lead: 1.3;
+  --leading-body: 1.5;
+  --leading-label: 1.25;
 
-  --space-1: 16px;
-  --space-2: 24px;
-  --space-3: 40px;
-  --space-4: 64px;
-  --space-5: 96px;
-  --space-6: 144px;
-  --space-7: 208px;
+  --space-1: clamp(8px, 0.6vw, 14px);
+  --space-2: clamp(14px, 1vw, 22px);
+  --space-3: clamp(22px, 1.7vw, 36px);
+  --space-4: clamp(34px, 2.6vw, 56px);
+  --space-5: clamp(52px, 4vw, 88px);
+  --space-6: clamp(72px, 6vw, 132px);
 }

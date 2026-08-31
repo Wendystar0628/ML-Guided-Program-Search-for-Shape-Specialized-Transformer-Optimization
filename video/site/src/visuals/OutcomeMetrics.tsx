@@ -2,23 +2,23 @@ import { headline } from '../data/projectData'
 
 export function OutcomeMetrics() {
   return (
-    <aside className="outcome-metrics" aria-label="Measured project outcome">
-      <div className="outcome-metric outcome-metric--speedup">
+    <aside className="hero-fluid__metrics" aria-label="Measured project outcome">
+      <div className="hero-fluid__metric">
         <strong>{headline.geomean.toFixed(2)}×</strong>
-        <span>EQUAL-SHAPE GEOMEAN</span>
+        <span>EQUAL-SHAPE GEOMEAN SPEEDUP</span>
       </div>
 
-      <p className="outcome-measured-claim">
-        <span>MEASURED PROGRAMS</span>
-        <strong>— NOT HAND-PICKED POLICY LABELS</strong>
-      </p>
-
-      <div className="outcome-metric outcome-metric--correctness">
+      <div className="hero-fluid__metric">
         <strong>
-          {headline.residentPassed} / {headline.residentTotal}
+          {headline.residentPassed}/{headline.residentTotal}
         </strong>
         <span>RESIDENT SHAPES PASS</span>
       </div>
+
+      <p className="hero-fluid__claim">
+        <span>SELECTION BASIS</span>
+        <strong>{headline.resultClaim}</strong>
+      </p>
     </aside>
   )
 }

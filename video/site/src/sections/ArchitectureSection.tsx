@@ -1,17 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
-import {
-  architectureNodes,
-  architecturePhases,
-  workflowCommands,
-  type ArchitectureNodeId,
-} from '../data/architectureData'
-import { useNarrativeStep } from '../hooks/useNarrativeStep'
+import { useEffect, useMemo, useState } from 'react'
+import { architectureNodes, type ArchitectureNodeId } from '../data/architectureData'
 import type { ArchitectureStep } from '../motion/motionTypes'
 import { ArchitectureFigure } from '../visuals/ArchitectureFigure'
 
 export function ArchitectureSection() {
-  const sectionRef = useRef<HTMLElement>(null)
-  const activeStep = useNarrativeStep<ArchitectureStep>(sectionRef, 'construct')
+  const [activeStep, setActiveStep] = useState<ArchitectureStep>('resolve')
   const [hoveredNodeId, setHoveredNodeId] = useState<ArchitectureNodeId | null>(null)
   const [pinnedNodeId, setPinnedNodeId] = useState<ArchitectureNodeId | null>(null)
 
@@ -22,128 +15,102 @@ export function ArchitectureSection() {
   )
 
   useEffect(() => {
-    const clearPinnedNode = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setPinnedNodeId(null)
+    const clearPinnedNode = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPinnedNodeId(null)
+        setActiveStep('resolve')
+      }
     }
 
     window.addEventListener('keydown', clearPinnedNode)
     return () => window.removeEventListener('keydown', clearPinnedNode)
   }, [])
 
-  const togglePinnedNode = (nodeId: ArchitectureNodeId) => {
-    setPinnedNodeId((currentNodeId) => (currentNodeId === nodeId ? null : nodeId))
+  const inspectNode = (nodeId: ArchitectureNodeId) => {
+    if (pinnedNodeId) return
+    setHoveredNodeId(nodeId)
+    const node = architectureNodes.find((candidate) => candidate.id === nodeId)
+    if (node) setActiveStep(node.step)
   }
 
-  const clearPinnedNodeFromPlane = (event: MouseEvent<HTMLDivElement>) => {
-    const target = event.target as HTMLElement
-    if (target.closest('[data-node-id], [data-architecture-interactive]')) return
-    setPinnedNodeId(null)
+  const leaveNode = () => {
+    setHoveredNodeId(null)
+    if (!pinnedNodeId) setActiveStep('resolve')
+  }
+
+  const togglePinnedNode = (nodeId: ArchitectureNodeId) => {
+    if (pinnedNodeId === nodeId) {
+      setPinnedNodeId(null)
+      setActiveStep('resolve')
+      return
+    }
+
+    setPinnedNodeId(nodeId)
+    const node = architectureNodes.find((candidate) => candidate.id === nodeId)
+    if (node) setActiveStep(node.step)
   }
 
   return (
     <section
-      ref={sectionRef}
       id="architecture"
-      className="architecture-section"
-      data-active-step={activeStep}
+      className="architecture-section architecture-section--flow"
       aria-labelledby="architecture-title"
     >
-      <div className="architecture-sticky" onClick={clearPinnedNodeFromPlane}>
-        <header className="architecture-heading">
-          <div className="architecture-heading__copy">
-            <p className="architecture-heading__overline">END-TO-END ARCHITECTURE</p>
-            <h2 id="architecture-title">ONE CLOSED EVIDENCE LOOP</h2>
-            <p className="architecture-heading__summary">
-              The program we search is the program we measure, promote and execute.
-            </p>
+      <div className="architecture-flow-shell">
+        <header className="architecture-flow-heading">
+          <div>
+            <p className="architecture-flow-heading__overline">Implementation overview</p>
+            <h2 id="architecture-title">System Architecture and Execution Lifecycle</h2>
           </div>
-
-          <div className="architecture-command-rail" aria-label="Bounded workflow entry points">
-            {workflowCommands.map((command) => (
-              <span key={command.label} className="architecture-command">
-                <strong>{command.label}</strong>
-                <small>{command.scope}</small>
-              </span>
-            ))}
+          <div className="architecture-flow-heading__aside">
+            <p>
+              Three system layers construct a legal ExecutionPlan, collect multi-fidelity
+              GPU evidence, and resolve the approved ConfigSpec for runtime execution.
+            </p>
+            <small>Hover to inspect · click to pin · press Esc to reset</small>
           </div>
         </header>
 
-        <div className="architecture-system-plane">
-          <ArchitectureFigure
-            activeStep={activeStep}
-            activeNodeId={activeNodeId}
-            pinnedNodeId={pinnedNodeId}
-            onNodeEnter={setHoveredNodeId}
-            onNodeLeave={() => setHoveredNodeId(null)}
-            onNodeToggle={togglePinnedNode}
-          />
+        <ArchitectureFigure
+          activeStep={activeStep}
+          activeNodeId={activeNodeId}
+          pinnedNodeId={pinnedNodeId}
+          onNodeEnter={inspectNode}
+          onNodeLeave={leaveNode}
+          onNodeToggle={togglePinnedNode}
+        />
 
-          <ol className="architecture-phase-index" aria-label="Architecture phases">
-            {architecturePhases.map((phase) => (
-              <li
-                key={phase.id}
-                data-step-name={phase.id}
-                data-active={phase.id === activeStep}
-                aria-current={phase.id === activeStep ? 'step' : undefined}
-              >
-                <span>{phase.index}</span>
-                <strong>{phase.label}</strong>
-              </li>
-            ))}
-          </ol>
-
-          <div className="architecture-phase-facts" aria-live="polite">
-            {architecturePhases.map((phase) => (
-              <p
-                key={phase.id}
-                className={`architecture-phase-fact architecture-phase-fact--${phase.side}`}
-                data-step-name={phase.id}
-                data-active={phase.id === activeStep}
-              >
-                <span>{phase.label}</span>
-                {phase.sentence}
-              </p>
-            ))}
-          </div>
-
+        <div className="architecture-flow-detail" aria-live="polite">
           {activeNode ? (
-            <aside
-              className={`architecture-inspector architecture-inspector--${activeNode.inspectorSide}`}
-              data-architecture-interactive
-              data-pinned={pinnedNodeId === activeNode.id}
-              aria-label={`${activeNode.label} module details`}
-            >
-              <div className="architecture-inspector__heading">
-                <span>{pinnedNodeId === activeNode.id ? 'PINNED MODULE' : 'MODULE TRACE'}</span>
+            <article className="architecture-flow-inspector">
+              <div className="architecture-flow-inspector__title">
+                <span>{pinnedNodeId === activeNode.id ? 'Selected module' : activeNode.eyebrow}</span>
                 <strong>{activeNode.label}</strong>
               </div>
               <code>{activeNode.repository}</code>
               <dl>
                 <div>
-                  <dt>INPUT</dt>
+                  <dt>Input</dt>
                   <dd>{activeNode.input}</dd>
                 </div>
                 <div>
-                  <dt>OUTPUT</dt>
+                  <dt>Output</dt>
                   <dd>{activeNode.output}</dd>
                 </div>
               </dl>
-              <p>{activeNode.detail}</p>
-              {activeNode.evidence ? <small>{activeNode.evidence}</small> : null}
-              {pinnedNodeId === activeNode.id ? (
-                <button type="button" onClick={() => setPinnedNodeId(null)}>
-                  RELEASE · ESC
-                </button>
-              ) : null}
-            </aside>
-          ) : null}
+              <div className="architecture-flow-inspector__explanation">
+                <p>{activeNode.detail}</p>
+                {activeNode.evidence ? <small>{activeNode.evidence}</small> : null}
+              </div>
+            </article>
+          ) : (
+            <div className="architecture-flow-principles">
+              <p><span>01</span><strong>Program construction</strong><small>Workload identity → ConfigSpec → ExecutionPlan</small></p>
+              <p><span>02</span><strong>Evidence collection</strong><small>Screen → Enhanced → paired Formal evidence</small></p>
+              <p><span>03</span><strong>Deployment resolution</strong><small>Registry key → runtime branch → official output</small></p>
+            </div>
+          )}
         </div>
-      </div>
-
-      <div className="architecture-scroll-track" aria-hidden="true">
-        {architecturePhases.map((phase) => (
-          <div key={phase.id} className="architecture-sentinel" data-step={phase.id} />
-        ))}
       </div>
     </section>
   )

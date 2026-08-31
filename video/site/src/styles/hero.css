@@ -1,0 +1,282 @@
+.hero-section.hero-section--fluid {
+  height: auto;
+  min-height: 100svh;
+  padding: clamp(2.5rem, 5vw, 6rem) clamp(1.5rem, 5vw, 7rem) clamp(3.5rem, 7vw, 8rem);
+  overflow: clip;
+}
+
+.hero-fluid {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.62fr) minmax(0, 1.38fr);
+  grid-template-areas:
+    "headline headline"
+    "metrics visual"
+    "bridge bridge";
+  width: min(100%, 112rem);
+  margin-inline: auto;
+  column-gap: clamp(2.25rem, 4vw, 5.5rem);
+  row-gap: clamp(2.5rem, 4.5vw, 5rem);
+}
+
+.hero-fluid__headline {
+  grid-area: headline;
+  min-width: 0;
+}
+
+.hero-fluid__kicker,
+.hero-fluid__visual-caption span,
+.hero-fluid__program dt,
+.hero-fluid__metric span,
+.hero-fluid__claim span,
+.hero-fluid__bridge span,
+.hero-fluid__abstract-copy > span,
+.hero-fluid__metadata dt {
+  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: clamp(1rem, 1.08vw, 1.3rem);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+}
+
+.hero-fluid__headline h1 {
+  width: 100%;
+  min-width: 0;
+  margin: clamp(1.75rem, 2.6vw, 3rem) 0 0;
+  font-size: clamp(3rem, 4.1vw, 5.25rem);
+  font-weight: 560;
+  line-height: 1.02;
+  letter-spacing: -0.042em;
+}
+
+.hero-fluid__headline h1 span {
+  display: block;
+}
+
+.hero-fluid__headline h1 span:last-child {
+  color: var(--blue);
+}
+
+.hero-fluid__abstract {
+  display: grid;
+  grid-template-columns: minmax(25rem, 1.3fr) minmax(0, 2fr);
+  min-width: 0;
+  margin-top: clamp(2rem, 3vw, 3.5rem);
+  border-block: 1px solid var(--line-strong);
+  background:
+    linear-gradient(90deg, rgba(36, 87, 214, 0.07), transparent 48%),
+    rgba(251, 252, 251, 0.62);
+}
+
+.hero-fluid__abstract-copy {
+  display: grid;
+  align-content: center;
+  gap: 0.8rem;
+  padding: clamp(1.4rem, 2vw, 2.1rem);
+  border-left: 5px solid var(--blue);
+}
+
+.hero-fluid__abstract-copy > p {
+  max-width: 48ch;
+  color: var(--ink-soft);
+  font-family: var(--font-sans);
+  font-size: clamp(1.25rem, 1.42vw, 1.72rem);
+  line-height: 1.35;
+}
+
+.hero-fluid__metadata {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-left: 1px solid var(--line);
+}
+
+.hero-fluid__metadata > div {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: 0.5rem;
+  padding: clamp(1.25rem, 1.75vw, 1.9rem);
+}
+
+.hero-fluid__metadata > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.hero-fluid__metadata dd {
+  color: var(--ink);
+  font: 640 clamp(1.05rem, 1.12vw, 1.35rem)/1.28 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.hero-fluid__calibration {
+  display: grid;
+  grid-template-columns: auto minmax(4rem, 1fr) auto;
+  align-items: center;
+  gap: clamp(1rem, 1.8vw, 2rem);
+  margin-top: clamp(1.25rem, 1.8vw, 2rem);
+  color: var(--ink-faint);
+  font: 680 clamp(0.95rem, 1vw, 1.18rem)/1.2 var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
+.hero-fluid__calibration i {
+  height: 1.2rem;
+  border-block: 1px solid var(--line);
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0,
+    transparent calc(4.5% - 1px),
+    var(--blue) calc(4.5% - 1px),
+    var(--blue) 4.5%
+  );
+  opacity: 0.54;
+}
+
+.hero-fluid__metrics {
+  grid-area: metrics;
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  border-top: 2px solid var(--blue);
+}
+
+.hero-fluid__metric {
+  display: grid;
+  gap: 0.85rem;
+  padding-block: clamp(1.4rem, 2.3vw, 2.5rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.hero-fluid__metric strong {
+  font-family: var(--font-mono);
+  font-size: clamp(4rem, 6vw, 7rem);
+  font-weight: 570;
+  font-variant-numeric: tabular-nums;
+  line-height: 0.88;
+  letter-spacing: -0.075em;
+}
+
+.hero-fluid__claim {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: clamp(1.25rem, 2vw, 2rem);
+  padding: 1.25rem 1.35rem;
+  border-left: 4px solid var(--orange);
+  background: rgba(251, 252, 251, 0.76);
+}
+
+.hero-fluid__claim strong {
+  font-size: clamp(1.18rem, 1.3vw, 1.55rem);
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.hero-fluid__visual {
+  grid-area: visual;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: rgba(251, 252, 251, 0.68);
+}
+
+.hero-fluid__visual-caption {
+  display: flex;
+  min-height: 4.25rem;
+  padding: 1rem clamp(1.25rem, 2vw, 2rem);
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.hero-fluid__visual-caption strong {
+  font: 680 clamp(1.02rem, 1.08vw, 1.3rem)/1.2 var(--font-mono);
+  letter-spacing: 0.05em;
+  text-align: right;
+}
+
+.hero-fluid__canvas-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    linear-gradient(rgba(36, 87, 214, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(36, 87, 214, 0.035) 1px, transparent 1px);
+  background-size: clamp(2.5rem, 4vw, 5rem) clamp(2.5rem, 4vw, 5rem);
+}
+
+.hero-fluid__canvas-frame .gpu-program-field,
+.hero-fluid__canvas-frame canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.hero-fluid__program {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 0.72fr;
+  border-top: 1px solid var(--line);
+}
+
+.hero-fluid__program > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+  padding: clamp(1rem, 1.6vw, 1.65rem);
+}
+
+.hero-fluid__program > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.hero-fluid__program dd {
+  overflow-wrap: anywhere;
+  font: 620 clamp(1.12rem, 1.2vw, 1.45rem)/1.2 var(--font-mono);
+}
+
+.hero-fluid__bridge {
+  grid-area: bridge;
+  display: flex;
+  padding-top: clamp(1.5rem, 2.5vw, 2.75rem);
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+  border-top: 1px solid var(--line-strong);
+  color: var(--blue);
+  font: 680 clamp(1.22rem, 1.4vw, 1.65rem)/1.25 var(--font-sans);
+  letter-spacing: 0.055em;
+  text-align: right;
+}
+
+@media (max-width: 68rem) {
+  .hero-fluid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "headline"
+      "visual"
+      "metrics"
+      "bridge";
+  }
+
+  .hero-fluid__headline h1 {
+    font-size: clamp(2.75rem, 7.5vw, 4.75rem);
+  }
+
+  .hero-fluid__abstract {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-fluid__metadata {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .hero-fluid__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+
+  .hero-fluid__claim {
+    grid-column: 1 / -1;
+  }
+}

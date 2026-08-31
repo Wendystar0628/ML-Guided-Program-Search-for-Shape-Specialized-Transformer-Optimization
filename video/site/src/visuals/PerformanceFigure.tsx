@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
-import { equations, performance } from '../data/projectData'
+import type { CSSProperties } from 'react'
+import { equations, measurementProtocol, performance } from '../data/projectData'
 import { EvidenceAggregate } from './EvidenceAggregate'
 
 const LOG_MIN = Math.log10(0.05)
 const LOG_MAX = Math.log10(1000)
-const highlightedShapes = new Set(['02', '08', '13'])
+const axisTicks = [0.05, 0.1, 1, 10, 100, 1000]
+const highlightedShapes = new Set(['08', '11', '13'])
 
-type RailStyle = CSSProperties & {
-  '--baseline-position': string
-  '--deployed-position': string
+type PositionedStyle = CSSProperties & {
+  '--baseline-position'?: string
+  '--deployed-position'?: string
+  '--tick-position'?: string
 }
 
 function latencyPosition(value: number) {
@@ -17,147 +19,157 @@ function latencyPosition(value: number) {
 }
 
 function latencyLabel(value: number) {
-  if (value >= 100) return value.toFixed(3)
-  return value.toFixed(4)
+  return value >= 100 ? value.toFixed(3) : value.toFixed(4)
 }
 
 function speedupLabel(value: number) {
   return `${value.toFixed(2)}×`
 }
 
+function technicalSentence(value: string) {
+  const sentence = value.toLowerCase().replace(/\b(fp32|cuda|gpu|rtx)\b/g, (term) => term.toUpperCase())
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1)
+}
+
 export function PerformanceFigure() {
-  const figureRef = useRef<HTMLElement>(null)
-  const [isVisible, setIsVisible] = useState(false)
-  const [activeShape, setActiveShape] = useState<string | null>(null)
-
-  useEffect(() => {
-    const figure = figureRef.current
-    if (!figure) return
-
-    const observer = new IntersectionObserver(
-      ([entry]) => setIsVisible(entry.isIntersecting),
-      { threshold: 0.18 },
-    )
-
-    observer.observe(figure)
-    return () => observer.disconnect()
-  }, [])
-
   return (
     <figure
-      ref={figureRef}
       className="performance-figure evidence-ledger"
-      data-reveal={isVisible ? 'settled' : 'waiting'}
-      data-active-shape={activeShape ?? undefined}
       aria-labelledby="evidence-title"
       aria-describedby="evidence-method evidence-boundary"
     >
       <header className="evidence-ledger__header">
         <div className="evidence-ledger__title-lockup">
-          <span className="evidence-ledger__kicker">RESIDENT LATENCY LEDGER · RTX 4080</span>
-          <h2 id="evidence-title">MEASURED SHAPE BY SHAPE</h2>
-          <p>Thirteen correct ratios form one equal-shape aggregate.</p>
+          <span className="evidence-ledger__kicker">05 · EVALUATION RESULTS</span>
+          <h2 id="evidence-title">Measured deployment performance</h2>
+          <p className="evidence-ledger__subtitle">
+            Baseline and deployed median latency for Shapes 01–13 on the validated NVIDIA GeForce RTX 4080 system.
+          </p>
         </div>
 
-        <div className="evidence-ledger__comparator" aria-label="Comparison direction">
-          <span>SAME SUPPLIED COMPARATOR</span>
-          <b>BASELINE</b>
-          <i aria-hidden="true">→</i>
-          <b>DEPLOYED</b>
+        <div className="evidence-ledger__legend" aria-label="Latency markers">
+          <span>
+            <i className="evidence-ledger__legend-marker evidence-ledger__legend-marker--baseline" aria-hidden="true" />
+            BASELINE
+          </span>
+          <span>
+            <i className="evidence-ledger__legend-marker evidence-ledger__legend-marker--deployed" aria-hidden="true" />
+            DEPLOYED
+          </span>
         </div>
       </header>
 
-      <div className="measurement-contract" id="evidence-method">
-        <div className="measurement-contract__primary">
-          <span>MEASUREMENT CONTRACT</span>
-          <strong>FIXED FP32 INPUTS · CUDA EVENT MEDIANS · ABSOLUTE-OR-RELATIVE CORRECTNESS</strong>
+      <section className="measurement-contract" id="evidence-method" aria-labelledby="measurement-contract-title">
+        <div className="measurement-contract__heading">
+          <span>MEASUREMENT PROTOCOL</span>
+          <h3 id="measurement-contract-title">Controlled resident-shape timing</h3>
         </div>
-        <div>
-          <span>ISOLATION</span>
-          <strong>EXCLUSIVE PROJECT GPU LEASE · FRESH PROCESS PER SHAPE</strong>
-        </div>
-        <div>
-          <span>STANDARD RESIDENT PRESET</span>
-          <strong>5 CORRECTNESS · 20 WARMUPS · 100 REPEATS · 3 ROUNDS</strong>
-        </div>
-        <p id="evidence-boundary">S06 uses a reduced protocol for its large batch; the standard preset is not claimed for every Shape.</p>
-      </div>
 
-      <div className="evidence-ledger__plot">
+        <dl className="measurement-contract__grid">
+          <div>
+            <dt>PRECISION</dt>
+            <dd>{technicalSentence(measurementProtocol.precision)}</dd>
+          </div>
+          <div>
+            <dt>TIMING</dt>
+            <dd>Median latency from CUDA Events</dd>
+          </div>
+          <div>
+            <dt>CORRECTNESS</dt>
+            <dd>{technicalSentence(measurementProtocol.comparator)}</dd>
+          </div>
+          <div>
+            <dt>ISOLATION</dt>
+            <dd>{technicalSentence(measurementProtocol.isolation.join(' · '))}</dd>
+          </div>
+          <div className="measurement-contract__preset">
+            <dt>STANDARD RESIDENT PRESET</dt>
+            <dd>{technicalSentence(measurementProtocol.residentPreset)}</dd>
+          </div>
+        </dl>
+
+        <p className="measurement-contract__boundary" id="evidence-boundary">
+          S06 · 1 CORRECTNESS · 2 WARMUPS · 5 REPEATS · 3 ROUNDS
+        </p>
+      </section>
+
+      <header className="evidence-ledger__results-heading">
+        <span>PER-SHAPE RESULTS</span>
+        <p>Median latency comparison · logarithmic scale</p>
+      </header>
+
+      <div className="evidence-ledger__table" role="table" aria-label="Resident baseline and deployed latency">
+        <div className="evidence-ledger__head" role="row">
+          <span className="evidence-ledger__head-shape" role="columnheader">SHAPE</span>
+          <span className="evidence-ledger__head-baseline" role="columnheader">BASELINE</span>
+          <span className="evidence-ledger__head-rail" role="columnheader">LOG LATENCY · ms</span>
+          <span className="evidence-ledger__head-deployed" role="columnheader">DEPLOYED</span>
+          <span className="evidence-ledger__head-speedup" role="columnheader">SPEEDUP</span>
+        </div>
+
         <div className="evidence-ledger__axis" aria-hidden="true">
-          <span>0.05</span>
-          <span>0.1</span>
-          <span>1</span>
-          <span>10</span>
-          <span>100</span>
-          <span>1000 ms</span>
+          <span className="evidence-ledger__axis-rail">
+            {axisTicks.map((tick) => (
+              <i
+                key={tick}
+                className="evidence-ledger__axis-tick"
+                style={{ '--tick-position': latencyPosition(tick) } as PositionedStyle}
+              >
+                {tick}
+              </i>
+            ))}
+          </span>
         </div>
 
-        <div className="evidence-ledger__columns" aria-hidden="true">
-          <span>SHAPE</span>
-          <span>BASELINE</span>
-          <span>LOG LATENCY · ms</span>
-          <span>DEPLOYED</span>
-          <span>SPEEDUP</span>
-        </div>
-
-        <div className="evidence-ledger__rows">
+        <div className="evidence-ledger__rows" role="rowgroup">
           {performance.map((point) => {
-            const isHighlighted = highlightedShapes.has(point.id)
-            const isActive = activeShape === point.id
-            const isMuted = activeShape !== null && !isActive
-            const style: RailStyle = {
+            const style: PositionedStyle = {
               '--baseline-position': latencyPosition(point.baselineMs),
               '--deployed-position': latencyPosition(point.deployedMs),
             }
+            const rowClassName = highlightedShapes.has(point.id)
+              ? 'performance-ledger-row performance-ledger-row--representative'
+              : 'performance-ledger-row'
 
             return (
               <div
                 key={point.id}
-                className={`performance-ledger-row${isHighlighted ? ' performance-ledger-row--representative' : ''}`}
-                data-active={isActive ? 'true' : undefined}
-                data-muted={isMuted ? 'true' : undefined}
-                tabIndex={0}
-                role="group"
-                aria-label={`Shape ${point.id}: baseline ${latencyLabel(point.baselineMs)} milliseconds, deployed ${latencyLabel(point.deployedMs)} milliseconds, speedup ${speedupLabel(point.speedup)}. Correct by the supplied comparator.`}
-                onPointerEnter={() => setActiveShape(point.id)}
-                onPointerLeave={() => setActiveShape(null)}
-                onFocus={() => setActiveShape(point.id)}
-                onBlur={() => setActiveShape(null)}
+                className={rowClassName}
+                role="row"
+                aria-label={`Shape ${point.id}: baseline ${latencyLabel(point.baselineMs)} milliseconds; deployed ${latencyLabel(point.deployedMs)} milliseconds; ${speedupLabel(point.speedup)} speedup; pass.`}
               >
-                <span className="performance-ledger-row__shape">S{point.id}</span>
-                <span className="performance-ledger-row__baseline">
-                  {latencyLabel(point.baselineMs)} <small>ms</small>
+                <strong className="performance-ledger-row__shape" role="cell">S{point.id}</strong>
+                <span className="performance-ledger-row__baseline" role="cell">
+                  <b>{latencyLabel(point.baselineMs)}</b>
+                  <small>ms</small>
                 </span>
 
-                <span className="performance-ledger-row__rail" style={style} aria-hidden="true">
+                <span className="performance-ledger-row__rail" style={style} role="cell" aria-hidden="true">
                   <span className="performance-ledger-row__grid" />
                   <span className="performance-ledger-row__connector" />
                   <span className="performance-ledger-row__marker performance-ledger-row__marker--baseline" />
                   <span className="performance-ledger-row__marker performance-ledger-row__marker--deployed" />
                 </span>
 
-                <span className="performance-ledger-row__deployed">
-                  {latencyLabel(point.deployedMs)} <small>ms</small>
+                <span className="performance-ledger-row__deployed" role="cell">
+                  <b>{latencyLabel(point.deployedMs)}</b>
+                  <small>ms</small>
                 </span>
-                <strong className="performance-ledger-row__speedup">{speedupLabel(point.speedup)}</strong>
-                <span className="performance-ledger-row__inspection" aria-hidden={isActive ? undefined : true}>
-                  BASELINE {latencyLabel(point.baselineMs)} ms · DEPLOYED {latencyLabel(point.deployedMs)} ms · SPEEDUP{' '}
-                  {speedupLabel(point.speedup)} · PASS
-                </span>
+                <strong className="performance-ledger-row__speedup" role="cell">
+                  {speedupLabel(point.speedup)}
+                </strong>
               </div>
             )
           })}
         </div>
-
-        <span className="evidence-ledger__sweep" aria-hidden="true" />
-        <EvidenceAggregate />
       </div>
 
+      <EvidenceAggregate />
+
       <figcaption className="evidence-ledger__formulas">
-        <span>{equations.speedup}</span>
-        <span>{equations.geomean}</span>
-        <small>Equal weight per resident Shape in log-speedup space.</small>
+        <code>{equations.speedup}</code>
+        <code>{equations.geomean}</code>
+        <small>EQUAL-WEIGHT GEOMETRIC MEAN ACROSS 13 RESIDENT SHAPES</small>
       </figcaption>
     </figure>
   )

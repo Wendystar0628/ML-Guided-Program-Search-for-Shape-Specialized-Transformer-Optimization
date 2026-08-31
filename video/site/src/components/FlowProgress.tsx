@@ -1,12 +1,5 @@
-import { useEffect, useState, type CSSProperties } from 'react'
-
-const narrativeAnchors = [
-  { id: 'outcome', label: 'OUTCOME' },
-  { id: 'workloads', label: 'WORKLOADS' },
-  { id: 'architecture', label: 'ARCHITECTURE' },
-  { id: 'search', label: 'SEARCH' },
-  { id: 'evidence', label: 'EVIDENCE' },
-] as const
+import { useEffect, useState } from 'react'
+import { narrativeAnchors } from '../data/narrativeData'
 
 type NarrativeAnchorId = (typeof narrativeAnchors)[number]['id']
 
@@ -63,19 +56,12 @@ export function FlowProgress() {
   }, [])
 
   const activeIndex = narrativeAnchors.findIndex((anchor) => anchor.id === activeId)
-  const progress = (activeIndex / (narrativeAnchors.length - 1)) * 100
-  const style = { '--flow-progress': `${progress}%` } as CSSProperties
-
   return (
     <nav
       className="flow-progress"
       aria-label="Project narrative"
       data-active-section={activeId}
-      style={style}
     >
-      <span className="flow-progress__track" aria-hidden="true">
-        <span className="flow-progress__fill" />
-      </span>
       <ol className="flow-progress__anchors">
         {narrativeAnchors.map((anchor, index) => {
           const distance = index - activeIndex
@@ -91,10 +77,12 @@ export function FlowProgress() {
               <a
                 href={`#${anchor.id}`}
                 aria-current={position === 'current' ? 'location' : undefined}
-                aria-label={`Go to ${anchor.label.toLowerCase()}`}
+                aria-label={`Go to ${anchor.navLabel.toLowerCase()}`}
               >
-                <span className="flow-progress__dot" aria-hidden="true" />
-                <span className="flow-progress__label">{anchor.label}</span>
+                <span className="flow-progress__index" aria-hidden="true">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <span className="flow-progress__label">{anchor.navLabel}</span>
               </a>
             </li>
           )

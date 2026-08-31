@@ -1,12 +1,28 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import dagre from '@dagrejs/dagre'
 import {
+  Background,
+  BackgroundVariant,
+  Handle,
+  MarkerType,
+  Position,
+  ReactFlow,
+  type Edge,
+  type Node,
+  type NodeProps,
+  type ReactFlowInstance,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
+import '../styles/architecture.css'
+import {
+  architectureConnectors,
   architectureEdges,
+  architectureLanes,
   architectureNodes,
   architectureSteps,
-  evidenceChannels,
-  evidenceStores,
-  promotionThresholds,
-  runtimeLanes,
+  type ArchitectureLane,
+  type ArchitectureLaneId,
+  type ArchitectureNode,
   type ArchitectureNodeId,
 } from '../data/architectureData'
 import type { ArchitectureStep } from '../motion/motionTypes'
@@ -20,7 +36,68 @@ type ArchitectureFigureProps = {
   onNodeToggle: (nodeId: ArchitectureNodeId) => void
 }
 
-function stageStatus(stage: ArchitectureStep, activeStep: ArchitectureStep) {
+type NodeStatus = 'complete' | 'active' | 'future'
+type NodeRelation = 'context' | 'selected' | 'related' | 'muted'
+type FlowNodeData = ArchitectureNode & {
+  status: NodeStatus
+  relation: NodeRelation
+  pinned: boolean
+  [key: string]: unknown
+}
+type ArchitectureFlowNode = Node<FlowNodeData, 'architecture'>
+type ArchitectureFlowEdge = Edge<Record<string, never>>
+
+const NODE_HEIGHT = 142
+
+function nodeWidth(node: ArchitectureNode) {
+  if (node.id === 'conditional-search') return 320
+  if (node.id === 'plan-builder' || node.id === 'official-context') return 292
+  if (node.id === 'formal-paired') return 320
+  if (node.id === 'sequential-promotion' || node.id === 'official-output') return 292
+  if (node.id === 'exact-device-registry') return 310
+  return 250
+}
+
+function createLaneLayout(lane: ArchitectureLane) {
+  const graph = new dagre.graphlib.Graph()
+    .setDefaultEdgeLabel(() => ({}))
+    .setGraph({
+      rankdir: 'LR',
+      ranker: 'network-simplex',
+      ranksep: 64,
+      nodesep: 34,
+      marginx: 24,
+      marginy: 24,
+    })
+
+  const laneNodes = architectureNodes.filter((node) => lane.nodeIds.includes(node.id))
+  const laneEdges = architectureEdges.filter((edge) => edge.lane === lane.id)
+
+  laneNodes.forEach((node) => {
+    graph.setNode(node.id, { width: nodeWidth(node), height: NODE_HEIGHT })
+  })
+  laneEdges.forEach((edge) => graph.setEdge(edge.from, edge.to))
+  dagre.layout(graph)
+
+  return new Map(
+    laneNodes.map((node) => {
+      const point = graph.node(node.id)
+      return [
+        node.id,
+        {
+          x: point.x - nodeWidth(node) / 2,
+          y: point.y - NODE_HEIGHT / 2,
+        },
+      ]
+    }),
+  )
+}
+
+const laneLayouts = new Map(
+  architectureLanes.map((lane) => [lane.id, createLaneLayout(lane)]),
+)
+
+function stageStatus(stage: ArchitectureStep, activeStep: ArchitectureStep): NodeStatus {
   const stageIndex = architectureSteps.indexOf(stage)
   const activeIndex = architectureSteps.indexOf(activeStep)
 
@@ -29,249 +106,247 @@ function stageStatus(stage: ArchitectureStep, activeStep: ArchitectureStep) {
   return 'future'
 }
 
-function nodeRelation(nodeId: ArchitectureNodeId, activeNodeId: ArchitectureNodeId | null) {
-  if (!activeNodeId) return 'context'
-  if (nodeId === activeNodeId) return 'selected'
-
-  const connected = architectureEdges.some(
-    (edge) =>
-      (edge.from === activeNodeId && edge.to === nodeId) ||
-      (edge.to === activeNodeId && edge.from === nodeId),
-  )
-
-  return connected ? 'related' : 'muted'
+function laneIsActive(laneId: ArchitectureLaneId, activeStep: ArchitectureStep) {
+  if (laneId === 'synthesis') return activeStep === 'construct' || activeStep === 'validate'
+  if (laneId === 'evidence') return activeStep === 'measure'
+  return activeStep === 'promote' || activeStep === 'resolve'
 }
 
-export function ArchitectureFigure({
+function ArchitectureFlowNode({ data }: NodeProps<ArchitectureFlowNode>) {
+  return (
+    <div
+      className="architecture-flow-node"
+      data-kind={data.kind}
+      data-status={data.status}
+      data-relation={data.relation}
+      data-pinned={data.pinned}
+    >
+      <Handle id="target" type="target" position={Position.Left} />
+      <span className="architecture-flow-node__eyebrow">{data.eyebrow}</span>
+      <strong>{data.label}</strong>
+      <small>{data.note}</small>
+      <Handle id="source" type="source" position={Position.Right} />
+    </div>
+  )
+}
+
+const nodeTypes = { architecture: ArchitectureFlowNode }
+
+type ArchitectureLaneFlowProps = ArchitectureFigureProps & {
+  lane: ArchitectureLane
+  connectedNodeIds: Set<ArchitectureNodeId>
+}
+
+function ArchitectureLaneFlow({
+  lane,
   activeStep,
   activeNodeId,
   pinnedNodeId,
+  connectedNodeIds,
   onNodeEnter,
   onNodeLeave,
   onNodeToggle,
-}: ArchitectureFigureProps) {
-  const relatedEdgeIds = useMemo(() => {
-    if (!activeNodeId) return new Set<string>()
+}: ArchitectureLaneFlowProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [flowInstance, setFlowInstance] = useState<
+    ReactFlowInstance<ArchitectureFlowNode, ArchitectureFlowEdge> | undefined
+  >()
 
-    return new Set(
+  const nodes = useMemo<ArchitectureFlowNode[]>(() => {
+    const positions = laneLayouts.get(lane.id)
+    return architectureNodes
+      .filter((node) => lane.nodeIds.includes(node.id))
+      .map((node) => {
+        const relation: NodeRelation = !activeNodeId
+          ? 'context'
+          : node.id === activeNodeId
+            ? 'selected'
+            : connectedNodeIds.has(node.id)
+              ? 'related'
+              : 'muted'
+
+        return {
+          id: node.id,
+          type: 'architecture',
+          position: positions?.get(node.id) ?? { x: 0, y: 0 },
+          width: nodeWidth(node),
+          height: NODE_HEIGHT,
+          style: { width: nodeWidth(node), height: NODE_HEIGHT },
+          data: {
+            ...node,
+            status: stageStatus(node.step, activeStep),
+            relation,
+            pinned: pinnedNodeId === node.id,
+          },
+          ariaLabel: `${node.label}. ${node.detail}`,
+          draggable: false,
+          selectable: false,
+        }
+      })
+  }, [activeNodeId, activeStep, connectedNodeIds, lane, pinnedNodeId])
+
+  const edges = useMemo<ArchitectureFlowEdge[]>(
+    () =>
       architectureEdges
-        .filter((edge) => edge.from === activeNodeId || edge.to === activeNodeId)
-        .map((edge) => edge.id),
-    )
-  }, [activeNodeId])
+        .filter((edge) => edge.lane === lane.id)
+        .map((edge) => {
+          const status = stageStatus(edge.stage, activeStep)
+          const related = !activeNodeId || edge.from === activeNodeId || edge.to === activeNodeId
+          const isOrange = edge.kind === 'promotion'
+          const stroke = isOrange ? '#f05a2a' : '#2457d6'
+
+          return {
+            id: edge.id,
+            source: edge.from,
+            target: edge.to,
+            sourceHandle: 'source',
+            targetHandle: 'target',
+            type: 'smoothstep',
+            animated: status === 'active',
+            className: [
+              'architecture-flow__edge',
+              `architecture-flow__edge--${status}`,
+              related ? 'architecture-flow__edge--related' : 'architecture-flow__edge--muted',
+            ].join(' '),
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              color: stroke,
+              width: 22,
+              height: 22,
+            },
+            style: {
+              stroke,
+              strokeWidth: status === 'active' ? 4.2 : 3.2,
+            },
+            pathOptions: { borderRadius: 18 },
+            focusable: false,
+            selectable: false,
+          }
+        }),
+    [activeNodeId, activeStep, lane.id],
+  )
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || !flowInstance) return
+
+    let animationFrame = 0
+    const fitGraph = () => {
+      cancelAnimationFrame(animationFrame)
+      animationFrame = requestAnimationFrame(() => {
+        void flowInstance.fitView({
+          padding: lane.id === 'deployment' ? 0.13 : 0.09,
+          duration: 180,
+        })
+      })
+    }
+    const resizeObserver = new ResizeObserver(fitGraph)
+    resizeObserver.observe(container)
+    fitGraph()
+
+    return () => {
+      cancelAnimationFrame(animationFrame)
+      resizeObserver.disconnect()
+    }
+  }, [flowInstance])
+
+  return (
+    <div ref={containerRef} className="architecture-band__canvas">
+      <ReactFlow<ArchitectureFlowNode, ArchitectureFlowEdge>
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={nodeTypes}
+        onInit={setFlowInstance}
+        onNodeMouseEnter={(_event, node) => onNodeEnter(node.id as ArchitectureNodeId)}
+        onNodeMouseLeave={onNodeLeave}
+        onNodeClick={(_event, node) => onNodeToggle(node.id as ArchitectureNodeId)}
+        fitView
+        fitViewOptions={{ padding: lane.id === 'deployment' ? 0.13 : 0.09 }}
+        minZoom={0.35}
+        maxZoom={1.08}
+        nodesDraggable={false}
+        nodesConnectable={false}
+        elementsSelectable={false}
+        panOnDrag={false}
+        panOnScroll={false}
+        zoomOnScroll={false}
+        zoomOnPinch={false}
+        zoomOnDoubleClick={false}
+        preventScrolling={false}
+        proOptions={{ hideAttribution: true }}
+      >
+        <Background
+          variant={BackgroundVariant.Dots}
+          gap={26}
+          size={1.25}
+          color="rgba(73, 88, 103, 0.16)"
+        />
+      </ReactFlow>
+    </div>
+  )
+}
+
+export function ArchitectureFigure(props: ArchitectureFigureProps) {
+  const connectedNodeIds = useMemo(() => {
+    if (!props.activeNodeId) return new Set<ArchitectureNodeId>()
+
+    const ids = new Set<ArchitectureNodeId>([props.activeNodeId])
+    architectureEdges.forEach((edge) => {
+      if (edge.from === props.activeNodeId) ids.add(edge.to)
+      if (edge.to === props.activeNodeId) ids.add(edge.from)
+    })
+    return ids
+  }, [props.activeNodeId])
 
   return (
     <figure
-      className="architecture-figure"
-      data-active-step={activeStep}
-      aria-label="Closed evidence loop from workload identity through program construction, isolated measurement, formal promotion and runtime resolution"
+      className="architecture-figure architecture-bands"
+      data-active-step={props.activeStep}
+      aria-label="System architecture from program synthesis through measurement and deployment execution"
     >
-      <svg
-        className="architecture-figure__connectors"
-        viewBox="0 0 1920 920"
-        role="img"
-        aria-label="Architecture connectors and evidence feedback loop"
-      >
-        <defs>
-          <marker
-            id="architecture-arrow-blue"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="8"
-            markerHeight="8"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" />
-          </marker>
-          <marker
-            id="architecture-arrow-orange"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="8"
-            markerHeight="8"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" />
-          </marker>
-          <filter id="architecture-packet-glow" x="-100%" y="-100%" width="300%" height="300%">
-            <feGaussianBlur stdDeviation="5" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
+      {architectureLanes.map((lane) => {
+        const connector = architectureConnectors.find((item) => item.afterLane === lane.id)
 
-        <path
-          className="architecture-figure__system-plane"
-          d="M 340 470 C 500 180 1440 130 1690 250 C 1890 350 1860 650 1660 720 C 1300 850 570 855 340 510"
-        />
-
-        {architectureEdges.map((edge) => {
-          const status = stageStatus(edge.stage, activeStep)
-          const relation = activeNodeId
-            ? relatedEdgeIds.has(edge.id)
-              ? 'related'
-              : 'muted'
-            : 'context'
-
-          return (
-            <g
-              key={edge.id}
-              className="architecture-edge"
-              data-kind={edge.kind}
-              data-status={status}
-              data-relation={relation}
+        return (
+          <div className="architecture-band-group" key={lane.id}>
+            <section
+              className="architecture-band"
+              data-lane={lane.id}
+              data-active={laneIsActive(lane.id, props.activeStep)}
+              aria-labelledby={`architecture-lane-${lane.id}`}
             >
-              <path
-                className="architecture-edge__context"
-                d={edge.path}
-                pathLength="1"
+              <header className="architecture-band__heading">
+                <span>{lane.index}</span>
+                <div>
+                  <h3 id={`architecture-lane-${lane.id}`}>{lane.title}</h3>
+                  <p>{lane.summary}</p>
+                </div>
+              </header>
+
+              <ArchitectureLaneFlow
+                {...props}
+                lane={lane}
+                connectedNodeIds={connectedNodeIds}
               />
-              <path
-                className="architecture-edge__signal"
-                d={edge.path}
-                pathLength="1"
-                markerEnd={
-                  edge.kind === 'promotion' || edge.kind === 'output'
-                    ? 'url(#architecture-arrow-orange)'
-                    : 'url(#architecture-arrow-blue)'
-                }
-              />
-              {status === 'active' ? (
-                <circle className="architecture-edge__packet" r="6" filter="url(#architecture-packet-glow)">
-                  <animateMotion dur="620ms" fill="freeze" path={edge.path} />
-                </circle>
-              ) : null}
-            </g>
-          )
-        })}
+            </section>
 
-        <g className="architecture-merge-label">
-          <text x="175" y="464">SEARCH REQUEST</text>
-          <path d="M 178 476 L 294 476" />
-        </g>
-
-        <g className="architecture-gate-label architecture-gate-label--accepted">
-          <text x="1055" y="447">ACCEPTED</text>
-        </g>
-        <g className="architecture-gate-label architecture-gate-label--rejected">
-          <path d="M 975 552 L 1005 582 M 1005 552 L 975 582" />
-          <text x="1020" y="577">NO GPU TIME</text>
-        </g>
-
-        <g className="architecture-trace-pair" data-active={activeStep === 'measure' || activeStep === 'resolve'}>
-          <path d="M 1240 440 C 1290 416 1320 382 1365 368" />
-          <path d="M 1240 457 C 1295 438 1330 404 1372 393" />
-          <text x="1260" y="398">EXPECTED TRACE</text>
-          <text x="1260" y="430">OBSERVED TRACE</text>
-          <text className="architecture-trace-pair__match" x="1350" y="340">PATH MATCH</text>
-        </g>
-
-        <g className="architecture-feedback-label" data-active={stageStatus('measure', activeStep)}>
-          <text x="720" y="850">LATENCY · FAILURES · COVERAGE</text>
-          <text x="720" y="880">UPDATE THE SAMPLER</text>
-        </g>
-
-        <g className="architecture-output-rail" data-active={activeStep === 'resolve'}>
-          <path d="M 1465 352 L 1785 352" />
-          <text x="1490" y="330">SAME MEASURED PROGRAM</text>
-        </g>
-      </svg>
-
-      <div className="architecture-figure__nodes">
-        {architectureNodes.map((node) => {
-          const status = stageStatus(node.step, activeStep)
-          const relation = nodeRelation(node.id, activeNodeId)
-
-          return (
-            <button
-              key={node.id}
-              type="button"
-              className="architecture-node"
-              data-node-id={node.id}
-              data-kind={node.kind}
-              data-status={status}
-              data-relation={relation}
-              aria-pressed={pinnedNodeId === node.id}
-              aria-label={`${node.label}. ${node.detail}`}
-              style={{ left: `${node.x}%`, top: `${node.y}%` }}
-              onPointerEnter={() => onNodeEnter(node.id)}
-              onPointerLeave={onNodeLeave}
-              onFocus={() => onNodeEnter(node.id)}
-              onBlur={onNodeLeave}
-              onClick={() => onNodeToggle(node.id)}
-            >
-              {node.eyebrow ? <span className="architecture-node__eyebrow">{node.eyebrow}</span> : null}
-              <strong className="architecture-node__label">{node.label}</strong>
-            </button>
-          )
-        })}
-      </div>
-
-      <div
-        className="architecture-runtime-lanes"
-        data-active={stageStatus('measure', activeStep)}
-        aria-label="Execution plan runtime lanes"
-      >
-        {runtimeLanes.map((lane) => (
-          <span key={lane.id} className="architecture-runtime-lane" data-lane={lane.id}>
-            <strong>{lane.label}</strong>
-            <small>{lane.repository}</small>
-          </span>
-        ))}
-      </div>
-
-      <div
-        className="architecture-evidence-channels"
-        data-active={stageStatus('measure', activeStep)}
-        aria-label="Measured GPU evidence channels"
-      >
-        <span className="architecture-evidence-isolation">SINGLE-GPU LEASE · PER-SHAPE FRESH PROCESS</span>
-        {evidenceChannels.map((channel) => (
-          <span key={channel} className="architecture-evidence-channel">{channel}</span>
-        ))}
-      </div>
-
-      <div
-        className="architecture-promotion-rule"
-        data-active={stageStatus('promote', activeStep)}
-        aria-label="Formal paired promotion thresholds"
-      >
-        <span className="architecture-promotion-rule__order">AB ↔ BA</span>
-        {promotionThresholds.map((threshold) => (
-          <span key={threshold}>{threshold}</span>
-        ))}
-      </div>
-
-      <div
-        className="architecture-registry-grid"
-        data-active={activeStep === 'promote' || activeStep === 'resolve'}
-        aria-label="Environment by shape deployment registry"
-      >
-        <span className="architecture-registry-grid__axis architecture-registry-grid__axis--environment">
-          ENVIRONMENT
-        </span>
-        <span className="architecture-registry-grid__axis architecture-registry-grid__axis--shape">
-          SHAPE
-        </span>
-        {Array.from({ length: 12 }, (_, index) => (
-          <i key={index} data-winner={index === 6 ? 'true' : 'false'} />
-        ))}
-        <span className="architecture-registry-grid__winner">APPROVED CONFIG SPEC</span>
-        <span className="architecture-registry-grid__fallback">NO MATCH → PORTABLE FALLBACK</span>
-      </div>
-
-      <div className="architecture-evidence-stores" aria-label="Evidence and deployment stores">
-        {evidenceStores.map((store) => (
-          <span key={store.label} className="architecture-evidence-store">
-            <strong>{store.label}</strong>
-            <small>{store.detail}</small>
-          </span>
-        ))}
-      </div>
+            {connector ? (
+              <div className="architecture-band-connector" aria-label={connector.primary}>
+                <span className="architecture-band-connector__primary">
+                  <i aria-hidden="true">↓</i>
+                  <strong>{connector.primary}</strong>
+                </span>
+                {connector.feedback ? (
+                  <span className="architecture-band-connector__feedback">
+                    <i aria-hidden="true">↺</i>
+                    {connector.feedback}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
     </figure>
   )
 }

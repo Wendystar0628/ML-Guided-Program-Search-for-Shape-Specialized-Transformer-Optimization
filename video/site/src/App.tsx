@@ -19,31 +19,25 @@ export function App() {
         label={relayLabels.outcomeWorkloads}
       />
 
-      <div className="narrative-stream">
-        <WorkloadSection />
-        <EvidenceTrace
-          variant="workloads-architecture"
-          label={relayLabels.workloadsArchitecture}
-        />
+      <WorkloadSection />
+      <EvidenceTrace
+        variant="workloads-architecture"
+        label={relayLabels.workloadsArchitecture}
+      />
 
-        <ArchitectureSection />
-        <EvidenceTrace
-          variant="architecture-search"
-          label={relayLabels.architectureSearch}
-        />
+      <ArchitectureSection />
+      <EvidenceTrace
+        variant="architecture-search"
+        label={relayLabels.architectureSearch}
+      />
 
-        <SearchSection />
-        <EvidenceTrace
-          variant="search-evidence"
-          label={relayLabels.searchEvidence}
-        />
+      <SearchSection />
+      <EvidenceTrace
+        variant="search-evidence"
+        label={relayLabels.searchEvidence}
+      />
 
-        <EvidenceSection />
-        <EvidenceTrace
-          variant="evidence-closing"
-          label={relayLabels.evidenceClosing}
-        />
-      </div>
+      <EvidenceSection />
     </main>
   )
 }
