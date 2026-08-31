@@ -16,7 +16,7 @@
         "allow_fp16_reduced_precision_reduction": false,
         "cudnn_allow_tf32": true,
         "official_definitions_digest": "b498886f22e5c4ad61d7b00bd63952cb9ae98a8d4511fd0913385a02385fc2cb",
-        "solution_implementation_digest": "d1f91ea4aeb384cb466bc0c0ee3e2e4c2d704adf0df6ff28fe702bd6fca970eb"
+        "solution_implementation_digest": "c3f5e0dd18f63deb2364cf5767853b9119d38a1c193d157756815e4ab8f1f564"
       },
       "entries": [
         {
@@ -212,8 +212,8 @@
               "precision_plan": "fp16_core",
               "qkv_materialization": "triton_native_bhsd",
               "attention_output_bridge": "triton_bhsd_projection",
-              "ffn": "triton_linear_exact_gelu",
-              "residual_norm": "triton_mixed",
+              "ffn": "triton_fused_mlp_boundary",
+              "residual_norm": "triton_linear_mixed",
               "initial_norm": "triton_fp16"
             },
             "schedule": {
@@ -222,36 +222,24 @@
               "qkv_launch": {
                 "block_m": 64,
                 "block_n": 64,
-                "block_k": 32,
+                "block_k": 64,
                 "num_warps": 4
               },
-              "attention_output_projection_launch": {
-                "block_m": 32,
-                "block_n": 32,
-                "block_k": 32,
-                "num_warps": 4,
-                "num_stages": 2
-              },
+              "attention_output_projection_launch": null,
               "residual_norm_launch": {
-                "block_rows": 2,
-                "num_warps": 2
+                "block_rows": 16,
+                "num_warps": 4
               },
               "initial_norm_launch": {
                 "block_rows": 2,
                 "num_warps": 2
               },
               "ffn_launch": null,
-              "ffn_input_launch": {
-                "block_m": 64,
-                "block_n": 64,
-                "block_k": 32,
-                "num_warps": 4,
-                "num_stages": 2
-              },
+              "ffn_input_launch": null,
               "compile_mode": null,
               "batch_tile_size": null,
               "microbatch_size": null,
-              "reuse_unchanged_input": false
+              "reuse_unchanged_input": true
             }
           }
         },

@@ -423,8 +423,7 @@ def _context_supports_fused_ffn_boundary(context: SearchContext) -> bool:
     execution = context.execution_context
     return bool(
         not execution.has_valid_token_mask
-        and execution.batch_size == 64
-        and execution.seq_len == 32
+        and execution.batch_size * execution.seq_len == 2048
         and execution.d_model == 128
         and execution.ffn_dim == 128
         and getattr(context.hardware, "triton_fused_ffn_residual_norm", False)

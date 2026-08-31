@@ -402,7 +402,7 @@ def test_linear_boundary_fusion_is_a_strict_searchable_structure(width: int) -> 
     assert "attention_output_gemm_tile" not in branch.parameter_names
 
 
-def test_shape12_fused_mlp_boundary_is_one_strict_searchable_structure() -> None:
+def test_2048_row_fused_mlp_boundary_is_one_strict_searchable_structure() -> None:
     context = replace(
         _official07_context(),
         seq_len=32,
@@ -472,6 +472,23 @@ def test_shape12_fused_mlp_boundary_is_one_strict_searchable_structure() -> None
     assert len(fused) == 1
     assert set(fused[0].domains[0].choices) == {"all_shadow"}
     assert fused[0].branch_id in search_space.mandatory_branch_ids
+
+    shape04_context = replace(context, batch_size=16, seq_len=128)
+    shape04_plan = PlanBuilder().build(config, shape04_context, hardware)
+    assert shape04_plan.ffn_backend is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+    shape04_space = space_module.ProgramSearchSpace(
+        plan_builder=PlanBuilder(),
+        context=SearchContext(
+            execution_context=shape04_context,
+            scope="resident",
+            hardware=hardware,
+        ),
+        max_branches=36,
+    )
+    assert sum(
+        branch.structure.ffn is FFNBackend.TRITON_FUSED_MLP_BOUNDARY
+        for branch in shape04_space.branches
+    ) == 1
 
     wrong_shape = replace(context, seq_len=128)
     rejection = PlanBuilder().evaluate(config, wrong_shape, hardware)
