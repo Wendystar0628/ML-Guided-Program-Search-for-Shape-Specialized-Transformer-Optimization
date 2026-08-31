@@ -46,9 +46,8 @@ dist/
 # Mutable Agent working state
 agent_state/
 
-# Local planning notes and competition-provided benchmark sources.
+# Local planning notes.
 /notes/
-/official/
 
 # Local search studies, run logs, benchmark observations, and device leases.
 /observations/

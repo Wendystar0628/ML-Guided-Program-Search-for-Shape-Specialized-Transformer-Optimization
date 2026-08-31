@@ -63,7 +63,7 @@ solution/       typed programs, plan compiler, operators, Triton kernels, runtim
 autotune/       search spaces, TPE adapter, staged racing, promotion, outer loop
 benchmarking/   correctness, timing, profiling, hardware probe, GPU isolation
 deployment/     exact environment identity and deployed configuration registry
-official/       local, Git-ignored competition benchmark package
+official/       immutable benchmark semantics and 14 official Shape definitions
 scripts/        optimization entrypoints and final-performance measurement
 result/         timestamped competition-facing final-performance artifacts
 observations/   local, Git-ignored studies, run logs, and benchmark summaries
@@ -95,8 +95,6 @@ python -m pip install -r environments\windows-rtx4080.txt
 ```
 
 Another platform should install a CUDA-enabled PyTorch build and compatible Triton distribution for that platform before installing `requirements.txt`. The Windows Triton port is not presented as a universal dependency.
-
-The competition-provided benchmark package is intentionally not published in this repository. Before running the project, place `test_shapes.json` and `torch_transformer_benchmark.py` in the local `official/` directory.
 
 ## Running the project
 
