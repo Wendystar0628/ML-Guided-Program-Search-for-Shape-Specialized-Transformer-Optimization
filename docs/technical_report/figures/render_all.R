@@ -18,6 +18,7 @@ for (script in c(
   "workload_figures.R",
   "useful_throughput.R",
   "deployed_program_matrix.R",
+  "component_ablation.R",
   "shape14_capacity.R",
   "search_evidence.R"
 )) {
@@ -79,6 +80,7 @@ save_report_figure(
   183,
   116
 )
+save_report_figure(draw_component_ablation(), "component_ablation", 183, 170)
 save_report_figure(draw_shape14_capacity(), "shape14_capacity", 183, 82)
 save_report_figure(draw_search_evidence(), "search_evidence", 183, 132)
 
@@ -109,4 +111,4 @@ render_dot <- function(stem) {
 
 render_dot("shape14_streaming")
 
-message("Rendered nine technical-report figures in: ", figure_dir)
+message("Rendered ten technical-report figures in: ", figure_dir)

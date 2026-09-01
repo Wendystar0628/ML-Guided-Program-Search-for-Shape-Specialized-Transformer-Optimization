@@ -1,6 +1,6 @@
-# 最终性能测试
+# 最终性能与报告证据
 
-本目录只保存面向比赛交付的最终性能结果及其说明，不保存搜索 Trial、候选淘汰记录或日常调优日志。测试入口位于 `scripts/run_final_performance.py`。
+本目录只保存面向比赛交付的最终性能结果、报告所引用的独立评估证据及其说明，不保存搜索 Trial、候选淘汰记录或日常调优日志。最终性能入口位于 `scripts/run_final_performance.py`。
 
 正式运行：
 
@@ -38,3 +38,5 @@ result/
 ```
 
 Shapes 01–13 展示 Baseline Median、部署方案 Median/P90、Speedup、Peak VRAM 和几何平均加速比。Shape 14 单独展示 Latency 类型、Latency、Peak VRAM 和正确性，不计入几何平均。搜索和迭代观测位于本地 `observations/`，不上传到 GitHub。
+
+报告使用的机制族消融由 `scripts/run_component_ablation.py` 对 Shapes 01–13 单独生成，并保存在 `result/ablation/<run-id>/ablation.json`。它只比较当前部署和合法的单机制族回退，不修改部署注册表，也不计入最终几何平均加速比。展示指标为 `移除后加速比 / 完整部署加速比 = 完整部署延迟 / 移除后延迟`：低于 100% 表示移除该机制后性能下降。绘图用的精简表位于 `docs/technical_report/figures/source_data/component_ablation.csv`。

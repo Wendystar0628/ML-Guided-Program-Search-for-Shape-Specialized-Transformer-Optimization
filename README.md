@@ -46,6 +46,18 @@ This approach targets a practical gap between generic library defaults and the b
 
 *The deployed program is a measured composition, not a policy label. Each row shows the runtime, attention, output-layout, projection, FFN, normalization/fusion, and precision choices selected for one official Shape; Shape 14 forms a separate streamed regime.*
 
+### Which mechanisms support the measured gains?
+
+![Complete deployment speedup and retained performance after mechanism-family removal across Shapes 01–13](docs/technical_report/figures/component_ablation.svg)
+
+The left panel anchors every resident Shape (01–13) to its complete deployed speedup over the official baseline. The right panel replaces one mechanism family with its nearest legal fallback and reports the percentage of complete performance retained:
+
+`retained performance = ablated speedup / complete speedup = deployed median / ablated median`.
+
+`100%` means no measurable change, a lower percentage means the removed family was more important, and a value above `100%` means the legal fallback was faster in this compact run.
+
+These percentages are leave-one-family-out sensitivities, not additive component shares: runtime, layout, fusion, and precision choices interact, and some legal counterfactuals require a dependency closure. The measured pattern is nevertheless clear. Runtime scheduling is the largest broad dependency for most small and medium resident Shapes; norm/boundary specialization is the next most consistently material family; attention matters most for Shapes 07, 11, and 13; and the independently isolatable projection/precision path is critical for Shapes 05 and 08. The [evaluation report](docs/technical_report/04_evaluation_and_results.md#44-coherent-mechanism-family-ablation) documents the protocol and interpretation boundaries.
+
 ## System overview
 
 ![Closed-loop architecture](docs/technical_report/figures/architecture_overview.svg)
@@ -119,6 +131,12 @@ Use these commands only to search for new local winners; they are not part of re
 
 Compatible studies resume from local persistent evidence. See the [search method](docs/technical_report/03_search_and_optimization_method.md) and `python cli.py --help` for the search, benchmark, profile, and probe interfaces.
 
+Run the report-facing, evidence-only component ablation separately. It measures all resident Shapes 01–13 in serial fresh processes and never updates the deployment registry:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_component_ablation.py
+```
+
 ## Repository guide
 
 ```text
@@ -128,7 +146,7 @@ benchmarking/   correctness, timing, profiling, hardware and GPU isolation
 deployment/     measured-environment identity and current local winners
 official/       supplied benchmark semantics and 14 official Shapes
 scripts/        optimization and final-result entrypoints
-result/         timestamped competition-facing performance artifacts
+result/         timestamped final-performance and report-facing ablation artifacts
 tests/          tests grouped by production responsibility
 docs/           English technical report and official-material translations
 ```

@@ -8,6 +8,12 @@ The checked-in CSV files are the compact evidence layer used by the report. Refr
 .\.venv\Scripts\python.exe docs\technical_report\figures\prepare_figure_data.py
 ```
 
+Refresh the component-family table only from a completed evidence run. This command serializes all resident Shapes 01–13 behind the project GPU lease and writes both the immutable raw JSON and the compact plotting table:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_component_ablation.py --figure-csv docs\technical_report\figures\source_data\component_ablation.csv
+```
+
 Install the minimal R dependencies once, then render the complete figure bundle:
 
 ```powershell
@@ -27,6 +33,7 @@ R/ggplot2 owns the quantitative figures, the system architecture, composition, a
 | `workload_sensitivity` | Independently deployed plans respond non-monotonically across key Shape dimensions. | Four discrete point panels without interpolating lines |
 | `useful_throughput` | Relative speedup and estimated useful throughput answer different performance questions. | Per-Shape lollipop and speedup-throughput scatter |
 | `deployed_program_matrix` | The 14 Shapes resolve to materially different complete programs rather than one universal policy. | Single-panel categorical matrix across seven structural decision axes |
+| `component_ablation` | Complete speedup and performance retained after mechanism removal differ by Shape; family effects are not additive shares. | Full-speedup log bars beside a retained-performance percentage heatmap |
 | `shape14_streaming` | Online tiled attention avoids a global score tensor and makes Shape 14 runnable. | Graphviz dense-invalid versus streamed-valid lanes |
 | `shape14_capacity` | The measured streamed inner-forward peak fits the RTX 4080 while dense analytical bounds do not. | Horizontal log-scale capacity plot |
 | `search_evidence` | Four resident cycles aggressively narrow evidence while Screen dominates measured stage time. | Log retention plot and 100% stage-time bars |
@@ -48,3 +55,4 @@ R/ggplot2 owns the quantitative figures, the system architecture, composition, a
 - Project-estimated TFLOP/s uses dominant matrix-operation FLOPs; it is not official MFU or a hardware-counter roofline measurement.
 - Search counts are stage entries, not globally unique candidates; the figure does not combine incompatible study histories into a convergence claim.
 - Sensitivity panels compare independently deployed programs and are descriptive rather than causal Kernel ablations.
+- Component ablations report \(S_{ablated}/S_{complete}=L_{deployed}/L_{ablated}\). Below 100% means removal reduced performance; above 100% means the legal fallback was faster. These are legal family-level counterfactuals, not an additive causal decomposition. `*` marks a required dependency closure, `+` marks partial isolation, `CAP` marks an unsafe capacity counterfactual, `CPL` marks an active but inseparable family, and `N/A` means the deployed plan already uses the fallback.

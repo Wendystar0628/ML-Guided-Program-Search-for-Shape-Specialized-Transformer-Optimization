@@ -1,0 +1,3707 @@
+{
+  "schema_version": 2,
+  "run_id": "20260901T002918.287640Z",
+  "status": "completed",
+  "device": "cuda:0",
+  "variant": {
+    "dtype": "float32",
+    "padding_ratio": 0.0,
+    "input_scale": 1.0
+  },
+  "started_at": "2026-09-01T00:29:18+00:00",
+  "finished_at": "2026-09-01T00:36:44+00:00",
+  "elapsed_seconds": 446.266,
+  "progress": {
+    "completed": 78,
+    "total": 78,
+    "measured": 56
+  },
+  "comparisons": [
+    {
+      "case_id": "official_01",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:29:22+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-5c166f48f55f4a2331f418a1c758df2176cbcfcfe2534e0b49ff30744dc3b5ff",
+      "changed_fields": [
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.24268800020217896,
+        "p90_ms": 0.30269440412521365,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 30088192
+      },
+      "ablated": {
+        "median_ms": 0.9874560236930847,
+        "p90_ms": 1.3089343786239627,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 53156864
+      },
+      "ablation_slowdown": 4.068829208162138,
+      "retained_performance_fraction": 0.245770945114625,
+      "paired_ablation_slowdowns": [
+        4.107785786195252,
+        4.278481168102497,
+        4.031906603604289,
+        4.2352942039658865,
+        3.92915782581321
+      ]
+    },
+    {
+      "case_id": "official_01",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:29:27+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-f0d4cf57eb6494bf48d4ba8ff18ff658642c64b09d55a2403150023c21f84c65",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_efficient_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.24076800048351288,
+        "p90_ms": 0.2871552109718323,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 38477824
+      },
+      "ablated": {
+        "median_ms": 0.24166400730609894,
+        "p90_ms": 0.29172480702400205,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 38477824
+      },
+      "ablation_slowdown": 1.0037214531033471,
+      "retained_performance_fraction": 0.9962923447617453,
+      "paired_ablation_slowdowns": [
+        1.0039883313527356,
+        1.0085106411963978,
+        1.0,
+        0.995762679727709,
+        1.029089974537138
+      ]
+    },
+    {
+      "case_id": "official_01",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:29:31+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion. The zero-copy linear boundary falls back to mixed norm. Its boundary-coupled FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-dc000010370e783e4cb9872fa318eeed02385451e105ea28500b7fef2dbec66d",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "triton_mixed"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 64,
+            "num_warps": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch.block_rows",
+          "on": 16,
+          "off": 2
+        },
+        {
+          "field": "schedule.residual_norm_launch.num_warps",
+          "on": 4,
+          "off": 2
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.24166400730609894,
+        "p90_ms": 0.2955712080001831,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.27136000990867615,
+        "p90_ms": 0.34003840088844295,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.1228813629866004,
+      "retained_performance_fraction": 0.8905660321409513,
+      "paired_ablation_slowdowns": [
+        1.1271185599375797,
+        1.1404255487790416,
+        1.123404266386246,
+        1.1270601133195777,
+        1.1228813629866004
+      ]
+    },
+    {
+      "case_id": "official_01",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:29:31+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_01",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:29:36+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-03d91649c79035772d2217201dd720d6182ea55dd7b2177e1c9b74cf3e6af618",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.24166400730609894,
+        "p90_ms": 0.2916352033615113,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.2662400007247925,
+        "p90_ms": 0.29696000814437873,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.1016948849464572,
+      "retained_performance_fraction": 0.9076923326630497,
+      "paired_ablation_slowdowns": [
+        1.1059322052187484,
+        1.1063829839934505,
+        1.0970464155747,
+        1.1016948849464572,
+        1.1016948849464572
+      ]
+    },
+    {
+      "case_id": "official_01",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:29:40+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The boundary-fused output bridge is removed with linear norm. The residual-boundary FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-0f6e91546916a6bce875fa06492c2dba6816bc32659d80a7a95701b059679e74",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2407039999961853,
+        "p90_ms": 0.29043200612068176,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007826924324036,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.45977601408958435,
+        "p90_ms": 0.5382144093513489,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.9101303430639744,
+      "retained_performance_fraction": 0.5235244828349956,
+      "paired_ablation_slowdowns": [
+        1.9446808012618926,
+        1.898305053392887,
+        1.9025423736651779,
+        1.9484179526107614,
+        1.9106383603223887
+      ]
+    },
+    {
+      "case_id": "official_02",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476",
+      "completed_at": "2026-09-01T00:29:45+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-3245c6d971e777981ba0b1acb4c53d7102c09e529b71838b853f4bbbfd3cfa41",
+      "changed_fields": [
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.0727040022611618,
+        "p90_ms": 0.13358080387115479,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 22085120
+      },
+      "ablated": {
+        "median_ms": 1.3803520202636719,
+        "p90_ms": 1.6116032123565673,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 22347264
+      },
+      "ablation_slowdown": 18.98591518119286,
+      "retained_performance_fraction": 0.052670624010297054,
+      "paired_ablation_slowdowns": [
+        18.606073313366466,
+        19.76205249353817,
+        15.66630685523161,
+        18.98591518119286,
+        18.469629641471563
+      ]
+    },
+    {
+      "case_id": "official_02",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476",
+      "completed_at": "2026-09-01T00:29:49+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-9f66b45c7c56f7b1120fecab1654218a8cd058c2abfa67369482970a54188c4d",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_efficient_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.07168000191450119,
+        "p90_ms": 0.11539200097322463,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 30736896
+      },
+      "ablated": {
+        "median_ms": 0.07168000191450119,
+        "p90_ms": 0.1320255964994431,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 30736896
+      },
+      "ablation_slowdown": 1.0,
+      "retained_performance_fraction": 1.0,
+      "paired_ablation_slowdowns": [
+        1.0,
+        1.0,
+        1.4799999456728523,
+        1.0,
+        1.0142857187403822
+      ]
+    },
+    {
+      "case_id": "official_02",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476",
+      "completed_at": "2026-09-01T00:29:53+00:00",
+      "variant_kind": "atomic",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion.",
+      "ablated_config_id": "cfg-76b78381bdfb420a6ea67f24a734f21f253f9d96d2325b90737bb07539e6e771",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "schedule.attention_output_projection_launch",
+          "on": {
+            "block_m": 16,
+            "block_n": 16,
+            "block_k": 32,
+            "num_warps": 8,
+            "num_stages": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 128,
+            "block_n": 16,
+            "block_k": 64,
+            "num_warps": 2
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.07168000191450119,
+        "p90_ms": 0.11223040074110033,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 30736896
+      },
+      "ablated": {
+        "median_ms": 0.06963200122117996,
+        "p90_ms": 0.10878719687461853,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 30736896
+      },
+      "ablation_slowdown": 0.9714285625192358,
+      "retained_performance_fraction": 1.0294117741470037,
+      "paired_ablation_slowdowns": [
+        0.9857142812596179,
+        0.9714285625192358,
+        0.9714285625192358,
+        0.9714285625192358,
+        0.9714285625192358
+      ]
+    },
+    {
+      "case_id": "official_02",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476",
+      "completed_at": "2026-09-01T00:29:53+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_02",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476",
+      "completed_at": "2026-09-01T00:29:57+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-22cd794c8c3188b593e7a458880b5fe586bb0c4529d94bccd97494207f5073ed",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_linear_exact_gelu",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.ffn_input_launch",
+          "on": {
+            "block_m": 16,
+            "block_n": 16,
+            "block_k": 32,
+            "num_warps": 2,
+            "num_stages": 2
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.07168000191450119,
+        "p90_ms": 0.12990720272064213,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 30736896
+      },
+      "ablated": {
+        "median_ms": 0.07782399654388428,
+        "p90_ms": 0.11795200258493424,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.37967970967292786,
+        "peak_memory_bytes": 30736896
+      },
+      "ablation_slowdown": 1.0857142085000437,
+      "retained_performance_fraction": 0.9210526970827239,
+      "paired_ablation_slowdowns": [
+        1.0857142085000437,
+        0.9870129821042618,
+        1.0857142085000437,
+        1.0857142085000437,
+        0.697247672127462
+      ]
+    },
+    {
+      "case_id": "official_02",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-7a0875be1948478ef8a32bdfcc31eb198a77c902623f26dd7b1e53c4f1b5a476",
+      "completed_at": "2026-09-01T00:30:02+00:00",
+      "variant_kind": "atomic",
+      "note": "Initial and residual norm specializations fall back to Torch.",
+      "ablated_config_id": "cfg-890aed9e79b957ead4e6275c6f587af73b8f12a879117e4f9c16d1ad5716152b",
+      "changed_fields": [
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 4,
+            "num_warps": 8
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 8,
+            "num_warps": 8
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.07168000191450119,
+        "p90_ms": 0.1168256014585495,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.386705607175827,
+        "peak_memory_bytes": 30736896
+      },
+      "ablated": {
+        "median_ms": 0.11468800157308578,
+        "p90_ms": 0.16674560606479646,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.3870833218097687,
+        "peak_memory_bytes": 30736896
+      },
+      "ablation_slowdown": 1.5999999792115502,
+      "retained_performance_fraction": 0.6250000081204883,
+      "paired_ablation_slowdowns": [
+        1.5999999792115502,
+        1.5999999792115502,
+        1.0467289878503747,
+        1.585714260471168,
+        1.585714260471168
+      ]
+    },
+    {
+      "case_id": "official_03",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4",
+      "completed_at": "2026-09-01T00:30:06+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-ece4d2465d15d7fda2c0d25830dc3f5c1cc1545d4654cb56c46d6b26e70f3117",
+      "changed_fields": [
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08191999793052673,
+        "p90_ms": 0.14600960016250614,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.452665239572525,
+        "peak_memory_bytes": 22871552
+      },
+      "ablated": {
+        "median_ms": 1.117184042930603,
+        "p90_ms": 1.5078272104263308,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.452665239572525,
+        "peak_memory_bytes": 23920128
+      },
+      "ablation_slowdown": 13.637500868567463,
+      "retained_performance_fraction": 0.07332721806125495,
+      "paired_ablation_slowdowns": [
+        13.362500222826208,
+        13.866406866466892,
+        14.12500022737368,
+        13.637500868567463,
+        14.475781428772557
+      ]
+    },
+    {
+      "case_id": "official_03",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4",
+      "completed_at": "2026-09-01T00:30:06+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_03",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4",
+      "completed_at": "2026-09-01T00:30:10+00:00",
+      "variant_kind": "atomic",
+      "note": "Native QKV materialization is replaced by a view when present.",
+      "ablated_config_id": "cfg-5d55628702a3c9e4dce9cf6a19fcd3e348b9e6786da6943d1d1961cd2b882d05",
+      "changed_fields": [
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 32,
+            "block_k": 64,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08294399827718735,
+        "p90_ms": 0.13864959478378297,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.452665239572525,
+        "peak_memory_bytes": 31916544
+      },
+      "ablated": {
+        "median_ms": 0.08294399827718735,
+        "p90_ms": 0.12889599800109863,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.452665239572525,
+        "peak_memory_bytes": 31916544
+      },
+      "ablation_slowdown": 1.0,
+      "retained_performance_fraction": 1.0,
+      "paired_ablation_slowdowns": [
+        1.0,
+        1.0,
+        0.6183206289182561,
+        0.6507936452940607,
+        1.0
+      ]
+    },
+    {
+      "case_id": "official_03",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4",
+      "completed_at": "2026-09-01T00:30:10+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_03",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4",
+      "completed_at": "2026-09-01T00:30:15+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-09ad94760d2265bc78b90e59a02aa95767ef3edc8753351924bbc5d0b71155e5",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_linear_exact_gelu",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.ffn_input_launch",
+          "on": {
+            "block_m": 32,
+            "block_n": 32,
+            "block_k": 32,
+            "num_warps": 4,
+            "num_stages": 1
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08294399827718735,
+        "p90_ms": 0.1289535999298096,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.452665239572525,
+        "peak_memory_bytes": 31916544
+      },
+      "ablated": {
+        "median_ms": 0.08806400001049042,
+        "p90_ms": 0.135372793674469,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.46418604254722595,
+        "peak_memory_bytes": 31916544
+      },
+      "ablation_slowdown": 1.0617284172411454,
+      "retained_performance_fraction": 0.9418604454408934,
+      "paired_ablation_slowdowns": [
+        1.6419752698279955,
+        1.0617284172411454,
+        1.0617284172411454,
+        1.0617284172411454,
+        1.0617284172411454
+      ]
+    },
+    {
+      "case_id": "official_03",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-287fb2d6838c22149e6b2216ddb19123b4741917b1367bd6118b3c885d6b43f4",
+      "completed_at": "2026-09-01T00:30:19+00:00",
+      "variant_kind": "atomic",
+      "note": "Initial and residual norm specializations fall back to Torch.",
+      "ablated_config_id": "cfg-d59be04fc65de815db6af23f415826c1af63ec525afab1932d700f4895e7ce8b",
+      "changed_fields": [
+        {
+          "field": "program.residual_norm",
+          "on": "triton_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 1
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08294399827718735,
+        "p90_ms": 0.1450368016958237,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.452665239572525,
+        "peak_memory_bytes": 31916544
+      },
+      "ablated": {
+        "median_ms": 0.12390399724245071,
+        "p90_ms": 0.17018880546092988,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.45266860723495483,
+        "peak_memory_bytes": 31916544
+      },
+      "ablation_slowdown": 1.4938271582758855,
+      "retained_performance_fraction": 0.6694214885972212,
+      "paired_ablation_slowdowns": [
+        1.5125000045474737,
+        0.9762985328029381,
+        1.4938271582758855,
+        1.4938271582758855,
+        1.5125000045474737
+      ]
+    },
+    {
+      "case_id": "official_04",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:30:23+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-5c166f48f55f4a2331f418a1c758df2176cbcfcfe2534e0b49ff30744dc3b5ff",
+      "changed_fields": [
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10751999914646149,
+        "p90_ms": 0.16186879575252536,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 17499136
+      },
+      "ablated": {
+        "median_ms": 1.0250240564346313,
+        "p90_ms": 1.370111966133118,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 23266304
+      },
+      "ablation_slowdown": 9.533333933888569,
+      "retained_performance_fraction": 0.10489509828720624,
+      "paired_ablation_slowdowns": [
+        10.443452296396183,
+        9.33214275567542,
+        9.638690909695663,
+        9.856250082287616,
+        9.30799275846318
+      ]
+    },
+    {
+      "case_id": "official_04",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:30:28+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-f0d4cf57eb6494bf48d4ba8ff18ff658642c64b09d55a2403150023c21f84c65",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_efficient_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10751999914646149,
+        "p90_ms": 0.14602240025997162,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 19597312
+      },
+      "ablated": {
+        "median_ms": 0.10764800012111664,
+        "p90_ms": 0.1488895982503891,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 19597312
+      },
+      "ablation_slowdown": 1.0011904852648,
+      "retained_performance_fraction": 0.9988109303051507,
+      "paired_ablation_slowdowns": [
+        1.0095238128235635,
+        1.0,
+        1.0011904852648,
+        1.0095238128235635,
+        1.009300931057121
+      ]
+    },
+    {
+      "case_id": "official_04",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:30:32+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion. The zero-copy linear boundary falls back to mixed norm. Its boundary-coupled FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-dc000010370e783e4cb9872fa318eeed02385451e105ea28500b7fef2dbec66d",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "triton_mixed"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 64,
+            "num_warps": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch.block_rows",
+          "on": 16,
+          "off": 2
+        },
+        {
+          "field": "schedule.residual_norm_launch.num_warps",
+          "on": 4,
+          "off": 2
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10751999914646149,
+        "p90_ms": 0.14954880475997925,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 28116992
+      },
+      "ablated": {
+        "median_ms": 0.12902399897575378,
+        "p90_ms": 0.17379840314388276,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.49109381437301636,
+        "peak_memory_bytes": 28116992
+      },
+      "ablation_slowdown": 1.2,
+      "retained_performance_fraction": 0.8333333333333334,
+      "paired_ablation_slowdowns": [
+        1.197505178528271,
+        1.2037259059984045,
+        1.2,
+        1.2086330754492023,
+        1.2
+      ]
+    },
+    {
+      "case_id": "official_04",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:30:32+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_04",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:30:37+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-03d91649c79035772d2217201dd720d6182ea55dd7b2177e1c9b74cf3e6af618",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10751999914646149,
+        "p90_ms": 0.14950400292873384,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 28116992
+      },
+      "ablated": {
+        "median_ms": 0.11366400122642517,
+        "p90_ms": 0.16117760241031648,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4993419051170349,
+        "peak_memory_bytes": 28116992
+      },
+      "ablation_slowdown": 1.0571428769413813,
+      "retained_performance_fraction": 0.9459459282299548,
+      "paired_ablation_slowdowns": [
+        1.066666689764945,
+        1.0571428769413813,
+        1.0571428769413813,
+        1.0571428769413813,
+        1.066666689764945
+      ]
+    },
+    {
+      "case_id": "official_04",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:30:41+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The boundary-fused output bridge is removed with linear norm. The residual-boundary FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-0f6e91546916a6bce875fa06492c2dba6816bc32659d80a7a95701b059679e74",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10649599879980087,
+        "p90_ms": 0.14855040013790133,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.4822648763656616,
+        "peak_memory_bytes": 28116992
+      },
+      "ablated": {
+        "median_ms": 0.1955839991569519,
+        "p90_ms": 0.2347967982292175,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5330824851989746,
+        "peak_memory_bytes": 28116992
+      },
+      "ablation_slowdown": 1.836538474319822,
+      "retained_performance_fraction": 0.5445026140115897,
+      "paired_ablation_slowdowns": [
+        1.819047625647127,
+        1.8269231563020534,
+        1.836538474319822,
+        1.819047625647127,
+        1.8269231563020534
+      ]
+    },
+    {
+      "case_id": "official_05",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:30:53+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-903605610521c9682fbe3e72d10c851f4db80da9c874a5f51b1bcd4afb66bbb3",
+      "changed_fields": [
+        {
+          "field": "schedule.compile_mode",
+          "on": "max-autotune",
+          "off": null
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "compiled_forward",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.42188799381256104,
+        "p90_ms": 0.7209855914115906,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007891893386841,
+        "peak_memory_bytes": 21442560
+      },
+      "ablated": {
+        "median_ms": 1.136288046836853,
+        "p90_ms": 1.6116479873657226,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 84357120
+      },
+      "ablation_slowdown": 2.693340563139348,
+      "retained_performance_fraction": 0.3712861320569143,
+      "paired_ablation_slowdowns": [
+        1.9128440409840672,
+        2.7330096497565872,
+        2.7215494907463915,
+        2.745145664673572,
+        2.693340563139348
+      ]
+    },
+    {
+      "case_id": "official_05",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:30:53+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_05",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:30:53+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_05",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:31:08+00:00",
+      "variant_kind": "atomic",
+      "note": "The clean library path restores all projections to input dtype.",
+      "ablated_config_id": "cfg-dcb1595c0f014b85798e42f3d823bf7c1ce5f1345422b2e86d6240224013c3bb",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_projection",
+          "on": "fp16_shadow",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.ffn_input_projection",
+          "on": "autocast_fp16",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.ffn_output_projection",
+          "on": "fp16_shadow",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.precision_plan",
+          "on": "fp16_core",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.qkv_projection",
+          "on": "fp16_shadow",
+          "off": "input_dtype"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.4188160002231598,
+        "p90_ms": 0.6307839870452882,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6007891893386841,
+        "peak_memory_bytes": 12260352
+      },
+      "ablated": {
+        "median_ms": 1.257472038269043,
+        "p90_ms": 1.8584320068359377,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.00043399629066698253,
+        "peak_memory_bytes": 12260352
+      },
+      "ablation_slowdown": 3.002445077549611,
+      "retained_performance_fraction": 0.33306187929210385,
+      "paired_ablation_slowdowns": [
+        3.0073530686316126,
+        3.0073350903318143,
+        3.0121950016230707,
+        2.9951219851537814,
+        2.9951100583763064
+      ]
+    },
+    {
+      "case_id": "official_05",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:31:08+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_05",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:31:08+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_06",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b",
+      "completed_at": "2026-09-01T00:31:08+00:00",
+      "status": "capacity_excluded",
+      "variant_kind": "capacity_failure",
+      "note": "Removing batch tiling exposes the B=10000 full batch; it is excluded from latency attribution to avoid an OOM or timeout being misread as a component cost."
+    },
+    {
+      "case_id": "official_06",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b",
+      "completed_at": "2026-09-01T00:31:47+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-e91233d440084248949cd8a8f9a9948d277fdefcc4b3e7644b08062e800391e5",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_efficient_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 3
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 38.67238235473633,
+        "p90_ms": 38.991590118408205,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1360955392
+      },
+      "ablated": {
+        "median_ms": 38.58124923706055,
+        "p90_ms": 39.10430755615234,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1360955392
+      },
+      "ablation_slowdown": 0.9976434573686247,
+      "retained_performance_fraction": 1.0023621090420327,
+      "paired_ablation_slowdowns": [
+        0.9891915492235777,
+        1.0060242274282427,
+        1.004206325897864
+      ]
+    },
+    {
+      "case_id": "official_06",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b",
+      "completed_at": "2026-09-01T00:32:26+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion. The zero-copy linear boundary falls back to mixed norm.",
+      "ablated_config_id": "cfg-ee84936c13abadacfb7c72b46dad171c39ff2eea4ee232dbfb5da7428736b153",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "triton_mixed"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 32,
+            "num_warps": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch.block_rows",
+          "on": 16,
+          "off": 2
+        },
+        {
+          "field": "schedule.residual_norm_launch.num_warps",
+          "on": 4,
+          "off": 2
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 3
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 37.821441650390625,
+        "p90_ms": 38.036684417724615,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1369475072
+      },
+      "ablated": {
+        "median_ms": 36.44723129272461,
+        "p90_ms": 36.79294815063477,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1369475072
+      },
+      "ablation_slowdown": 0.9636658388020007,
+      "retained_performance_fraction": 1.0377041083485627,
+      "paired_ablation_slowdowns": [
+        0.9754120706902841,
+        0.9626912218104415,
+        0.9591501453585444
+      ]
+    },
+    {
+      "case_id": "official_06",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b",
+      "completed_at": "2026-09-01T00:32:26+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_06",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b",
+      "completed_at": "2026-09-01T00:33:05+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-e78a8e3561f81c3d83ea56f83c231dad9668858249b604a863922b25ba1712cc",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_linear_exact_gelu",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.ffn_input_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 32,
+            "num_warps": 4,
+            "num_stages": 2
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 3
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 38.06412887573242,
+        "p90_ms": 38.5728515625,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1369475072
+      },
+      "ablated": {
+        "median_ms": 39.5048942565918,
+        "p90_ms": 39.771340942382814,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8376165628433228,
+        "peak_memory_bytes": 1369475072
+      },
+      "ablation_slowdown": 1.0378510010189128,
+      "retained_performance_fraction": 0.9635294459592442,
+      "paired_ablation_slowdowns": [
+        1.0267647484977236,
+        1.0412122535622357,
+        1.0381069627116581
+      ]
+    },
+    {
+      "case_id": "official_06",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-acd5c73f1591c57af1da5eaf860fa5cc1f21b155df863749948f1ed246b8aa2b",
+      "completed_at": "2026-09-01T00:33:45+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The boundary-fused output bridge is removed with linear norm.",
+      "ablated_config_id": "cfg-09fb62a4e358196183c2228f36a8880e80d54378230308ff63af6edd75075a31",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 3
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 37.839134216308594,
+        "p90_ms": 38.15796432495117,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1369475072
+      },
+      "ablated": {
+        "median_ms": 65.53292846679688,
+        "p90_ms": 65.75308990478516,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.8146203756332397,
+        "peak_memory_bytes": 1369475072
+      },
+      "ablation_slowdown": 1.731882344140747,
+      "retained_performance_fraction": 0.5774064291279198,
+      "paired_ablation_slowdowns": [
+        1.723302012866558,
+        1.7322803915790852,
+        1.7390030342348426
+      ]
+    },
+    {
+      "case_id": "official_07",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4",
+      "completed_at": "2026-09-01T00:33:49+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Outer capture or compilation is replaced by eager execution. The fused initial-norm/QKV primitive also requires CUDA Graph.",
+      "ablated_config_id": "cfg-f643501490154e85268f7b454536ff1abc2699ae1ee19f78e9d0f1412a5746f4",
+      "changed_fields": [
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fused_qkv",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08089599758386612,
+        "p90_ms": 0.1363775968551636,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7494529485702515,
+        "peak_memory_bytes": 13069312
+      },
+      "ablated": {
+        "median_ms": 1.1130880117416382,
+        "p90_ms": 1.3185791969299316,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7494529485702515,
+        "peak_memory_bytes": 18836480
+      },
+      "ablation_slowdown": 13.759494226987965,
+      "retained_performance_fraction": 0.07267708997897562,
+      "paired_ablation_slowdowns": [
+        14.315269831659203,
+        13.668908367784379,
+        13.450554478642163,
+        15.02887661882003,
+        13.507120537846172
+      ]
+    },
+    {
+      "case_id": "official_07",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4",
+      "completed_at": "2026-09-01T00:33:53+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "The deployed attention backend is replaced by generic causal SDPA. Its direct-BSD output contract is replaced with a legal bridge.",
+      "ablated_config_id": "cfg-2c45570c2583367931199d0ee191ef8d6d6e1318579febbb4bf04a630212f230",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "triton_dh8",
+          "off": "causal_sdpa"
+        },
+        {
+          "field": "program.attention_output_bridge",
+          "on": "attention_direct_bsd",
+          "off": "triton_bhsd_projection"
+        },
+        {
+          "field": "schedule.attention_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 32,
+            "num_warps": 2,
+            "num_stages": 3
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08294399827718735,
+        "p90_ms": 0.14622720181941987,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7494529485702515,
+        "peak_memory_bytes": 15167488
+      },
+      "ablated": {
+        "median_ms": 0.11673600226640701,
+        "p90_ms": 0.18759679496288306,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7299277782440186,
+        "peak_memory_bytes": 15167488
+      },
+      "ablation_slowdown": 1.407407463964921,
+      "retained_performance_fraction": 0.7105262872365473,
+      "paired_ablation_slowdowns": [
+        1.8481013940643105,
+        0.8759690560837613,
+        1.0961538797890056,
+        1.4430380457992995,
+        1.461538540468971
+      ]
+    },
+    {
+      "case_id": "official_07",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4",
+      "completed_at": "2026-09-01T00:33:57+00:00",
+      "variant_kind": "partial",
+      "note": "Native QKV materialization is replaced by a view when present. Direct BSD output remains part of the Dh8 attention contract; this cell isolates only the QKV-side layout. Fused initial norm/QKV falls back with native QKV removal.",
+      "ablated_config_id": "cfg-b538a836f3763fc490386e9dbc264d94502d1d54b34d92c3228a31768d9a6b28",
+      "changed_fields": [
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fused_qkv",
+          "off": "torch"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 16,
+            "block_n": 128,
+            "block_k": 32,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08089599758386612,
+        "p90_ms": 0.1216767981648445,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7494529485702515,
+        "peak_memory_bytes": 23687168
+      },
+      "ablated": {
+        "median_ms": 0.10035199671983719,
+        "p90_ms": 0.1412863940000534,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7506533861160278,
+        "peak_memory_bytes": 23687168
+      },
+      "ablation_slowdown": 1.240506325616428,
+      "retained_performance_fraction": 0.8061224512523817,
+      "paired_ablation_slowdowns": [
+        0.8596490780181134,
+        1.240506325616428,
+        1.240506325616428,
+        1.240506325616428,
+        1.240506325616428
+      ]
+    },
+    {
+      "case_id": "official_07",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4",
+      "completed_at": "2026-09-01T00:33:57+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_07",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4",
+      "completed_at": "2026-09-01T00:34:02+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-2b8070b8dac8b30c349daf55891f9beda5a2012509c9cf884617e6801a7aa146",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_linear_exact_gelu",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.ffn_input_launch",
+          "on": {
+            "block_m": 32,
+            "block_n": 16,
+            "block_k": 32,
+            "num_warps": 8,
+            "num_stages": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08089599758386612,
+        "p90_ms": 0.12134399861097336,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7494529485702515,
+        "peak_memory_bytes": 23687168
+      },
+      "ablated": {
+        "median_ms": 0.08499199897050858,
+        "p90_ms": 0.12718080580234528,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6880592107772827,
+        "peak_memory_bytes": 23687168
+      },
+      "ablation_slowdown": 1.0506329300457178,
+      "retained_performance_fraction": 0.9518072120169366,
+      "paired_ablation_slowdowns": [
+        1.2784810231507162,
+        1.0641025880209003,
+        1.0506329300457178,
+        1.0506329300457178,
+        0.8469387929349261
+      ]
+    },
+    {
+      "case_id": "official_07",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-669cec662f7a5a2794b97a786dcb97662a2ab04b1f39b5f424e9e9b219d26ce4",
+      "completed_at": "2026-09-01T00:34:06+00:00",
+      "variant_kind": "atomic",
+      "note": "Initial and residual norm specializations fall back to Torch.",
+      "ablated_config_id": "cfg-c24487c01726be622cfff26fa1401df4b710711e4fc565729c3d82d5e5934e9b",
+      "changed_fields": [
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fused_qkv",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.08089599758386612,
+        "p90_ms": 0.12317439913749695,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7494529485702515,
+        "peak_memory_bytes": 23687168
+      },
+      "ablated": {
+        "median_ms": 0.2693119943141937,
+        "p90_ms": 0.31002879738807676,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7598819136619568,
+        "peak_memory_bytes": 23687168
+      },
+      "ablation_slowdown": 3.329113953196434,
+      "retained_performance_fraction": 0.3003802255071066,
+      "paired_ablation_slowdowns": [
+        3.329113953196434,
+        3.3164556285842726,
+        3.3717949172397104,
+        2.5940593317616303,
+        3.329113953196434
+      ]
+    },
+    {
+      "case_id": "official_08",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:34:20+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-903605610521c9682fbe3e72d10c851f4db80da9c874a5f51b1bcd4afb66bbb3",
+      "changed_fields": [
+        {
+          "field": "schedule.compile_mode",
+          "on": "max-autotune",
+          "off": null
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "compiled_forward",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 6.236159801483154,
+        "p90_ms": 6.599699020385742,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6621851921081543,
+        "peak_memory_bytes": 327723008
+      },
+      "ablated": {
+        "median_ms": 7.717887878417969,
+        "p90_ms": 8.252978897094728,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5841045379638672,
+        "peak_memory_bytes": 579381248
+      },
+      "ablation_slowdown": 1.2376026471583381,
+      "retained_performance_fraction": 0.8080137856008162,
+      "paired_ablation_slowdowns": [
+        1.25523997042527,
+        1.2325275552636803,
+        1.2103194047346273,
+        1.2412546837617662,
+        1.2376026471583381
+      ]
+    },
+    {
+      "case_id": "official_08",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:34:20+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_08",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:34:20+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_08",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:34:37+00:00",
+      "variant_kind": "atomic",
+      "note": "The clean library path restores all projections to input dtype.",
+      "ablated_config_id": "cfg-dcb1595c0f014b85798e42f3d823bf7c1ce5f1345422b2e86d6240224013c3bb",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_projection",
+          "on": "fp16_shadow",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.ffn_input_projection",
+          "on": "autocast_fp16",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.ffn_output_projection",
+          "on": "fp16_shadow",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.precision_plan",
+          "on": "fp16_core",
+          "off": "input_dtype"
+        },
+        {
+          "field": "program.qkv_projection",
+          "on": "fp16_shadow",
+          "off": "input_dtype"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 6.603775978088379,
+        "p90_ms": 6.959552001953124,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6621851921081543,
+        "peak_memory_bytes": 277220352
+      },
+      "ablated": {
+        "median_ms": 18.519840240478516,
+        "p90_ms": 18.87395782470703,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.0011082738637924194,
+        "peak_memory_bytes": 277220352
+      },
+      "ablation_slowdown": 2.8044319343854434,
+      "retained_performance_fraction": 0.35657845274791367,
+      "paired_ablation_slowdowns": [
+        2.7672733477714186,
+        2.9334737502858563,
+        2.821114414606139,
+        2.7963284583206103,
+        2.70249652651067
+      ]
+    },
+    {
+      "case_id": "official_08",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:34:37+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_08",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-77759016f460d60ec3868093a4c25dfe17579f3c98dec015d9aeb3811c510730",
+      "completed_at": "2026-09-01T00:34:37+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_09",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610",
+      "completed_at": "2026-09-01T00:34:42+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-57303f9c7574f2b8cd754c97ba45276423831396cdd4e021924047466639d362",
+      "changed_fields": [
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2253119945526123,
+        "p90_ms": 0.3557311952114105,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 30088192
+      },
+      "ablated": {
+        "median_ms": 1.2462079524993896,
+        "p90_ms": 1.547430396080017,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 53156864
+      },
+      "ablation_slowdown": 5.531032446692,
+      "retained_performance_fraction": 0.18079807154233568,
+      "paired_ablation_slowdowns": [
+        5.5269888085851,
+        5.280539690844563,
+        5.99914765464469,
+        4.483954733302858,
+        5.468039794196233
+      ]
+    },
+    {
+      "case_id": "official_09",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610",
+      "completed_at": "2026-09-01T00:34:46+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-5a04a9bf741b1644fdff72f1dbc3085bbce30fd8c0e88db24a3b54d62e962d1d",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_cudnn_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2242559939622879,
+        "p90_ms": 0.28446720242500306,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 38477824
+      },
+      "ablated": {
+        "median_ms": 0.23449599742889404,
+        "p90_ms": 0.3096575975418091,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 38477824
+      },
+      "ablation_slowdown": 1.0456621171442497,
+      "retained_performance_fraction": 0.9563318624672423,
+      "paired_ablation_slowdowns": [
+        1.0456621171442497,
+        0.991341988342215,
+        1.0456621171442497,
+        1.0502283620822264,
+        1.0456621171442497
+      ]
+    },
+    {
+      "case_id": "official_09",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610",
+      "completed_at": "2026-09-01T00:34:51+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion. The zero-copy linear boundary falls back to mixed norm. Its boundary-coupled FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-9a98f8ffafa78f3ee13210f4e57f555a576ab73264e56da849addb733e30acdd",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "triton_mixed"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 32,
+            "num_warps": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch.block_rows",
+          "on": 16,
+          "off": 2
+        },
+        {
+          "field": "schedule.residual_norm_launch.num_warps",
+          "on": 4,
+          "off": 2
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2242559939622879,
+        "p90_ms": 0.2778495967388154,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.2539519965648651,
+        "p90_ms": 0.43467519879341143,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.1324201064947725,
+      "retained_performance_fraction": 0.8830645042989761,
+      "paired_ablation_slowdowns": [
+        1.1324201064947725,
+        1.354056687969691,
+        1.1324201064947725,
+        1.1643835552721955,
+        1.1324201064947725
+      ]
+    },
+    {
+      "case_id": "official_09",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610",
+      "completed_at": "2026-09-01T00:34:51+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_09",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610",
+      "completed_at": "2026-09-01T00:34:55+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-886666b6d0bf7d36e6cb4a771118a92c8f8b30fb2d17041b5c39e7b027a738d2",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2242559939622879,
+        "p90_ms": 0.2998976051807404,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.24883200228214264,
+        "p90_ms": 0.31014400720596313,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.1095890811461993,
+      "retained_performance_fraction": 0.9012345353714238,
+      "paired_ablation_slowdowns": [
+        1.1095890811461993,
+        1.1095890811461993,
+        1.1095890811461993,
+        1.1140401146514118,
+        1.1461187084144957
+      ]
+    },
+    {
+      "case_id": "official_09",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-c03bb4d27dccdc2e952967504451e429bc4dc15932fb8d4265d959594e077610",
+      "completed_at": "2026-09-01T00:35:00+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The boundary-fused output bridge is removed with linear norm. The residual-boundary FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-fe9585a4057a10c52a059cb8d1c6a4ec736bcb69a27c19ce8896230e05e1ad85",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2242559939622879,
+        "p90_ms": 0.28119040131568906,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.4433920085430145,
+        "p90_ms": 0.5073408126831055,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.97716904109853,
+      "retained_performance_fraction": 0.5057736486933826,
+      "paired_ablation_slowdowns": [
+        2.027397336733653,
+        1.97716904109853,
+        1.9681818407312734,
+        1.97716904109853,
+        1.97716904109853
+      ]
+    },
+    {
+      "case_id": "official_10",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:35:04+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-5c166f48f55f4a2331f418a1c758df2176cbcfcfe2534e0b49ff30744dc3b5ff",
+      "changed_fields": [
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.22118400037288666,
+        "p90_ms": 0.27621120214462286,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 30088192
+      },
+      "ablated": {
+        "median_ms": 1.018880009651184,
+        "p90_ms": 1.3516800403594973,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 53156864
+      },
+      "ablation_slowdown": 4.606481517349756,
+      "retained_performance_fraction": 0.2170854254453471,
+      "paired_ablation_slowdowns": [
+        4.606278675488659,
+        4.769499152036549,
+        5.643249338394803,
+        4.504629698559097,
+        4.671296286627457
+      ]
+    },
+    {
+      "case_id": "official_10",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:35:09+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-f0d4cf57eb6494bf48d4ba8ff18ff658642c64b09d55a2403150023c21f84c65",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_efficient_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.22015999257564545,
+        "p90_ms": 0.26769920587539675,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 38477824
+      },
+      "ablated": {
+        "median_ms": 0.22015999257564545,
+        "p90_ms": 0.2681727945804596,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 38477824
+      },
+      "ablation_slowdown": 1.0,
+      "retained_performance_fraction": 1.0,
+      "paired_ablation_slowdowns": [
+        1.0,
+        1.0,
+        1.0,
+        1.0046728647852354,
+        1.0
+      ]
+    },
+    {
+      "case_id": "official_10",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:35:13+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion. The zero-copy linear boundary falls back to mixed norm. Its boundary-coupled FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-dc000010370e783e4cb9872fa318eeed02385451e105ea28500b7fef2dbec66d",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "triton_mixed"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 64,
+            "num_warps": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch.block_rows",
+          "on": 16,
+          "off": 2
+        },
+        {
+          "field": "schedule.residual_norm_launch.num_warps",
+          "on": 4,
+          "off": 2
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.22015999257564545,
+        "p90_ms": 0.2796736001968384,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.24985599517822266,
+        "p90_ms": 0.4814848065376285,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6992909908294678,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.134883737300154,
+      "retained_performance_fraction": 0.8811475282736562,
+      "paired_ablation_slowdowns": [
+        1.134883737300154,
+        1.1401868955515204,
+        1.1682243562613492,
+        1.134883737300154,
+        1.3292151637459393
+      ]
+    },
+    {
+      "case_id": "official_10",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:35:13+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_10",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:35:18+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-03d91649c79035772d2217201dd720d6182ea55dd7b2177e1c9b74cf3e6af618",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.22015999257564545,
+        "p90_ms": 0.28020480275154114,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.24473600089550018,
+        "p90_ms": 0.2974591910839081,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6992909908294678,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.11162794853116,
+      "retained_performance_fraction": 0.8995815563303723,
+      "paired_ablation_slowdowns": [
+        1.11162794853116,
+        1.0814479932974272,
+        1.11162794853116,
+        1.080683893699472,
+        1.11162794853116
+      ]
+    },
+    {
+      "case_id": "official_10",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-ccab3470ca2b35dc48c05d694491223e3d160c991361bda92b20626ed4693230",
+      "completed_at": "2026-09-01T00:35:22+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The boundary-fused output bridge is removed with linear norm. The residual-boundary FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-0f6e91546916a6bce875fa06492c2dba6816bc32659d80a7a95701b059679e74",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.22015999257564545,
+        "p90_ms": 0.27960320711135866,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6298180222511292,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.43827199935913086,
+        "p90_ms": 0.8136703968048097,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6992984414100647,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.9906977386390656,
+      "retained_performance_fraction": 0.5023364323926177,
+      "paired_ablation_slowdowns": [
+        2.0093023967275925,
+        1.9860465402752694,
+        1.9953489370028616,
+        1.9994160539481858,
+        1.9906977386390656
+      ]
+    },
+    {
+      "case_id": "official_11",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33",
+      "completed_at": "2026-09-01T00:35:27+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-44a5e90d896b3d5d7aff5a736e18a0fe86fe43730bc596be54008fd0a2cf99bc",
+      "changed_fields": [
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.27033600211143494,
+        "p90_ms": 0.341158401966095,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 30088192
+      },
+      "ablated": {
+        "median_ms": 0.9306880235671997,
+        "p90_ms": 1.2638463735580445,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 53156864
+      },
+      "ablation_slowdown": 3.4427083936218073,
+      "retained_performance_fraction": 0.29046898129759324,
+      "paired_ablation_slowdowns": [
+        3.5681818407312735,
+        3.353693226447312,
+        3.689394002031315,
+        3.3939394139833543,
+        3.542732084580581
+      ]
+    },
+    {
+      "case_id": "official_11",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33",
+      "completed_at": "2026-09-01T00:35:31+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "The deployed attention backend is replaced by generic causal SDPA. Its direct-BSD output contract is replaced with a legal bridge.",
+      "ablated_config_id": "cfg-df964a436c1c384ee943b207095ce7d0a5b7168613fc5023979e2dbd64ec7775",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "triton_dh8",
+          "off": "causal_sdpa"
+        },
+        {
+          "field": "program.attention_output_bridge",
+          "on": "attention_direct_bsd",
+          "off": "triton_bhsd_projection"
+        },
+        {
+          "field": "schedule.attention_launch",
+          "on": {
+            "block_m": 128,
+            "block_n": 64,
+            "num_warps": 8,
+            "num_stages": 3
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2682879865169525,
+        "p90_ms": 0.34871040582656865,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 38477824
+      },
+      "ablated": {
+        "median_ms": 0.37990400195121765,
+        "p90_ms": 0.4517888069152832,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 38477824
+      },
+      "ablation_slowdown": 1.4160306127878461,
+      "retained_performance_fraction": 0.7061994217986748,
+      "paired_ablation_slowdowns": [
+        1.4214559006732017,
+        1.4106464248599393,
+        1.4160306127878461,
+        1.4160306127878461,
+        1.4160306127878461
+      ]
+    },
+    {
+      "case_id": "official_11",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33",
+      "completed_at": "2026-09-01T00:35:36+00:00",
+      "variant_kind": "partial",
+      "note": "Native QKV materialization is replaced by a view when present. Direct BSD output remains part of the Dh8 attention contract; this cell isolates only the QKV-side layout.",
+      "ablated_config_id": "cfg-ac1d890cc0eb8fca410c01df3633d7a7c3c84f399b03abb5a143b9d4d1372d4e",
+      "changed_fields": [
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 32,
+            "block_k": 64,
+            "num_warps": 2
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2682879865169525,
+        "p90_ms": 0.3508928000926972,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.2836480140686035,
+        "p90_ms": 0.5698943972587591,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.0572520139685064,
+      "retained_performance_fraction": 0.9458482810038783,
+      "paired_ablation_slowdowns": [
+        1.0610687260330778,
+        1.053435190820607,
+        1.0613027007907767,
+        1.0613027007907767,
+        1.0610687260330778
+      ]
+    },
+    {
+      "case_id": "official_11",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33",
+      "completed_at": "2026-09-01T00:35:36+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_11",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33",
+      "completed_at": "2026-09-01T00:35:41+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-09f47681ada6d0423e1a6dc58a56701a3464bfe984140193762f9338e505d913",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2693119943141937,
+        "p90_ms": 0.3353663980960846,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.29286399483680725,
+        "p90_ms": 0.34488319754600527,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7397531867027283,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.0874524752697665,
+      "retained_performance_fraction": 0.91958041637813,
+      "paired_ablation_slowdowns": [
+        1.0877862659017172,
+        1.0836501648682233,
+        1.0954199121975159,
+        1.043795636719603,
+        1.0836501648682233
+      ]
+    },
+    {
+      "case_id": "official_11",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-a1825ef237af95d4b1cefa044cd9ed25463445b1131a5cef7de43fc30fab7c33",
+      "completed_at": "2026-09-01T00:35:45+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The residual-boundary FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-d44b3d38e3824bdae5eb790fb7880a5d00ccc82fcf6c0cc9be8fd9932a007076",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 8,
+            "num_warps": 1
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.2682879865169525,
+        "p90_ms": 0.34424319863319397,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5857934951782227,
+        "peak_memory_bytes": 46997504
+      },
+      "ablated": {
+        "median_ms": 0.4864000082015991,
+        "p90_ms": 0.5604095935821534,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.7397504448890686,
+        "peak_memory_bytes": 46997504
+      },
+      "ablation_slowdown": 1.8129772209195234,
+      "retained_performance_fraction": 0.5515789103477043,
+      "paired_ablation_slowdowns": [
+        1.802281408373117,
+        1.752767575626197,
+        1.8190521441427825,
+        1.8129772209195234,
+        1.8199233443043248
+      ]
+    },
+    {
+      "case_id": "official_12",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251",
+      "completed_at": "2026-09-01T00:35:49+00:00",
+      "variant_kind": "atomic",
+      "note": "Outer capture or compilation is replaced by eager execution.",
+      "ablated_config_id": "cfg-7a9952bcfde66fad19f6423d1c69aae3cf5272964c83c672cf7ab26c69c57b32",
+      "changed_fields": [
+        {
+          "field": "schedule.reuse_unchanged_input",
+          "on": true,
+          "off": false
+        },
+        {
+          "field": "schedule.runtime",
+          "on": "cuda_graph",
+          "off": "eager"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10262399911880493,
+        "p90_ms": 0.15681920349597933,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 17499136
+      },
+      "ablated": {
+        "median_ms": 1.03164803981781,
+        "p90_ms": 1.3391744136810304,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 23266304
+      },
+      "ablation_slowdown": 10.052697699136631,
+      "retained_performance_fraction": 0.0994757854984423,
+      "paired_ablation_slowdowns": [
+        9.88737595392489,
+        10.130503213688087,
+        9.9430697366694,
+        11.350187685191745,
+        9.923124703732093
+      ]
+    },
+    {
+      "case_id": "official_12",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251",
+      "completed_at": "2026-09-01T00:35:54+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed attention backend is replaced by generic causal SDPA.",
+      "ablated_config_id": "cfg-cd31a750c3040a9d21670ae7599dd66f2cebf217b5f470631c3acbc7cc4e807f",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "fp16_efficient_sdpa",
+          "off": "causal_sdpa"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10342399775981903,
+        "p90_ms": 0.14458880424499512,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 19597312
+      },
+      "ablated": {
+        "median_ms": 0.10342399775981903,
+        "p90_ms": 0.14273919463157653,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 19597312
+      },
+      "ablation_slowdown": 1.0,
+      "retained_performance_fraction": 1.0,
+      "paired_ablation_slowdowns": [
+        1.0,
+        1.0100000036379788,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "case_id": "official_12",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251",
+      "completed_at": "2026-09-01T00:35:58+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Native QKV materialization is replaced by a view when present. The fused BHSD output bridge is replaced by Torch layout conversion. The zero-copy linear boundary falls back to mixed norm. Its boundary-coupled FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-31fd132a19739ba4f9cf76e0164d5e748a002542c6406a6e718005cfc91b890d",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "triton_mixed"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 32,
+            "block_k": 64,
+            "num_warps": 4
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch.block_rows",
+          "on": 16,
+          "off": 2
+        },
+        {
+          "field": "schedule.residual_norm_launch.num_warps",
+          "on": 4,
+          "off": 2
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10239999741315842,
+        "p90_ms": 0.14807040095329285,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 28116992
+      },
+      "ablated": {
+        "median_ms": 0.12390399724245071,
+        "p90_ms": 0.16313599646091462,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6272680759429932,
+        "peak_memory_bytes": 28116992
+      },
+      "ablation_slowdown": 1.210000003637979,
+      "retained_performance_fraction": 0.826446278506947,
+      "paired_ablation_slowdowns": [
+        1.210000003637979,
+        1.2,
+        1.2,
+        0.8705036020178796,
+        1.210000003637979
+      ]
+    },
+    {
+      "case_id": "official_12",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251",
+      "completed_at": "2026-09-01T00:35:58+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_12",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251",
+      "completed_at": "2026-09-01T00:36:02+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-1359c11b0e0278100bf00f390636e8b65c68e1dd8f113fef95130a9be199587a",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10342399775981903,
+        "p90_ms": 0.1429504007101059,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 28116992
+      },
+      "ablated": {
+        "median_ms": 0.10956799983978271,
+        "p90_ms": 0.15048960447311402,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6272680759429932,
+        "peak_memory_bytes": 28116992
+      },
+      "ablation_slowdown": 1.0594059619918375,
+      "retained_performance_fraction": 0.9439252145795503,
+      "paired_ablation_slowdowns": [
+        1.0594059619918375,
+        1.0594059619918375,
+        1.0594059619918375,
+        1.0594059619918375,
+        1.2156862801045427
+      ]
+    },
+    {
+      "case_id": "official_12",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-9cb0858e0351ea2f2afc4d176abfc8b4936ffb7d7a8f481ef0c09632c8bb0251",
+      "completed_at": "2026-09-01T00:36:07+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "Initial and residual norm specializations fall back to Torch. The boundary-fused output bridge is removed with linear norm. The residual-boundary FFN also falls back to Torch.",
+      "ablated_config_id": "cfg-5374baec0716f8313c3af90b48fda39a3d57854527ce63a6f01495adc6d60a0c",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "triton_bhsd_projection",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.ffn",
+          "on": "triton_fused_mlp_boundary",
+          "off": "torch"
+        },
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_linear_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 8
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 16,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 0.10265599936246872,
+        "p90_ms": 0.14476799964904785,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.5010552406311035,
+        "peak_memory_bytes": 28116992
+      },
+      "ablated": {
+        "median_ms": 0.18943999707698822,
+        "p90_ms": 0.22922879755496978,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6272606253623962,
+        "peak_memory_bytes": 28116992
+      },
+      "ablation_slowdown": 1.8453865166525079,
+      "retained_performance_fraction": 0.5418918968878015,
+      "paired_ablation_slowdowns": [
+        1.8500000181898946,
+        1.84942206937786,
+        1.8316831797289799,
+        1.7864078328298558,
+        1.8453865166525079
+      ]
+    },
+    {
+      "case_id": "official_13",
+      "mechanism_id": "runtime_schedule",
+      "mechanism_label": "Runtime schedule",
+      "deployed_config_id": "cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a",
+      "completed_at": "2026-09-01T00:36:07+00:00",
+      "status": "not_applicable",
+      "variant_kind": "not_applicable",
+      "note": "The deployed program already uses the fallback path."
+    },
+    {
+      "case_id": "official_13",
+      "mechanism_id": "attention_path",
+      "mechanism_label": "Attention path",
+      "deployed_config_id": "cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a",
+      "completed_at": "2026-09-01T00:36:16+00:00",
+      "variant_kind": "dependency_closure",
+      "note": "The deployed attention backend is replaced by generic causal SDPA. Its direct-BSD output contract is replaced with a legal bridge.",
+      "ablated_config_id": "cfg-bc4166e8745165a90cbfedd60454348febf2e99ac6f62a00cbec69e03d3dcc33",
+      "changed_fields": [
+        {
+          "field": "program.attention",
+          "on": "triton_shape13",
+          "off": "causal_sdpa"
+        },
+        {
+          "field": "program.attention_output_bridge",
+          "on": "attention_direct_bsd",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "schedule.attention_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "num_warps": 4,
+            "num_stages": 2
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 3.427328109741211,
+        "p90_ms": 3.557504034042359,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablated": {
+        "median_ms": 4.225024223327637,
+        "p90_ms": 4.292812919616699,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablation_slowdown": 1.232745768144929,
+      "retained_performance_fraction": 0.8111972686021292,
+      "paired_ablation_slowdowns": [
+        1.2414102399289446,
+        1.2249775586605205,
+        1.2185132779240169,
+        1.3600410610759346,
+        1.2254641928016148
+      ]
+    },
+    {
+      "case_id": "official_13",
+      "mechanism_id": "layout_path",
+      "mechanism_label": "Layout path",
+      "deployed_config_id": "cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a",
+      "completed_at": "2026-09-01T00:36:25+00:00",
+      "variant_kind": "atomic",
+      "note": "Native QKV materialization is replaced by a view when present. Shape-13 direct BSD output is replaced by its BHSD/Torch path.",
+      "ablated_config_id": "cfg-8f4a948d0293666e168790bb4d4c28874f3b63b03af5ffc7c14d4ccb11c273cd",
+      "changed_fields": [
+        {
+          "field": "program.attention_output_bridge",
+          "on": "attention_direct_bsd",
+          "off": "torch_bhsd_to_bsd"
+        },
+        {
+          "field": "program.qkv_materialization",
+          "on": "triton_native_bhsd",
+          "off": "view"
+        },
+        {
+          "field": "schedule.qkv_launch",
+          "on": {
+            "block_m": 64,
+            "block_n": 64,
+            "block_k": 32,
+            "num_warps": 4
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 3.4795520305633545,
+        "p90_ms": 3.6339456558227536,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablated": {
+        "median_ms": 3.5000319480895996,
+        "p90_ms": 3.833036756515503,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablation_slowdown": 1.005885791431298,
+      "retained_performance_fraction": 0.9941486484037886,
+      "paired_ablation_slowdowns": [
+        0.9140670613915749,
+        0.9081033333267253,
+        0.9988432532002262,
+        1.1404737889951513,
+        1.0354505125163154
+      ]
+    },
+    {
+      "case_id": "official_13",
+      "mechanism_id": "projection_precision",
+      "mechanism_label": "Projection precision",
+      "deployed_config_id": "cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a",
+      "completed_at": "2026-09-01T00:36:25+00:00",
+      "status": "not_isolatable",
+      "variant_kind": "dependency_coupled",
+      "note": "The specialized projection precision is active but coupled to the deployed Triton/layout path, so no clean single-family counterfactual exists."
+    },
+    {
+      "case_id": "official_13",
+      "mechanism_id": "ffn_path",
+      "mechanism_label": "FFN path",
+      "deployed_config_id": "cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a",
+      "completed_at": "2026-09-01T00:36:34+00:00",
+      "variant_kind": "atomic",
+      "note": "The deployed FFN implementation is replaced by the Torch exact-GELU path.",
+      "ablated_config_id": "cfg-eca1282ac1b5afe942f2351c679604bdae52b13db2ba1dbf605b63255fda21bc",
+      "changed_fields": [
+        {
+          "field": "program.ffn",
+          "on": "compiled",
+          "off": "torch"
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 3.4211840629577637,
+        "p90_ms": 3.582566356658935,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablated": {
+        "median_ms": 3.4560000896453857,
+        "p90_ms": 3.6992320060729984,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablation_slowdown": 1.010176601447606,
+      "retained_performance_fraction": 0.9899259184651252,
+      "paired_ablation_slowdowns": [
+        1.0032554259050732,
+        1.1347304772361966,
+        1.0799386437715763,
+        1.000296386363605,
+        0.9239227085295932
+      ]
+    },
+    {
+      "case_id": "official_13",
+      "mechanism_id": "norm_boundary",
+      "mechanism_label": "Norm / boundary",
+      "deployed_config_id": "cfg-b5ba375aa10aea73fde2a1266281a7a6eafb1688cfeec95547319e388adcf33a",
+      "completed_at": "2026-09-01T00:36:44+00:00",
+      "variant_kind": "atomic",
+      "note": "Initial and residual norm specializations fall back to Torch.",
+      "ablated_config_id": "cfg-4772e6f05a3e73ea56dd6215ac7722085d60d225b2bd6585fbc72178d886ffbf",
+      "changed_fields": [
+        {
+          "field": "program.initial_norm",
+          "on": "triton_fp16",
+          "off": "torch"
+        },
+        {
+          "field": "program.residual_norm",
+          "on": "triton_mixed",
+          "off": "torch"
+        },
+        {
+          "field": "schedule.initial_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        },
+        {
+          "field": "schedule.residual_norm_launch",
+          "on": {
+            "block_rows": 2,
+            "num_warps": 2
+          },
+          "off": null
+        }
+      ],
+      "protocol": {
+        "accuracy_trials": 1,
+        "warmup": 2,
+        "repeats": 5,
+        "rounds": 5
+      },
+      "status": "measured",
+      "deployed": {
+        "median_ms": 3.3761279582977295,
+        "p90_ms": 3.6491839885711674,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 213928448
+      },
+      "ablated": {
+        "median_ms": 4.822015762329102,
+        "p90_ms": 5.037875175476074,
+        "passed": true,
+        "execution_matches": true,
+        "max_tolerance_ratio": 0.6107650399208069,
+        "peak_memory_bytes": 297781248
+      },
+      "ablation_slowdown": 1.4282680697802699,
+      "retained_performance_fraction": 0.7001486773794808,
+      "paired_ablation_slowdowns": [
+        1.3766156643993952,
+        1.5699339964407257,
+        1.4167651397818855,
+        1.5283998224411262,
+        1.4280648962519382
+      ]
+    }
+  ]
+}
