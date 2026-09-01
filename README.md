@@ -25,9 +25,17 @@ The declared snapshot was measured locally on an NVIDIA GeForce RTX 4080. Shapes
 
 ![RTX 4080 performance summary](docs/technical_report/figures/performance_summary.svg)
 
-Speedup is `baseline median / deployed median`; Shape 14 is excluded because a dense `S × S` baseline was not executed. Shape 14 passes a local `B=1` semantic-equivalence check and completes the full logical `B=32` streamed path with a sampled execution digest. The digest is a compact reproducibility marker, not a correctness oracle, and this is not yet the unpublished final official `B=32` input/output-pair validation. The 6.56 GiB value is maximum allocated memory for one `B=2` inner forward, not allocator-reserved memory or a materialized `B=32` call.
+Speedup is `baseline median / deployed median`; Shape 14 is excluded because a dense `S × S` baseline was not executed.
 
 The geometric mean gives every resident Shape equal weight in log-speedup space: `log G` is the arithmetic mean of the per-Shape `log speedup`. This is the standard aggregation for multiplicative benchmark ratios; the full range and per-Shape results remain visible because one aggregate cannot describe workload variability.
+
+### Shape 14: what ran
+
+![Shape 14 streamed execution](docs/technical_report/figures/shape14_streaming.svg)
+
+Shape 14 (`B=32`, `S=100,000`, `D=1,024`, 16 heads, two layers) is measured as sixteen ordered, distinct `B=2` inner forwards. Each inner forward computes causal attention in `64 × 64` Q/KV tiles, maintains online softmax statistics, emits one output chunk, and discards its score tiles; no global `[B, H, S, S]` tensor is materialized. The final timing harness keeps only a compact sampled summary between chunks.
+
+**Evidence boundary.** One complete 16-chunk loop took **17.244 s**. The final preset records one repeat, so this is single-sample latency rather than tail-latency evidence. The **6.56 GiB** figure is maximum allocated memory for one `B=2` inner forward—not allocator-reserved memory or a materialized `B=32` peak. A local `B=1` check passed the supplied tolerance logic; the sampled digest is only an execution reproducibility marker, the official `B=32` I/O pair remains unavailable, and no dense-baseline speedup is claimed.
 
 These are local engineering results, not an official competition score. See the [human-readable result](result/20260831T083857.848038Z/final_performance.md) and [evaluation protocol](docs/technical_report/04_evaluation_and_results.md) for the complete per-Shape evidence and measurement boundaries.
 
