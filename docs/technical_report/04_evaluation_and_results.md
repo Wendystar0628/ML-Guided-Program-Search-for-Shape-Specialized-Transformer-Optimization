@@ -25,7 +25,7 @@ G = \exp\left(\frac{1}{13}\sum_{i=1}^{13}\log s_i\right)=14.4926.
 
 Equivalently, \(\log G\) is the arithmetic mean of the per-Shape log speedups. Each resident Shape therefore receives equal weight in multiplicative performance space, and reversing baseline and deployment replaces \(G\) with \(1/G\). This is the standard rationale for geometrically aggregating normalized benchmark ratios; the report retains the per-Shape values and range because an aggregate alone cannot represent workload variability ([Fleming and Wallace, 1986](https://doi.org/10.1145/5666.5673)).
 
-P90 is a latency percentile from the deployed timing samples; it is not an error bar or confidence interval. Peak memory is the project-reported maximum allocated GPU memory. Correctness uses the official elementwise absolute-or-relative tolerance logic. This aggregate is an internal engineering summary, not the unpublished official MFU-weighted competition score.
+P90 is a latency percentile from the deployed timing samples; it is not an error bar or confidence interval. Peak memory is the project-reported maximum allocated GPU memory. Shapes 01–13 use the supplied comparator with the official elementwise absolute-or-relative tolerance logic. Shape 14 uses the same tolerance logic for a local `B=1` semantic check; its separate official `B=32` input/output validation is not yet available. This aggregate is an internal engineering summary, not the unpublished official MFU-weighted competition score.
 
 To complement relative speedup with useful-work scale, the report also uses the project's dominant-matrix-operation estimate
 
@@ -38,22 +38,22 @@ This estimate covers the principal attention, projection, and FFN matrix multipl
 
 ## 4.3 Per-Shape results
 
-| Shape | Baseline median (ms) | Deployed median (ms) | Deployed P90 (ms) | Speedup | Peak memory (GiB) | Correctness |
+| Shape | Baseline median (ms) | Deployed median (ms) | Deployed P90 (ms) | Speedup | Peak memory (GiB) | Correctness evidence |
 | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
-| 01 | 1.7271 | 0.2181 | 0.2191 | 7.92× | 0.027 | PASS |
-| 02 | 1.8714 | 0.0717 | 0.0717 | 26.11× | 0.020 | PASS |
-| 03 | 1.8665 | 0.0819 | 0.0829 | 22.78× | 0.021 | PASS |
-| 04 | 1.9101 | 0.0973 | 0.0983 | 19.64× | 0.016 | PASS |
-| 05 | 3.9045 | 0.4209 | 0.4466 | 9.28× | 0.019 | PASS |
-| 06 | 491.9541 | 36.8179 | 37.0465 | 13.36× | 1.251 | PASS |
-| 07 | 1.7935 | 0.0737 | 0.0737 | 24.33× | 0.012 | PASS |
-| 08 | 21.4340 | 6.2807 | 6.6192 | 3.41× | 0.266 | PASS |
-| 09 | 1.5126 | 0.2017 | 0.2029 | 7.50× | 0.027 | PASS |
-| 10 | 1.6846 | 0.1976 | 0.1987 | 8.52× | 0.027 | PASS |
-| 11 | 7.9422 | 0.2427 | 0.2448 | 32.73× | 0.027 | PASS |
-| 12 | 1.7558 | 0.1014 | 0.1024 | 17.32× | 0.016 | PASS |
-| 13 | 120.4296 | 3.3372 | 3.4683 | 36.09× | 0.199 | PASS |
-| 14 | — | 17244.3359 | 17244.3359 | — | 6.563 | PASS |
+| 01 | 1.7271 | 0.2181 | 0.2191 | 7.92× | 0.027 | SUPPLIED PASS |
+| 02 | 1.8714 | 0.0717 | 0.0717 | 26.11× | 0.020 | SUPPLIED PASS |
+| 03 | 1.8665 | 0.0819 | 0.0829 | 22.78× | 0.021 | SUPPLIED PASS |
+| 04 | 1.9101 | 0.0973 | 0.0983 | 19.64× | 0.016 | SUPPLIED PASS |
+| 05 | 3.9045 | 0.4209 | 0.4466 | 9.28× | 0.019 | SUPPLIED PASS |
+| 06 | 491.9541 | 36.8179 | 37.0465 | 13.36× | 1.251 | SUPPLIED PASS |
+| 07 | 1.7935 | 0.0737 | 0.0737 | 24.33× | 0.012 | SUPPLIED PASS |
+| 08 | 21.4340 | 6.2807 | 6.6192 | 3.41× | 0.266 | SUPPLIED PASS |
+| 09 | 1.5126 | 0.2017 | 0.2029 | 7.50× | 0.027 | SUPPLIED PASS |
+| 10 | 1.6846 | 0.1976 | 0.1987 | 8.52× | 0.027 | SUPPLIED PASS |
+| 11 | 7.9422 | 0.2427 | 0.2448 | 32.73× | 0.027 | SUPPLIED PASS |
+| 12 | 1.7558 | 0.1014 | 0.1024 | 17.32× | 0.016 | SUPPLIED PASS |
+| 13 | 120.4296 | 3.3372 | 3.4683 | 36.09× | 0.199 | SUPPLIED PASS |
+| 14 | — | 17244.3359 | 17244.3359 | — | 6.563 | LOCAL B=1 PASS; OFFICIAL I/O PENDING |
 
 Shapes 01–13 all pass and produce a **14.49×** geometric mean. The largest measured speedups are Shape 13 (36.09×), Shape 11 (32.73×), and Shape 02 (26.11×). Shape 08 is the lowest at 3.41×, making it a more important optimization target than Shapes already dominated by launch-overhead removal or a highly favorable specialized path.
 
@@ -85,13 +85,13 @@ Values slightly above 100% identify a legal fallback that was faster in this com
 
 ## 4.5 Shape 14
 
-Shape 14 does not materialize the dense `S × S` reference baseline. The full logical-batch latency loop executes 16 ordered, distinct `B=2` streamed forwards and retains only a compact summary between chunks. The measured 17.244 s covers that complete logical-batch loop and passes correctness. The reported 6.56 GiB is the maximum allocated memory of one `B=2` inner streamed forward; it excludes allocator-reserved memory and is not a measurement of one materialized `B=32` call. Shape 14 is excluded from the speedup geometric mean.
+Shape 14 does not materialize the dense `S × S` reference baseline. The full logical-batch latency loop executes 16 ordered, distinct `B=2` streamed forwards and retains only a compact summary between chunks. The measured 17.244 s covers that complete logical-batch loop. Separately, the implementation passes a local `B=1` semantic-equivalence check and records a sampled execution digest; neither is the pending official `B=32` input/output-pair validation. The reported 6.56 GiB is the maximum allocated memory of one `B=2` inner streamed forward; it excludes allocator-reserved memory and is not a measurement of one materialized `B=32` call. Shape 14 is excluded from the speedup geometric mean.
 
 The result artifact records a project estimate of `1,391,250,636,800,000` model FLOPs. Dividing this estimate by the measured latency gives approximately **80.7 project-estimated TFLOP/s**. This is not official MFU: the official useful-FLOP definition, device denominator, Shape weights, and bandwidth correction have not been published.
 
 ![Shape 14 streamed execution](figures/shape14_streaming.svg)
 
-*Figure 9. Ordered `B=2` microbatches compute causal attention online and write into one preallocated logical-batch output without retaining a global `S × S` score tensor.*
+*Figure 9. Ordered `B=2` microbatches compute causal attention online and emit each chunk without retaining a global `S × S` score tensor; the final measurement keeps only a compact sampled execution summary between chunks.*
 
 ![Shape 14 capacity evidence](figures/shape14_capacity.svg)
 
@@ -101,7 +101,7 @@ For scale, a single FP32 dense attention-score tensor at `B=2` would require at 
 
 ## 4.6 Measurement protocol interpretation
 
-The resident final preset normally uses five correctness trials, 20 warmups, 100 repeats, and three rounds. Shape 06 deliberately uses one correctness trial, two warmups, five repeats, and three rounds because its very large batch makes repeated validation disproportionately expensive. Shape 14 uses one correctness trial, no additional warmup, one full-batch repeat, and one round in the final reporting script; its P90 therefore equals its median by construction and is not tail-latency evidence.
+The resident final preset normally uses five correctness trials, 20 warmups, 100 repeats, and three rounds. Shape 06 deliberately uses one correctness trial, two warmups, five repeats, and three rounds because its very large batch makes repeated validation disproportionately expensive. Shape 14 uses one local `B=1` semantic-equivalence trial, no additional warmup, one full-logical-batch repeat, and one round in the final reporting script; its P90 therefore equals its median by construction and is not tail-latency evidence.
 
 The project measures with CUDA Events, fixed inputs per comparison, alternating baseline/candidate order where applicable, one GPU lease, and a fresh process per Shape. Previous development runs showed that external GPU activity can materially distort sub-millisecond measurements. The result above should therefore be read as a declared exclusive-device snapshot, not averaged with older, differently loaded runs.
 
@@ -113,7 +113,7 @@ The results support three claims:
 2. no single speedup trend explains batch, width, head-count, and sequence variation;
 3. a streamed implementation makes Shape 14 feasible without a dense attention matrix.
 
-The current artifact does not support resident MFU, a cross-hardware performance claim, a confidence interval across independent machine runs, or an official score.
+The current artifact does not support resident MFU, a cross-hardware performance claim, a confidence interval across independent machine runs, an official Shape 14 `B=32` correctness claim, or an official score.
 
 ## 4.8 Source
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "completed",
   "groups": {
     "resident": {
@@ -48,7 +48,8 @@
     },
     "speedup_definition": "baseline_median_ms / deployed_median_ms",
     "aggregate_definition": "geometric mean of speedups for official_01 through official_13",
-    "shape_14_baseline": "Dense SxS baseline is not materialized; Shape 14 reports deployed latency, peak memory, and correctness only.",
+    "shape_14_baseline": "Dense SxS baseline is not materialized; Shape 14 reports deployed latency and peak memory without a baseline speedup.",
+    "shape_14_correctness": "Local B=1 semantic equivalence and full logical B=32 streamed execution are separate from the unavailable official B=32 I/O validation.",
     "shape_14_latency": "Smoke is a scaled model-compute estimate; formal/final runs one complete logical batch with distinct streamed microbatches."
   },
   "resident_geomean_speedup": 14.426364182561857,
@@ -404,8 +405,13 @@
         "ffn_dim": 1024
       },
       "config_id": "cfg-cc77d6b483e1f07e137d89773db64dd8a3367f901dbae918aa7cebffd405ab60",
-      "correctness_passed": true,
-      "max_tolerance_ratio": 0.2815835177898407,
+      "correctness_passed": null,
+      "local_b1_semantic_pass": true,
+      "full_logical_execution_completed": true,
+      "official_b32_io_pass": null,
+      "official_b32_io_status": "not_available",
+      "max_tolerance_ratio": null,
+      "local_b1_max_tolerance_ratio": 0.2815835177898407,
       "baseline_status": "not_measured_dense_s2",
       "baseline_median_ms": null,
       "deployed_median_ms": 17257.92578125,
@@ -414,7 +420,7 @@
       "peak_memory_bytes": 7047528448,
       "estimated_model_flops": 1391250636800000,
       "latency_kind": "end_to_end_distinct_microbatches",
-      "output_digest": "86d8dacd0fe0297b76a95473b6f9fe117a0eaf0cd8e344d342be47ed299a8154",
+      "sampled_execution_digest": "86d8dacd0fe0297b76a95473b6f9fe117a0eaf0cd8e344d342be47ed299a8154",
       "error": null
     }
   ],

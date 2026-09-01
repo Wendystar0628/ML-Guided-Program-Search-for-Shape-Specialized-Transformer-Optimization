@@ -16,7 +16,7 @@ The separation is deliberate: a reviewer can first understand the problem and th
 
 ## Headline result
 
-On the validated RTX 4080 snapshot, all 14 official workloads pass the project correctness comparator. Shapes 01–13 achieve a **14.49× geometric-mean speedup** over the measured PyTorch baseline. Shape 14 runs through a streamed implementation at **17.24 s** median latency and **6.56 GiB** peak allocated memory; it has no materialized dense baseline and is therefore excluded from the speedup aggregate.
+On the validated RTX 4080 snapshot, Shapes 01–13 pass the supplied full comparator and achieve a **14.49× geometric-mean speedup** over the measured PyTorch baseline. Shape 14 passes a local `B=1` semantic-equivalence check and completes the full logical `B=32` streamed execution at **17.24 s** median latency and **6.56 GiB** peak allocated memory. Validation against the final official `B=32` input/output artifact remains pending; Shape 14 has no materialized dense baseline and is excluded from the speedup aggregate.
 
 ![RTX 4080 performance summary](figures/performance_summary.svg)
 

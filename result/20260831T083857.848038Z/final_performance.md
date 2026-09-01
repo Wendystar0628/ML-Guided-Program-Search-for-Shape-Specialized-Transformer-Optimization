@@ -31,9 +31,10 @@
 
 ## Shape 14
 
-| Shape | Latency kind | Deployed median (ms) | Deployed P90 (ms) | Peak VRAM (GiB) | Correct |
-| --- | --- | ---: | ---: | ---: | :---: |
-| official_14 | end_to_end_distinct_microbatches | 17244.336 | 17244.336 | 6.56 | PASS |
+| Shape | Latency kind | Deployed median (ms) | Deployed P90 (ms) | Peak VRAM (GiB) | Local B=1 | Full B=32 path | Official B=32 I/O |
+| --- | --- | ---: | ---: | ---: | :---: | :---: | :---: |
+| official_14 | end_to_end_distinct_microbatches | 17244.336 | 17244.336 | 6.56 | PASS | COMPLETE | NOT AVAILABLE |
 
 Shape 14 uses the memory-efficient streamed path and is excluded from the Shapes 01-13 speedup geometric mean.
 Its final/formal latency covers distinct streamed microbatches; smoke latency is explicitly reported as a model-compute estimate.
+The sampled execution digest is a compact reproducibility marker, not an official correctness oracle.

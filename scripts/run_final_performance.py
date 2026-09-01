@@ -61,26 +61,59 @@ def build_final_report(
         shape = shapes_by_id.get(case_id)
         if shape is None:
             raise ValueError(f"benchmark contains unknown shape: {case_id}")
-        results.append(
-            {
-                "case_id": case_id,
-                "shape": dict(shape),
-                "config_id": measured.get("config_id"),
-                "correctness_passed": bool(measured.get("passed"))
-                and bool(measured.get("execution_matches")),
-                "max_tolerance_ratio": measured.get("max_tolerance_ratio"),
-                "baseline_status": _baseline_status(measured),
-                "baseline_median_ms": measured.get("baseline_median_ms"),
-                "deployed_median_ms": measured.get("median_ms"),
-                "deployed_p90_ms": measured.get("p90_ms"),
-                "speedup": measured.get("speedup"),
-                "peak_memory_bytes": measured.get("peak_memory_bytes"),
-                "estimated_model_flops": measured.get("estimated_model_flops"),
-                "latency_kind": measured.get("latency_kind"),
-                "output_digest": measured.get("output_digest"),
-                "error": measured.get("error"),
-            }
-        )
+        execution_matches = bool(measured.get("execution_matches"))
+        result = {
+            "case_id": case_id,
+            "shape": dict(shape),
+            "config_id": measured.get("config_id"),
+            "correctness_passed": (
+                None
+                if case_id == "official_14"
+                else bool(measured.get("passed")) and execution_matches
+            ),
+            "max_tolerance_ratio": (
+                None
+                if case_id == "official_14"
+                else measured.get("max_tolerance_ratio")
+            ),
+            "baseline_status": _baseline_status(measured),
+            "baseline_median_ms": measured.get("baseline_median_ms"),
+            "deployed_median_ms": measured.get("median_ms"),
+            "deployed_p90_ms": measured.get("p90_ms"),
+            "speedup": measured.get("speedup"),
+            "peak_memory_bytes": measured.get("peak_memory_bytes"),
+            "estimated_model_flops": measured.get("estimated_model_flops"),
+            "latency_kind": measured.get("latency_kind"),
+            "error": measured.get("error"),
+        }
+        if case_id == "official_14":
+            local_pass = measured.get("local_b1_semantic_pass")
+            if local_pass is None:
+                local_pass = bool(measured.get("passed"))
+            full_completed = measured.get("full_logical_execution_completed")
+            if full_completed is None:
+                full_completed = (
+                    measured.get("latency_kind")
+                    == "end_to_end_distinct_microbatches"
+                )
+            result.update(
+                {
+                    "local_b1_semantic_pass": bool(local_pass)
+                    and execution_matches,
+                    "local_b1_max_tolerance_ratio": measured.get(
+                        "max_tolerance_ratio"
+                    ),
+                    "full_logical_execution_completed": bool(full_completed),
+                    "sampled_execution_digest": measured.get(
+                        "sampled_execution_digest", measured.get("output_digest")
+                    ),
+                    "official_b32_io_pass": measured.get("official_b32_io_pass"),
+                    "official_b32_io_status": measured.get(
+                        "official_b32_io_status", "not_available"
+                    ),
+                }
+            )
+        results.append(result)
 
     resident_status = str(resident_benchmark.get("status", "failed"))
     shape14_status = str(shape14_benchmark.get("status", "failed"))
@@ -93,7 +126,7 @@ def build_final_report(
         else "completed_with_failures"
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": status,
         "groups": {
             "resident": {
@@ -125,7 +158,12 @@ def build_final_report(
             ),
             "shape_14_baseline": (
                 "Dense SxS baseline is not materialized; Shape 14 reports deployed "
-                "latency, peak memory, and correctness only."
+                "latency and peak memory without a baseline speedup."
+            ),
+            "shape_14_correctness": (
+                "Local B=1 semantic equivalence and full logical B=32 streamed "
+                "execution are separate from the unavailable official B=32 I/O "
+                "validation."
             ),
             "shape_14_latency": (
                 "Smoke is a scaled model-compute estimate; formal/final runs one "
@@ -209,19 +247,36 @@ def render_markdown(report: dict[str, Any]) -> str:
             [
                 (
                     "| Shape | Latency kind | Deployed median (ms) | "
-                    "Deployed P90 (ms) | Peak VRAM (GiB) | Correct |"
+                    "Deployed P90 (ms) | Peak VRAM (GiB) | Local B=1 | "
+                    "Full B=32 path | Official B=32 I/O |"
                 ),
-                "| --- | --- | ---: | ---: | ---: | :---: |",
+                "| --- | --- | ---: | ---: | ---: | :---: | :---: | :---: |",
                 (
                     "| {case_id} | {latency_kind} | {median} | {p90} | "
-                    "{memory} | {correct} |"
+                    "{memory} | {local} | {full} | {official} |"
                 ).format(
                     case_id=shape14["case_id"],
                     latency_kind=shape14.get("latency_kind") or "N/A",
                     median=_number(shape14.get("deployed_median_ms")),
                     p90=_number(shape14.get("deployed_p90_ms")),
                     memory=_gib(shape14.get("peak_memory_bytes")),
-                    correct=("PASS" if shape14.get("correctness_passed") else "FAIL"),
+                    local=(
+                        "PASS" if shape14.get("local_b1_semantic_pass") else "FAIL"
+                    ),
+                    full=(
+                        "COMPLETE"
+                        if shape14.get("full_logical_execution_completed")
+                        else "NOT RUN"
+                    ),
+                    official=(
+                        "PASS"
+                        if shape14.get("official_b32_io_pass") is True
+                        else "FAIL"
+                        if shape14.get("official_b32_io_pass") is False
+                        else str(
+                            shape14.get("official_b32_io_status", "not available")
+                        ).upper().replace("_", " ")
+                    ),
                 ),
             ]
         )
@@ -235,6 +290,10 @@ def render_markdown(report: dict[str, Any]) -> str:
             (
                 "Its final/formal latency covers distinct streamed microbatches; "
                 "smoke latency is explicitly reported as a model-compute estimate."
+            ),
+            (
+                "The sampled execution digest is a compact reproducibility marker, "
+                "not an official correctness oracle."
             ),
             "",
         ]

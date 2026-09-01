@@ -114,7 +114,7 @@ class _DistinctLogicalBatch(nn.Module):
         return summary
 
 
-def _logical_output_digest(logical_batch: _DistinctLogicalBatch) -> str | None:
+def _sampled_execution_digest(logical_batch: _DistinctLogicalBatch) -> str | None:
     summary = logical_batch.last_summary
     if summary is None:
         return None
@@ -181,12 +181,12 @@ def measure_shape14_config(
     expected, actual = _execution_signatures(model, x, mask)
     chunks = shape.batch_size // microbatch
 
-    output_digest = None
+    sampled_execution_digest = None
     if protocol.full_logical_batch:
         logical_batch = _DistinctLogicalBatch(model, chunks).eval()
         optimized_samples = _timings(logical_batch, x, mask, protocol, device)
         latency_kind = "end_to_end_distinct_microbatches"
-        output_digest = _logical_output_digest(logical_batch)
+        sampled_execution_digest = _sampled_execution_digest(logical_batch)
     else:
         optimized_samples = [
             sample * chunks for sample in _timings(model, x, mask, protocol, device)
@@ -204,7 +204,11 @@ def measure_shape14_config(
         actual_execution_signature=_as_outer_streamed_signature(actual, config),
         estimated_model_flops=_estimated_model_flops(shape),
         latency_kind=latency_kind,
-        output_digest=output_digest,
+        local_b1_semantic_pass=passed,
+        full_logical_execution_completed=(True if protocol.full_logical_batch else None),
+        sampled_execution_digest=sampled_execution_digest,
+        official_b32_io_pass=None,
+        official_b32_io_status="not_available",
     )
 
 
@@ -340,12 +344,12 @@ def measure_paired_shape14_configs(
         else "model_compute_estimate"
     )
     incumbent_digest = (
-        _logical_output_digest(incumbent_timed)
+        _sampled_execution_digest(incumbent_timed)
         if isinstance(incumbent_timed, _DistinctLogicalBatch)
         else None
     )
     challenger_digest = (
-        _logical_output_digest(challenger_timed)
+        _sampled_execution_digest(challenger_timed)
         if isinstance(challenger_timed, _DistinctLogicalBatch)
         else None
     )
@@ -379,7 +383,13 @@ def measure_paired_shape14_configs(
             ),
             estimated_model_flops=_estimated_model_flops(shape),
             latency_kind=latency_kind,
-            output_digest=incumbent_digest,
+            local_b1_semantic_pass=incumbent_passed,
+            full_logical_execution_completed=(
+                True if protocol.full_logical_batch else None
+            ),
+            sampled_execution_digest=incumbent_digest,
+            official_b32_io_pass=None,
+            official_b32_io_status="not_available",
         ),
         challenger=BenchmarkResult(
             case_id=shape.case_id,
@@ -398,7 +408,13 @@ def measure_paired_shape14_configs(
             ),
             estimated_model_flops=_estimated_model_flops(shape),
             latency_kind=latency_kind,
-            output_digest=challenger_digest,
+            local_b1_semantic_pass=challenger_passed,
+            full_logical_execution_completed=(
+                True if protocol.full_logical_batch else None
+            ),
+            sampled_execution_digest=challenger_digest,
+            official_b32_io_pass=None,
+            official_b32_io_status="not_available",
         ),
         paired_ratios=paired_ratios,
     )

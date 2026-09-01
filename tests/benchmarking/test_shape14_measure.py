@@ -83,7 +83,7 @@ def test_full_logical_batch_uses_distinct_inputs_and_restores_buffer() -> None:
     assert not torch.equal(observed[0], observed[1])
     assert not torch.equal(observed[1], observed[2])
     torch.testing.assert_close(value, original)
-    digest = shape14_module._logical_output_digest(logical)
+    digest = shape14_module._sampled_execution_digest(logical)
     assert digest is not None and len(digest) == 64
 
 

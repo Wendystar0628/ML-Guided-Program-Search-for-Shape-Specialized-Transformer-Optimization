@@ -40,6 +40,35 @@ def test_benchmark_result_serializes_only_the_compact_public_fields() -> None:
     }
 
 
+def test_shape14_result_serializes_scoped_correctness_evidence() -> None:
+    config = portable_config()
+    signature = {"config_id": config.config_id, "runtime_backend": "streamed"}
+    result = BenchmarkResult(
+        case_id="official_14",
+        config=config,
+        passed=True,
+        max_tolerance_ratio=0.25,
+        optimized=TimingStats(median_ms=10.0, p90_ms=10.0),
+        peak_memory_bytes=2048,
+        expected_execution_signature=signature,
+        actual_execution_signature=dict(signature),
+        local_b1_semantic_pass=True,
+        full_logical_execution_completed=True,
+        sampled_execution_digest="sampled-digest",
+        official_b32_io_pass=None,
+        official_b32_io_status="not_available",
+    )
+
+    serialized = result.to_dict()
+
+    assert serialized["local_b1_semantic_pass"] is True
+    assert serialized["full_logical_execution_completed"] is True
+    assert serialized["sampled_execution_digest"] == "sampled-digest"
+    assert serialized["official_b32_io_pass"] is None
+    assert serialized["official_b32_io_status"] == "not_available"
+    assert "output_digest" not in serialized
+
+
 def test_comparator_rejects_nonzero_error_when_both_tolerances_are_zero() -> None:
     reference = torch.zeros(1)
     candidate = torch.tensor([torch.finfo(torch.float32).eps / 2])

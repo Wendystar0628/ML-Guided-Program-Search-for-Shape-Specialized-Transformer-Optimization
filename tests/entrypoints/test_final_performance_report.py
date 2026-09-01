@@ -56,6 +56,7 @@ def test_final_report_keeps_resident_baseline_and_marks_shape14() -> None:
                     "speedup": None,
                     "peak_memory_bytes": 2048,
                     "max_tolerance_ratio": 0.7,
+                    "output_digest": "legacy-sampled-digest",
                 },
             ],
         },
@@ -73,11 +74,23 @@ def test_final_report_keeps_resident_baseline_and_marks_shape14() -> None:
     assert resident["speedup"] == 2.0
     assert streamed["baseline_status"] == "not_measured_dense_s2"
     assert streamed["speedup"] is None
+    assert streamed["correctness_passed"] is None
+    assert streamed["local_b1_semantic_pass"] is True
+    assert streamed["max_tolerance_ratio"] is None
+    assert streamed["local_b1_max_tolerance_ratio"] == 0.7
+    assert streamed["full_logical_execution_completed"] is False
+    assert streamed["sampled_execution_digest"] == "legacy-sampled-digest"
+    assert streamed["official_b32_io_pass"] is None
+    assert streamed["official_b32_io_status"] == "not_available"
+    assert report["schema_version"] == 2
     assert report["groups"]["resident"]["status"] == "completed"
     assert report["groups"]["shape14"]["status"] == "completed"
     markdown = module.render_markdown(report)
     assert "Shapes 01-13 geometric mean speedup: 2.0000x" in markdown
-    assert "| official_14 | N/A | 10.000 | 11.000 | 0.00 | PASS |" in markdown
+    assert (
+        "| official_14 | N/A | 10.000 | 11.000 | 0.00 | PASS | NOT RUN | "
+        "NOT AVAILABLE |"
+    ) in markdown
     assert "Shape 14 task: `completed`" in markdown
 
 

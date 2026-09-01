@@ -19,12 +19,13 @@ The declared snapshot was measured locally on an NVIDIA GeForce RTX 4080. Shapes
 | Resident correctness | **13/13 PASS** with the supplied comparator |
 | Shapes 01–13 geometric-mean speedup | **14.49×** |
 | Resident speedup range | **3.41×–36.09×** |
+| Shape 14 correctness evidence | **Local B=1 semantic PASS; official B=32 I/O pending** |
 | Shape 14 full logical `B=32` streamed latency | **17.24 s** (one final sample) |
 | Shape 14 streamed inner-forward peak allocation | **6.56 GiB** at `B=2` |
 
 ![RTX 4080 performance summary](docs/technical_report/figures/performance_summary.svg)
 
-Speedup is `baseline median / deployed median`; Shape 14 is excluded because a dense `S × S` baseline was not executed. Shape 14 passes a local `B=1` semantic-equivalence check and completes the full logical `B=32` streamed path with an output digest. This is not yet the unpublished final official `B=32` input/output-pair validation. The 6.56 GiB value is maximum allocated memory for one `B=2` inner forward, not allocator-reserved memory or a materialized `B=32` call.
+Speedup is `baseline median / deployed median`; Shape 14 is excluded because a dense `S × S` baseline was not executed. Shape 14 passes a local `B=1` semantic-equivalence check and completes the full logical `B=32` streamed path with a sampled execution digest. The digest is a compact reproducibility marker, not a correctness oracle, and this is not yet the unpublished final official `B=32` input/output-pair validation. The 6.56 GiB value is maximum allocated memory for one `B=2` inner forward, not allocator-reserved memory or a materialized `B=32` call.
 
 The geometric mean gives every resident Shape equal weight in log-speedup space: `log G` is the arithmetic mean of the per-Shape `log speedup`. This is the standard aggregation for multiplicative benchmark ratios; the full range and per-Shape results remain visible because one aggregate cannot describe workload variability.
 

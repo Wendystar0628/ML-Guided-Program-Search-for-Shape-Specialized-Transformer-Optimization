@@ -43,7 +43,11 @@ class BenchmarkResult:
     baseline: TimingStats | None = None
     estimated_model_flops: int | None = None
     latency_kind: str | None = None
-    output_digest: str | None = None
+    local_b1_semantic_pass: bool | None = None
+    full_logical_execution_completed: bool | None = None
+    sampled_execution_digest: str | None = None
+    official_b32_io_pass: bool | None = None
+    official_b32_io_status: str | None = None
 
     @property
     def speedup(self) -> float | None:
@@ -76,8 +80,17 @@ class BenchmarkResult:
             value["estimated_model_flops"] = self.estimated_model_flops
         if self.latency_kind is not None:
             value["latency_kind"] = self.latency_kind
-        if self.output_digest is not None:
-            value["output_digest"] = self.output_digest
+        if self.local_b1_semantic_pass is not None:
+            value["local_b1_semantic_pass"] = self.local_b1_semantic_pass
+        if self.full_logical_execution_completed is not None:
+            value["full_logical_execution_completed"] = (
+                self.full_logical_execution_completed
+            )
+        if self.sampled_execution_digest is not None:
+            value["sampled_execution_digest"] = self.sampled_execution_digest
+        if self.official_b32_io_status is not None:
+            value["official_b32_io_pass"] = self.official_b32_io_pass
+            value["official_b32_io_status"] = self.official_b32_io_status
         return value
 
 
