@@ -22,13 +22,13 @@ Here \(x\) is a complete `ConfigSpec`. Static `PlanBuilder` checks remove struct
 
 ## 3.2 Generated resident search space
 
-The resident generator forms high-level structures from legal primitive products, applies semantic and hardware constraints, and exposes only schedule axes relevant to that structure. It keeps at most 36 structure branches in one run. Required control and incumbent-compatible branches are retained first; remaining capacity is selected to cover primitive values, then pairwise primitive interactions, and finally a seed-rotated remainder.
+The resident generator forms high-level structures from legal primitive products, applies semantic and hardware constraints, and exposes only their active schedule axes. Each run keeps at most 36 branches: mandatory and incumbent-compatible structures first, then primitive and pairwise coverage with a seed-rotated remainder.
 
-This is a bounded covering design, not exhaustive enumeration. Repeated outer cycles can rotate optional structures by changing the structure seed. Explicit guards around specialized kernels define their legal implementation domains; they do not hard-code which complete program must win a Shape.
+This bounded covering design is not exhaustive enumeration. Repeated cycles rotate optional structures; Kernel guards define legal domains without hard-coding a complete winning program. Sections 3.3–3.7 describe resident search; Shape 14 uses the finite regime in Section 3.8.
 
 ## 3.3 Constraint-aware branch-local TPE
 
-Different structures expose different parameters, so each branch owns an independent persistent Optuna study. The sampler is multivariate, grouped, reproducibly seeded, and feasibility-aware. Startup size is:
+Different structures expose different parameters, so each branch owns an independent persistent constrained multivariate Optuna TPE study. Startup size is:
 
 \[
 n_{startup}=\min(10, |\mathcal{X}_{branch}|).
@@ -60,13 +60,11 @@ Duplicate zero-information proposals are not rewarded or assigned synthetic timi
 
 ## 3.4 Fixed-budget survivor racing
 
-The nominal per-Shape wall-time budget uses cumulative soft deadlines at 65% for Screen, 82% for Enhanced, and 100% for Formal. An evaluation already in flight is allowed to finish. Every mandatory structure first receives a Screen witness. Branches are ranked by their best feasible measured Screen median; the scheduler does not invent future learning-curve gains.
+The per-Shape wall-time budget uses cumulative soft deadlines at 65% for Screen, 82% for Enhanced, and 100% for Formal; an evaluation already in flight may finish. Every mandatory structure first receives a Screen witness, then branches are ranked by their best feasible Screen median.
 
 With a trial cap, the largest ranked survivor prefix that can reach TPE startup and receive at least one guided proposal is selected. Roughly 10% of the remaining trial budget is reserved for least-sampled alternatives, while the rest is distributed round-robin over survivors. Without a trial cap, all branches stay active until the soft deadline.
 
-The method is accurately described as **fixed-budget survivor TPE**. It is not a rising-bandit scheduler and does not claim a learned cross-Shape routing model.
-
-The allocation follows the mature fixed-budget best-arm-identification principle: spread cheap evidence broadly, then spend scarce measurements on the most promising alternatives while retaining an exploration floor. The implementation is nevertheless a racing-inspired engineering adaptation, not Successive Halving, Hyperband, or F-Race: fidelity here changes the GPU measurement protocol rather than training resources, and no published regret or sample-complexity guarantee is claimed for the chosen 65/17/18 split.
+The resulting **fixed-budget survivor TPE** transfers the best-arm-identification principle: spread cheap evidence broadly, then concentrate measurements on promising alternatives while retaining an exploration floor. Fidelity changes the GPU measurement protocol rather than training resources, and the chosen 65/17/18 split carries no published regret or sample-complexity guarantee.
 
 ## 3.5 Multi-fidelity selection
 
@@ -82,7 +80,7 @@ For resident Shapes, the fastest 20% of eligible Screen candidates, capped at ei
 
 *Figure 5. Four resident optimization cycles reduce 3,933 Screen stage entries to 381 Enhanced entries, 50 Formal comparisons, and six deployment updates, while Screen measurement consumes most observed stage time.*
 
-Across four consecutive resident cycles, 3,933 Screen stage entries narrowed to 381 Enhanced entries, 50 Formal comparisons, and six deployment updates. One complete cycle shows that Screen measurement dominates wall time for most Shapes, which is exactly where branch-local TPE and survivor allocation must spend their budget carefully. These are stage-entry counts rather than globally unique programs, and Enhanced evidence may be reused only when its evidence identity still matches. Because historical studies span code versions and evidence identities, the figure intentionally reports the auditable funnel and stage cost rather than claiming a single project-wide convergence curve.
+Screen measurement dominates wall time for most Shapes, which is where branch-local TPE and survivor allocation must spend budget carefully. The figure reports stage entries rather than globally unique programs; compatible Enhanced evidence may be reused, so it is an auditable funnel rather than a project-wide convergence curve.
 
 ## 3.6 Sequential paired promotion
 
@@ -119,15 +117,13 @@ P(\text{false promotion at any look})
 \end{aligned}
 \]
 
-The stricter 1.10 and 1.05 early events are subsets of the base 1.02 event used by the null. This is a conservative **per-comparison false-promotion bound**, not a latency confidence interval, a probability that the challenger is faster, or a family-wise guarantee across every Shape and challenger searched by the project. The 1.02 ratio is a pre-specified minimum-effect gate (about 1.96% lower challenger latency), not the significance level. Alternating AB/BA order reduces shared temporal drift but does not itself prove block independence.
+The stricter 1.10 and 1.05 early events are subsets of the base 1.02 event used by the null. The result is a conservative **per-comparison false-promotion bound**; it is not a project-wide confidence level. The 1.02 ratio is a minimum-effect gate (about 1.96% lower challenger latency), while alternating AB/BA order reduces temporal drift without proving block independence.
 
-A challenger is rejected early when it can no longer reach the final 11-win condition. Both programs must remain feasible. When no incumbent exists, one feasible Formal result may establish the first deployment; that initialization does not receive the paired-comparison guarantee.
-
-This design spends fewer measurements on a clear improvement and reserves the full 13 blocks for close decisions.
+A challenger is rejected once it cannot reach the final 11-win condition. Clear improvements can promote after 6 or 9 blocks; close decisions use up to 13. When no incumbent exists, one feasible Formal result may initialize deployment without the paired-comparison guarantee.
 
 ## 3.7 Transfer, memory, and stopping
 
-Cross-Shape warm starts are deterministic nearest-neighbour seeds. Shape distance is standardized Euclidean distance over log-scaled batch, sequence length, model width, head count, and FFN width, plus layer count. Up to four compatible seeds are selected round-robin from the nearest three source Shapes. The priority is a current Formal winner, then a checked-in deployment, then historical feasible Screen evidence.
+Cross-Shape warm starts use standardized Euclidean distance over log-scaled batch, sequence length, model width, head count, and FFN width, plus layer count. Compatible seeds are prioritized from a current Formal winner, then a checked-in deployment, then historical feasible Screen evidence.
 
 Search identity includes Shape, branch, measurement environment, and evidence semantics. Resident and Shape-14 histories are stored separately. The outer loop increments the seed per sweep and stops after an absolute iteration limit, failure, interruption, or a configured plateau with neither a deployment update nor new Screen evidence. Time limits are soft at the measurement boundary: an already-started GPU evaluation is allowed to finish.
 
