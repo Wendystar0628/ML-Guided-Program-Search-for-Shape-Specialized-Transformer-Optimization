@@ -179,6 +179,7 @@ Current limitations are intentionally explicit:
 
 - the measured evidence covers one RTX 4080/Windows system and a competition-defined forward Transformer core, not training, KV-cache decoding, distributed execution, or production serving;
 - roughly 12 hours of cumulative search explored only part of the combinatorial program space, so the committed plans are best-so-far results rather than proven global optima;
+- because the remaining competition time was limited, the evaluation includes complete-deployment measurements and one-family-at-a-time legal knockouts, but not the full combinatorial ablation needed to quantify higher-order interactions or additive contribution shares;
 - search is an offline process constrained by the implemented operator and Kernel vocabulary, and the project has not learned a transferable cross-device performance model.
 
 With more time, the highest-value next steps are to validate Shape 14 against the final official full-batch I/O artifact, add genuinely new executable Kernel families where profiling shows remaining headroom, and collect multi-device evidence for a transferable cost model. Full boundaries and longer-term work are in the [limitations section](docs/technical_report/05_environment_ai_tools_and_limitations.md#57-limitations).
