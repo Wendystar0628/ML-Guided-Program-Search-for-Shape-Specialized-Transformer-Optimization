@@ -4,7 +4,7 @@
 
 This project generates complete Transformer execution programs, verifies them against the supplied semantics, measures them on the target GPU, and selects a measured winner for each official workload Shape. The key difference is that it searches compositions of operators, Triton kernels, layouts, precision choices, fusions, runtimes, and schedules rather than extending a hand-written list of policy names.
 
-[Verified results](#verified-results) · [Quick reproduction](#quick-reproduction) · [System overview](#system-overview) · [Technical report](docs/technical_report/README.md) · [Machine-readable result](result/20260831T083857.848038Z/final_performance.json)
+[Three-minute video demo](https://youtu.be/rItQ3x4iHBc) · [Verified results](#verified-results) · [Quick reproduction](#quick-reproduction) · [System overview](#system-overview) · [Technical report](docs/technical_report/README.md) · [Machine-readable result](result/20260831T083857.848038Z/final_performance.json)
 
 > **Interactive project walkthrough:** [Open the GitHub Pages demo](https://wendystar0628.github.io/ML-Guided-Program-Search-for-Shape-Specialized-Transformer-Optimization/) for a concise visual tour of the project outcome, workload geometry, system architecture, learning-guided search, and measured results.
 
@@ -190,4 +190,5 @@ With more time, the highest-value next steps are to validate Shape 14 against th
 - Written technical report: [`docs/technical_report/`](docs/technical_report/README.md).
 - Timestamped final evidence: [`result/`](result/README.md).
 - AI tools, models, Skills, human guidance, and representative interactions: [technical report §5](docs/technical_report/05_environment_ai_tools_and_limitations.md).
-- Devpost project page and public three-minute demo: to be linked after publication.
+- Public three-minute demo: [watch on YouTube](https://youtu.be/rItQ3x4iHBc).
+- Devpost project page: to be linked after publication.
