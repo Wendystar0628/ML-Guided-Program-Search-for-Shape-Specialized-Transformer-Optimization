@@ -36,7 +36,7 @@ digraph Shape14Streaming {
         shape=plaintext,
         width=0,
         margin=0,
-        label=<<B>Dense path</B><BR/><FONT POINT-SIZE="9">INVALID</FONT>>,
+        label=<<B>Dense path</B><BR/><FONT POINT-SIZE="9">MEMORY-INFEASIBLE</FONT>>,
         fontcolor="#D9772B"
     ];
 
@@ -44,7 +44,7 @@ digraph Shape14Streaming {
         shape=plaintext,
         width=0,
         margin=0,
-        label=<<B>Streamed path</B><BR/><FONT POINT-SIZE="9">VALID</FONT>>,
+        label=<<B>Streamed path</B><BR/><FONT POINT-SIZE="9">MEMORY-FEASIBLE</FONT>>,
         fontcolor="#1F8A78"
     ];
 

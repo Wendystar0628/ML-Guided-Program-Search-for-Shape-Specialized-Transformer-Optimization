@@ -71,8 +71,8 @@
 <text x='318.22' y='256.08' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='51.55px' lengthAdjust='spacingAndGlyphs'>resident runtime</text>
 <text x='318.22' y='286.06' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='30.80px' lengthAdjust='spacingAndGlyphs'>Shape 14</text>
 <text x='318.22' y='294.18' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='55.94px' lengthAdjust='spacingAndGlyphs'>streamed runtime</text>
-<text x='440.82' y='263.84' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='59.00px' lengthAdjust='spacingAndGlyphs'>Official-compatible</text>
-<text x='440.82' y='271.96' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='60.88px' lengthAdjust='spacingAndGlyphs'>Transformer output</text>
+<text x='440.82' y='263.84' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='58.36px' lengthAdjust='spacingAndGlyphs'>Benchmark output</text>
+<text x='440.82' y='271.96' text-anchor='middle' style='font-size: 7.20px;fill: #24313A; font-family: "Arial";' textLength='25.58px' lengthAdjust='spacingAndGlyphs'>contract</text>
 <line x1='102.44' y1='73.25' x2='112.25' y2='73.25' style='stroke-width: 1.11; stroke: #89939A; stroke-linecap: butt;' />
 <polygon points='108.18,74.89 112.25,73.25 108.18,71.60 ' style='stroke-width: 1.11; stroke: #89939A; stroke-linecap: butt; fill: #89939A;' />
 <line x1='220.14' y1='73.25' x2='229.95' y2='73.25' style='stroke-width: 1.11; stroke: #89939A; stroke-linecap: butt;' />

@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE.parents[2]
 RESULT_ROOT = PROJECT_ROOT / "result"
@@ -175,7 +174,9 @@ def main() -> None:
         "performance.csv",
         (
             "case_id", "baseline_median_ms", "deployed_median_ms", "deployed_p90_ms",
-            "speedup", "peak_memory_bytes", "correctness_passed", "estimated_model_flops",
+            "speedup", "peak_memory_bytes", "correctness_passed",
+            "local_b1_semantic_pass", "full_logical_execution_completed",
+            "official_b32_io_pass", "official_b32_io_status", "estimated_model_flops",
             "estimated_achieved_tflops", "attention_flop_share",
         ),
         performance_rows,

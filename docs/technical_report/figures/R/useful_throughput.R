@@ -90,7 +90,11 @@ draw_useful_throughput <- function(
     ) +
     ggplot2::labs(
       title = "Useful throughput by Shape",
-      subtitle = "Orange diamond: streamed Shape 14",
+      subtitle = paste(
+        "Orange diamond: streamed Shape 14",
+        "Official B32 I/O validation pending",
+        sep = "\n"
+      ),
       x = "Project-estimated useful throughput (TFLOP/s)",
       y = "Shape"
     ) +

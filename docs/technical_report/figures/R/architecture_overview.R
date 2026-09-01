@@ -59,7 +59,7 @@ draw_architecture_overview <- function() {
       "Exact-device registry\nGPU + shape",
       "Shapes 01-13\nresident runtime",
       "Shape 14\nstreamed runtime",
-      "Official-compatible\nTransformer output"
+      "Benchmark output\ncontract"
     ),
     fill = c(
       "#FFFFFF", "#E6EFF6", "#E6EFF6", "#E6EFF6",

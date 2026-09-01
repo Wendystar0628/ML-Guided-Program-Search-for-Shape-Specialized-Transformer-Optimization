@@ -34,7 +34,7 @@ R/ggplot2 owns the quantitative figures, the system architecture, composition, a
 | `useful_throughput` | Relative speedup and estimated useful throughput answer different performance questions. | Per-Shape lollipop and speedup-throughput scatter |
 | `deployed_program_matrix` | The 14 Shapes resolve to materially different complete programs rather than one universal policy. | Single-panel categorical matrix across seven structural decision axes |
 | `component_ablation` | Complete speedup and performance retained after mechanism removal differ by Shape; family effects are not additive shares. | Full-speedup log bars beside a retained-performance percentage heatmap |
-| `shape14_streaming` | Online tiled attention avoids a global score tensor and makes Shape 14 runnable. | Graphviz dense-invalid versus streamed-valid lanes |
+| `shape14_streaming` | Online tiled attention avoids a global score tensor and makes Shape 14 runnable. | Graphviz memory-infeasible dense lane versus memory-feasible streamed lane |
 | `shape14_capacity` | The measured streamed inner-forward peak fits the RTX 4080 while dense analytical bounds do not. | Horizontal log-scale capacity plot |
 | `search_evidence` | Four resident cycles aggressively narrow evidence while Screen dominates measured stage time. | Log retention plot and 100% stage-time bars |
 
@@ -51,6 +51,7 @@ R/ggplot2 owns the quantitative figures, the system architecture, composition, a
 
 - P90 markers are percentiles, not uncertainty intervals.
 - Shape 14 is absent from speedup panels because no dense baseline is measured.
+- Shape 14 evidence is split explicitly: local `B=1` semantic PASS and full logical `B=32` streamed execution are recorded, while official `B=32` I/O validation remains unavailable.
 - The 6.56 GiB Shape-14 value is the maximum allocated memory of one `B=2` inner forward, not a materialized full-`B=32` call and not CUDA reserved memory.
 - Project-estimated TFLOP/s uses dominant matrix-operation FLOPs; it is not official MFU or a hardware-counter roofline measurement.
 - Search counts are stage entries, not globally unique candidates; the figure does not combine incompatible study histories into a convergence claim.
